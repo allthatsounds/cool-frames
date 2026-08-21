@@ -1,0 +1,156 @@
+name: Publish
+
+# NOTE: Disabled until OIDC trusted publishing is configured on
+# TestPyPI and PyPI. Re-enable the tag trigger below when ready.
+on:
+  workflow_dispatch: {}
+  # push:
+  #   tags:
+  #     - "v[0-9]+.[0-9]+.[0-9]*"   # e.g. v0.1.0, v1.0.0rc1
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Build sdist + wheel
+  # -----------------------------------------------------------------------
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed for setuptools-scm
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Build
+        run: python -m build
+
+      - name: Check dist
+        run: twine check dist/*
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # -----------------------------------------------------------------------
+  # Generate SBOM (Software Bill of Materials)
+  # -----------------------------------------------------------------------
+  sbom:
+    name: Generate SBOM
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install cyclonedx-bom
+        run: pip install cyclonedx-bom
+
+      - name: Generate SBOM (CycloneDX)
+        run: cyclonedx-py environment -o sbom.json --output-format json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+  # -----------------------------------------------------------------------
+  # Publish to TestPyPI first (always runs on tag)
+  # -----------------------------------------------------------------------
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/cool-frames
+    permissions:
+      id-token: write   # OIDC trusted publishing
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  # -----------------------------------------------------------------------
+  # Publish to PyPI (only for non-pre-release tags, requires approval)
+  # -----------------------------------------------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    # Only publish stable releases (no rc/alpha/beta suffix)
+    if: "!contains(github.ref_name, 'rc') && !contains(github.ref_name, 'a') && !contains(github.ref_name, 'b')"
+    environment:
+      name: pypi
+      url: https://pypi.org/p/cool-frames
+    permissions:
+      id-token: write   # OIDC trusted publishing
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  # -----------------------------------------------------------------------
+  # Create GitHub Release with auto-generated notes, dist, and SBOM
+  # -----------------------------------------------------------------------
+  github-release:
+    name: Create GitHub Release
+    needs: [publish-pypi, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history for release notes generation
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbom
+          path: sbom/
+
+      # Generate attestation for the built artifacts (sigstore-based)
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: dist/*
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*
+            sbom/sbom.json
+          generate_release_notes: true
+          make_latest: true

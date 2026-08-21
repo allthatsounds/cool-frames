@@ -1,0 +1,488 @@
+"""
+numpy/layer3/_constphase.py
+===========================
+Phase reconstruction via heap-based PGHI (Weighted Phase Gradient Heap
+Integration) for non-uniform filterbanks.
+
+The traversal order follows a max-heap on coefficient magnitudes: the
+highest-magnitude coefficient is the seed, and propagation ripples outward
+through immediate time and frequency neighbours until every coefficient
+is visited.  This matches the MATLAB ``comp_filterbankheapint`` /
+``trapezheap_fb`` integration rules (trapezoidal rule in time and frequency).
+
+MATLAB original: layer3/phase_processing/comp_filterbankconstphase.m
+"""
+
+from __future__ import annotations
+
+import heapq
+import math
+
+import numpy as np
+
+from ..filterbanks._core import filterbank
+from ..filterbanks._utils import normalise_a
+from ..filters._design import filterbanklength
+from ._phasegrad import filterbankphasegrad
+
+# ---------------------------------------------------------------------------
+# comp_filterbankneighbors – build the neighbour graph
+# ---------------------------------------------------------------------------
+
+
+def build_neighbor_map(N: list[int], a_int: list[int]) -> list[dict]:
+    """Pre-compute time and frequency neighbour addresses for each subband.
+
+    For subband m with N[m] samples and hop size a[m]:
+      - time neighbours:   (m,  n±1)  → same subband, adjacent frame
+      - freq neighbours:   (m±1, n')  → adjacent subband, nearest-time index
+
+    Parameters
+    ----------
+    N : list of M ints
+        Number of samples in each subband.
+    a_int : list of M ints
+        Integer hop sizes for each subband.
+
+    Returns
+    -------
+    neighbors : list of M dicts, each containing:
+        ``'time_prev'``, ``'time_next'`` : (N_m,) index arrays (same subband)
+        ``'freq_prev'`` : tuple (m-1, indices) or None
+        ``'freq_next'`` : tuple (m+1, indices) or None
+
+    Examples
+    --------
+    >>> from cool_frames.numpy.phase._constphase import build_neighbor_map
+    >>> N = [10, 12, 11]
+    >>> a_int = [32, 32, 32]
+    >>> nbrs = build_neighbor_map(N, a_int)
+    >>> len(nbrs) == 3
+    True
+    """
+    M = len(N)
+    nbrs = []
+    for m in range(M):
+        Nm = N[m]
+        am = a_int[m]
+
+        t_prev = (np.arange(Nm) - 1) % Nm
+        t_next = (np.arange(Nm) + 1) % Nm
+
+        # Frequency-lower neighbour (m-1 → m)
+        fp_m = None
+        if m > 0:
+            Nm_prev = N[m - 1]
+            am_prev = a_int[m - 1]
+            # Map time index in subband m → nearest time index in subband m-1
+            fp_m = (np.arange(Nm) * am / am_prev).astype(int) % Nm_prev
+
+        fn_m = None
+        if m < M - 1:
+            Nm_next = N[m + 1]
+            am_next = a_int[m + 1]
+            fn_m = (np.arange(Nm) * am / am_next).astype(int) % Nm_next
+
+        nbrs.append(
+            {
+                "time_prev": t_prev,
+                "time_next": t_next,
+                "freq_prev": (m - 1, fp_m) if fp_m is not None else None,
+                "freq_next": (m + 1, fn_m) if fn_m is not None else None,
+            }
+        )
+    return nbrs
+
+
+# ---------------------------------------------------------------------------
+# fixed-order phase integration
+# ---------------------------------------------------------------------------
+
+
+def heap_pghi(
+    abss: np.ndarray,
+    tgrad: np.ndarray,
+    fgrad: np.ndarray,
+    N: list[int],
+    a_int: list[int],
+    fc_norm: np.ndarray,
+    tol: float = 1e-6,
+    phasetype: int = 0,
+) -> np.ndarray:
+    """Heap-based phase gradient integration (WPGHI) for filterbanks.
+
+    Reconstructs phase using weighted phase gradient heap integration [constphase-balazs]_
+    and non-iterative STFT phase reconstruction [constphase-prusa]_.
+
+    Implements the MATLAB ``comp_filterbankheapint`` / ``trapezheap_fb``
+    integration rules: trapezoidal rule in both time and frequency, with
+    a max-heap on coefficient magnitudes driving the traversal order.
+
+    The highest-magnitude coefficient is the seed (phase = 0).  Its
+    immediate neighbours are pushed onto the heap with their integrated
+    phases.  The heap always pops the highest-magnitude unvisited
+    coefficient next, ensuring that phase propagates outward through
+    reliable (high-energy) paths first.
+
+    Parameters
+    ----------
+    abss    : (Nsum,) magnitude array (concatenated over channels)
+    tgrad   : (Nsum,) normalised instantaneous frequency (from filterbankphasegrad)
+    fgrad   : (Nsum,) group delay (from filterbankphasegrad)
+    N       : list of M subband lengths
+    a_int   : list of M integer hop sizes
+    fc_norm : (M,) normalised centre frequencies in [0, 2]
+              (fc_Hz / fs * 2, so 0 = DC, 1.0 = Nyquist)
+    tol     : relative magnitude threshold for "reliable" phase
+    phasetype : 0 = freq-invariant, 1 = time-invariant
+
+    Returns
+    -------
+    phase : (Nsum,) phase array
+        Reconstructed phase values.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from cool_frames.numpy.phase._constphase import heap_pghi
+    >>> abss = np.array([1.0, 0.8, 0.6, 0.5])
+    >>> tgrad = np.zeros(4)
+    >>> fgrad = np.zeros(4)
+    >>> N = [4]
+    >>> a_int = [32]
+    >>> fc_norm = np.array([0.0])
+    >>> phase = heap_pghi(abss, tgrad, fgrad, N, a_int, fc_norm)
+    >>> phase.shape
+    (4,)
+
+    References
+    ----------
+    .. [constphase-balazs] P. Balazs, M. Dörfler, N. Holighaus, F. Jaillet, G. Velasco, "Theory, implementation
+           and applications of nonstationary Gabor frames," J. Comput. Appl. Math., vol. 236,
+           no. 6, pp. 1481–1496, 2011.
+    .. [constphase-prusa] Z. Průša, P. Balazs, P. L. Søndergaard, "A non-iterative method for STFT phase
+           (re)construction," IEEE/ACM Trans. Audio, Speech, Lang. Process., vol. 25, no. 5,
+           pp. 1091–1101, 2017. doi:10.1109/TASLP.2017.2678166
+    """
+    M = len(N)
+    Nsum = int(sum(N))
+    phase = np.zeros(Nsum)
+    visited = np.zeros(Nsum, dtype=bool)
+
+    # Channel offset table
+    offsets = np.zeros(M + 1, dtype=int)
+    for m in range(M):
+        offsets[m + 1] = offsets[m] + N[m]
+
+    def flat_idx(m: int, n: int) -> int:
+        return offsets[m] + n % N[m]  # type: ignore[no-any-return]
+
+    # --- Convert gradients to radians ---
+    tgradw = tgrad * math.pi
+    fgradw = -fgrad * math.pi
+
+    # --- Helper: push all unvisited neighbours of (m, n) onto the heap ---
+    def _push_neighbours(m: int, n: int, fi: int, heap: list):
+        """Compute phase for each unvisited neighbour and push onto heap."""
+        src_phase = phase[fi]
+
+        # -- Time neighbours (same channel) --
+        n_next = (n + 1) % N[m]
+        if n_next != 0:  # avoid circular wrap
+            fi_next = flat_idx(m, n_next)
+            if not visited[fi_next]:
+                p = src_phase + a_int[m] * (tgradw[fi] + tgradw[fi_next]) / 2
+                heapq.heappush(heap, (-abss[fi_next], fi_next, p))
+
+        n_prev = (n - 1) % N[m]
+        if n != 0:  # avoid circular wrap
+            fi_prev = flat_idx(m, n_prev)
+            if not visited[fi_prev]:
+                p = src_phase - a_int[m] * (tgradw[fi] + tgradw[fi_prev]) / 2
+                heapq.heappush(heap, (-abss[fi_prev], fi_prev, p))
+
+        # -- Frequency neighbours (across channels) --
+        t_w = n * a_int[m]
+
+        if m + 1 < M:
+            n_fn = int(round(n * a_int[m] / a_int[m + 1])) % N[m + 1]
+            fi_fn = flat_idx(m + 1, n_fn)
+            if not visited[fi_fn]:
+                t_fn = n_fn * a_int[m + 1]
+                dt = t_fn - t_w
+                df = fc_norm[m + 1] - fc_norm[m]
+                if df < 0:
+                    df += 2.0
+                p = (
+                    src_phase
+                    + dt * (tgradw[fi] + tgradw[fi_fn]) / 2
+                    + df * (fgradw[fi] + fgradw[fi_fn]) / 2
+                )
+                heapq.heappush(heap, (-abss[fi_fn], fi_fn, p))
+
+        if m > 0:
+            n_fp = int(round(n * a_int[m] / a_int[m - 1])) % N[m - 1]
+            fi_fp = flat_idx(m - 1, n_fp)
+            if not visited[fi_fp]:
+                t_fp = n_fp * a_int[m - 1]
+                dt = t_fp - t_w
+                df = fc_norm[m - 1] - fc_norm[m]
+                if df > 0:
+                    df -= 2.0
+                p = (
+                    src_phase
+                    + dt * (tgradw[fi] + tgradw[fi_fp]) / 2
+                    + df * (fgradw[fi] + fgradw[fi_fp]) / 2
+                )
+                heapq.heappush(heap, (-abss[fi_fp], fi_fp, p))
+
+    # --- Seed: highest-magnitude coefficient ---
+    seed = int(np.argmax(abss))
+    phase[seed] = 0.0
+    visited[seed] = True
+    m_seed = int(np.searchsorted(offsets, seed + 1) - 1)
+    n_seed = seed - offsets[m_seed]
+
+    # Max-heap (negate magnitude for Python's min-heap)
+    heap: list = []
+    _push_neighbours(m_seed, n_seed, seed, heap)
+
+    # --- Main loop: pop highest-magnitude unvisited, propagate ---
+    while heap:
+        _neg_mag, fi, p = heapq.heappop(heap)
+        if visited[fi]:
+            continue
+        phase[fi] = p
+        visited[fi] = True
+
+        m = int(np.searchsorted(offsets, fi + 1) - 1)
+        n = fi - offsets[m]
+        _push_neighbours(m, n, fi, heap)
+
+    return phase
+
+
+# Keep the old name as an alias for backward compatibility
+fixed_order_pghi = heap_pghi
+
+
+# ---------------------------------------------------------------------------
+# filterbankconstphase – public API
+# ---------------------------------------------------------------------------
+
+
+def filterbankconstphase(
+    f,
+    g,
+    a=None,
+    L: int | None = None,
+    fc: np.ndarray | None = None,
+    tol: float = 1e-6,
+    tgrad: list[np.ndarray] | None = None,
+    fgrad: list[np.ndarray] | None = None,
+    sqtfr: np.ndarray | None = None,
+) -> tuple:
+    """Reconstruct phase for a filterbank using fixed-order PGHI.
+
+    Phase reconstruction via heap-based phase gradient integration [constphase-balazs]_
+    and non-iterative methods [constphase-prusa]_.
+
+    Handles both uniform and non-uniform filter banks through the same
+    flattened heap integrator (a uniform bank is simply all-equal hops; the
+    former ``comp_ufilterbankconstphase`` 2-D specialisation is subsumed here).
+
+    Two calling conventions:
+    1. Signal path: filterbankconstphase(signal, filters, hops, L, fc)
+    2. Magnitude path: filterbankconstphase(magnitudes_list, a_hops, fc_frequencies)
+
+    Parameters
+    ----------
+    f     : signal (Ls,) or list of magnitude arrays
+            Signal for computing c, tgrad, fgrad if not provided.
+            OR pre-computed list of magnitude arrays.
+    g     : list of M filter dicts (signal path) or hop sizes (magnitude path)
+    a     : array-like or None
+            Hop sizes (signal path) or centre frequencies (magnitude path).
+    L     : DFT length (signal path only)
+    fc    : (M,) centre frequencies in Hz (optional when f is signal).
+    tol   : relative magnitude threshold
+    tgrad : precomputed instantaneous frequencies (optional)
+    fgrad : precomputed group delays (optional)
+
+    Returns
+    -------
+    c_new    : list of M complex arrays with reconstructed phase
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from cool_frames.numpy.filters import audfilters
+    >>> from cool_frames.numpy.phase import filterbankconstphase
+    >>> x = np.random.randn(8000)
+    >>> g, a, fc, L, _info = audfilters(8000, len(x))
+    >>> c_recon = filterbankconstphase(x, g, a, L, fc)
+    >>> len(c_recon) == len(g)
+    True
+
+    References
+    ----------
+    .. [constphase-balazs] P. Balazs, M. Dörfler, N. Holighaus, F. Jaillet, G. Velasco, "Theory, implementation
+           and applications of nonstationary Gabor frames," J. Comput. Appl. Math., vol. 236,
+           no. 6, pp. 1481–1496, 2011.
+    .. [constphase-prusa] Z. Průša, P. Balazs, P. L. Søndergaard, "A non-iterative method for STFT phase
+           (re)construction," IEEE/ACM Trans. Audio, Speech, Lang. Process., vol. 25, no. 5,
+           pp. 1091–1101, 2017. doi:10.1109/TASLP.2017.2678166
+    """
+    # Detect if f is a list (pre-computed magnitudes) vs signal array
+    f_is_list = isinstance(f, (list, tuple))
+
+    # Detect if g is a list of dicts (signal path) or numeric (magnitude path)
+    g_is_filter_list = isinstance(g, (list, tuple)) and len(g) > 0 and isinstance(g[0], dict)
+
+    if f_is_list and not g_is_filter_list:
+        # Magnitude path: f is magnitudes list, g is hop sizes, a is frequencies
+        abss_list = [np.asarray(fi) for fi in f]
+        a_int_param = np.atleast_1d(g)
+        fc_param = a  # In this calling convention, 3rd arg is fc
+        M = len(abss_list)
+        N = [len(np.asarray(ci).ravel()) for ci in abss_list]
+
+        # Convert a_int_param to proper format
+        if a_int_param.ndim == 1:
+            a_int = [int(ai) for ai in a_int_param]
+        else:
+            a_int = [int(a_int_param[m, 0]) for m in range(M)]
+
+        # Build fc_norm from fc_param (needed before gradient computation)
+        if fc_param is not None:
+            # Assume normalized frequencies [0, 2] or Hz (if L provided as reference)
+            fc_norm = np.asarray(fc_param, dtype=float)
+            if np.max(fc_norm) > 2.0:  # Likely Hz, need to normalize by sampling rate
+                # Estimate sampling rate from center frequencies (rough heuristic)
+                # Assume highest frequency is around Nyquist
+                fs_est = np.max(fc_norm) * 2
+                fc_norm = fc_norm / fs_est * 2.0
+        else:
+            fc_norm = np.zeros(M)
+
+        # When tgrad/fgrad not provided for magnitude-only input, compute them
+        # from the magnitudes via comp_filterbankphasegradfrommag. Falling
+        # back to zero gradients (the previous behaviour) made PGHI degenerate
+        # to random-phase reconstruction — the "phase gradient" in PGHI
+        # literally is the thing being integrated.
+        if (tgrad is None or fgrad is None) and sqtfr is not None:
+            from ._fbphasegradfrommag import (
+                comp_filterbankneighbors,
+                comp_filterbankphasegradfrommag,
+            )
+
+            N_arr = np.array(N, dtype=int)
+            a_arr_int = np.array(a_int, dtype=int)
+            NEIGH, posInfo = comp_filterbankneighbors(a_arr_int, M, N_arr, do_real=True)
+            abss_flat_tmp = np.concatenate([np.asarray(s, dtype=float).ravel() for s in abss_list])
+            sqtfr_arr = np.asarray(sqtfr, dtype=float).ravel()
+            if sqtfr_arr.size == 1:
+                sqtfr_arr = np.full(M, float(sqtfr_arr[0]))
+            tgrad_flat, fgrad_flat, _logs = comp_filterbankphasegradfrommag(
+                abss_flat_tmp,
+                N_arr,
+                a_arr_int,
+                M,
+                sqtfr_arr,
+                fc_norm,
+                NEIGH,
+                posInfo,
+            )
+            # Re-split into per-channel arrays matching abss_list shapes
+            tgrad = []
+            fgrad = []
+            offset = 0
+            for m in range(M):
+                nm = int(N_arr[m])
+                tgrad.append(tgrad_flat[offset : offset + nm].reshape(abss_list[m].shape))
+                fgrad.append(fgrad_flat[offset : offset + nm].reshape(abss_list[m].shape))
+                offset += nm
+        elif tgrad is None or fgrad is None:
+            # No sqtfr given — fall back to zero gradients (degenerate but
+            # preserves backward compatibility). PGHI quality will be poor.
+            if tgrad is None:
+                tgrad = [np.zeros_like(abss_list[m]) for m in range(M)]
+            if fgrad is None:
+                fgrad = [np.zeros_like(abss_list[m]) for m in range(M)]
+
+        c = abss_list  # For shape preservation later
+    else:
+        # Signal path: f is signal, g is filters, a is hop sizes
+        f = np.asarray(f)
+        M = len(g)
+        a_norm = normalise_a(a, M)
+        a_int = [int(a_norm[m, 0]) for m in range(M)]
+
+        if L is None:
+            L = filterbanklength(len(f), a_norm)
+
+        if tgrad is None or fgrad is None:
+            tgrad_c, fgrad_c, _s_c, c = filterbankphasegrad(f, g, a_norm, L)
+            if tgrad is None:
+                tgrad = tgrad_c
+            if fgrad is None:
+                fgrad = fgrad_c
+            abss_list = [np.abs(np.asarray(ci)) for ci in c]
+        else:
+            c = filterbank(f, g, a_norm, L=L)
+            abss_list = [np.abs(np.asarray(ci)) for ci in c]
+
+        # Normalised centre frequencies: fc_norm in [0, 2] where 2 = fs
+        if fc is not None:
+            # fc in Hz — extract fs from filter dict
+            fs = float(g[0].get("fs", L))
+            fc_norm = np.asarray(fc, dtype=float) / fs * 2.0
+        else:
+            # Estimate from filter foff: centre bin / L * 2
+            fc_norm = np.zeros(M)
+            for m in range(M):
+                gm = g[m]
+                if "H" in gm:
+                    H_vals = np.asarray(gm["H"](L))
+                    fo = int(gm["foff"](L)) if callable(gm["foff"]) else int(gm["foff"])
+                    n_h = len(H_vals)
+                    # Weighted centre frequency
+                    k_abs = (np.arange(fo, fo + n_h) % L).astype(float)
+                    weights = np.abs(H_vals) ** 2
+                    ws = weights.sum()
+                    if ws > 0:
+                        k_cent = k_abs.copy()
+                        k_cent[k_cent > L / 2] -= L
+                        fc_norm[m] = np.sum(k_cent * weights) / ws / L * 2
+                    else:
+                        fc_norm[m] = 0.0
+
+        # Flatten into a single vector for the phase integrator
+        N = [len(np.asarray(ci).ravel()) for ci in c]
+
+    # Common phase integration (both paths)
+    abss_flat = np.concatenate([np.asarray(s).ravel() for s in abss_list])
+    tgrad_flat = np.concatenate([np.asarray(tg).ravel() for tg in tgrad])
+    fgrad_flat = np.concatenate([np.asarray(fg).ravel() for fg in fgrad])
+
+    phase_flat = fixed_order_pghi(abss_flat, tgrad_flat, fgrad_flat, N, a_int, fc_norm, tol=tol)
+
+    # Assign random phases to below-threshold coefficients
+    sMax = float(np.max(abss_flat)) if abss_flat.size > 0 else 1.0
+    absthr = sMax * tol
+    low_idx = np.where(abss_flat <= absthr)[0]
+    phase_flat[low_idx] = np.random.uniform(0, 2 * np.pi, size=len(low_idx))
+
+    # Re-split into per-channel arrays
+    c_new = []
+    usedmask = []
+    offset = 0
+    for m in range(M):
+        nm = N[m]
+        phi = phase_flat[offset : offset + nm]
+        a_m = abss_list[m].ravel()
+        c_new.append((a_m * np.exp(1j * phi)).reshape(np.asarray(c[m]).shape))
+        usedmask.append(a_m > absthr)
+        offset += nm
+
+    return c_new  # type: ignore[return-value]
