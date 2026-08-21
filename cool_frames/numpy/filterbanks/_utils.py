@@ -64,7 +64,7 @@ def normalise_a(a, M: int) -> np.ndarray:
     >>> a_norm = normalise_a(32, 8)
     >>> a_norm.shape
     (8, 2)
-    >>> np.all(a_norm[:, 0] == 32)
+    >>> bool(np.all(a_norm[:, 0] == 32))
     True
     """
     a = np.asarray(a)

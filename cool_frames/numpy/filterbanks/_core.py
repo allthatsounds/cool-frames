@@ -253,8 +253,22 @@ def ifilterbank(
     else:
         out = np.fft.ifft(F, axis=0)  # type: ignore[assignment]
 
-    # Trim to Ls
-    if Ls is not None and Ls <= L:
+    # Trim to Ls.
+    #
+    # ``Ls > L`` used to fall through this branch and return L samples with no
+    # indication that the request had been ignored — the caller asked for a
+    # length and silently got a different one, which then propagated into
+    # whatever they did next (a shape mismatch several frames later, or worse,
+    # a broadcast that quietly worked).  There is nothing to synthesise beyond
+    # L: the coefficients only determine that many samples.  Say so.
+    if Ls is not None and Ls > L:
+        warnings.warn(
+            f"ifilterbank: Ls={Ls} exceeds the transform length L={L}; the "
+            f"coefficients determine only {L} samples, so {L} are returned. "
+            f"Zero-pad the result yourself if you need {Ls}.",
+            stacklevel=2,
+        )
+    elif Ls is not None:
         out = out[:Ls]
 
     # Squeeze mono
@@ -278,7 +292,8 @@ def ifilterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
+    dtype: np.dtype | type | None = None,
 ) -> tuple:
     """Iterative filterbank inversion via Conjugate Gradient.
 
@@ -308,6 +323,18 @@ def ifilterbankiter(
             by ``audfilters``).  Equivalent to MATLAB ``ifilterbank(...,
             'real')``.
 
+            Defaults to ``None``, meaning *derive it from the filters* via
+            :func:`filterbank_is_real`.  The old ``False`` default reconstructed
+            the package's flagship bank with 23 % error where the correct mode
+            reaches 4.5e-16 — the same defect as ``filterbankiter``'s default,
+            on the synthesis side.  Pass an explicit value to override.
+    dtype : output dtype for the reconstructed signal.  ``None`` (the default)
+            keeps the historical float64.  The NumPy backend is a float64
+            reference implementation throughout — ``filterbank`` itself widens
+            a float32 input to complex128 — so this is an opt-in narrowing for
+            callers who want it, not a change of default.  Genuine dtype
+            polymorphism lives in the torch backend.
+
     Returns
     -------
     (xr, relres, niter) : tuple
@@ -331,6 +358,9 @@ def ifilterbankiter(
     c0 = c[0]
     N0 = c0.shape[0] if c0.ndim > 1 else len(c0)
     L = int(round(N0 * afrac[0]))
+
+    if real is None:
+        real = filterbank_is_real(g, a_norm, L)
 
     if Ls is None:
         Ls = L
@@ -370,6 +400,8 @@ def ifilterbankiter(
             xr = np.real(x_full)
             if Ls is not None and Ls <= L:
                 xr = xr[:Ls]
+            if dtype is not None:
+                xr = np.asarray(xr).astype(dtype, copy=False)
             return xr, rr, 1
         x_warm = x_full  # diagonal dual is only approximate -> warm start
     except Exception:
@@ -382,7 +414,7 @@ def ifilterbankiter(
     b = np.asarray(ifilterbank(c, g, a, L, real=real), dtype=complex).ravel()
     norm_b = float(np.linalg.norm(b))
     if norm_b == 0.0:
-        return np.zeros(Ls), 0.0, 0
+        return np.zeros(Ls, dtype=dtype or float), 0.0, 0
 
     # Frame operator application:  A x = F*(F x)
     def _apply_frame_op(x_vec):
@@ -478,6 +510,8 @@ def ifilterbankiter(
     relres_final = _analysis_relres(x_real.astype(complex))
 
     xr = x_real[:Ls] if (Ls is not None and Ls <= L) else x_real
+    if dtype is not None:
+        xr = xr.astype(dtype, copy=False)
 
     return xr, relres_final, niter
 
@@ -495,7 +529,7 @@ def filterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
 ) -> tuple:
     """Iterative filterbank analysis via Conjugate Gradient.
 
@@ -520,6 +554,18 @@ def filterbankiter(
     alg   : ``'cg'`` or ``'pcg'``
     real  : if True, use real-filterbank synthesis (``2*real(ifft(...))``)
             for single-sided filterbanks (e.g. from ``audfilters``).
+
+            Defaults to ``None``, meaning *derive it from the filters* via
+            :func:`filterbank_is_real`.  It used to default to ``False``, which
+            made this the one member of the family whose default disagreed with
+            its siblings — ``ifilterbank``, ``filterbankdual`` and
+            ``filterbanktight`` all default to ``real=True`` — and, worse, the
+            documented default diverged on the package's flagship bank: on
+            ``audfilters(4000, 512)`` it ran the full 100 iterations to a
+            relative residual of 58 and a round-trip error of 6.2e+06, where
+            the correct mode converges in 9 iterations. Deriving it is better
+            than flipping the default, which would only move the breakage onto
+            two-sided banks. Pass an explicit value to override.
 
     Returns
     -------
@@ -546,6 +592,9 @@ def filterbankiter(
 
     if L is None:
         L = filterbanklength(Ls, a_norm)
+
+    if real is None:
+        real = filterbank_is_real(g, a_norm, L)
 
     f_pad = postpad(f, L, axis=0).ravel().astype(complex)
     norm_f = float(np.linalg.norm(f_pad))

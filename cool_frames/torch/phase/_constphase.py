@@ -54,8 +54,8 @@ def filterbankconstphase(
     >>> from cool_frames.torch.phase import filterbankconstphase
     >>> from cool_frames.torch.filters import audfilters
     >>> x = torch.randn(8000)
-    >>> g = audfilters(16000)
-    >>> c, mask = filterbankconstphase(x, g, a=64)
+    >>> g, a, fc, L, _ = audfilters(16000, 8000)
+    >>> c, mask = filterbankconstphase(x, g, a, L=L)
     >>> len(c) == len(g)
     True
     >>> c[0].dtype

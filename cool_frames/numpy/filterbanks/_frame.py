@@ -24,7 +24,8 @@ from ._utils import normalise_a
 # filterbankfreqz – evaluate frequency responses
 # ---------------------------------------------------------------------------
 
-def filterbankfreqz(g: list[dict], a=None, L: int | None = None) -> np.ndarray:
+def filterbankfreqz(g: list[dict], a=None, L: int | None = None,
+                    dtype: np.dtype | type = complex) -> np.ndarray:
     """Evaluate the frequency responses of all filters at *L* DFT bins.
 
     Parameters
@@ -52,12 +53,12 @@ def filterbankfreqz(g: list[dict], a=None, L: int | None = None) -> np.ndarray:
     >>> g, a, fc, L, _info = audfilters(8000, 8000)
     >>> H = filterbankfreqz(g, a, L)
     >>> H.shape
-    (8000, 34)
+    (10368, 29)
     """
     if L is None:
         raise TypeError("filterbankfreqz: L is required")
     M = len(g)
-    H = np.zeros((L, M), dtype=complex)
+    H = np.zeros((L, M), dtype=dtype)
     for m, gm in enumerate(g):
         H_full, _ = filter_freqresp(gm, L)
         H[:, m]   = H_full
@@ -69,7 +70,8 @@ def filterbankfreqz(g: list[dict], a=None, L: int | None = None) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def filterbankresponse(g: list[dict], a, L: int,
-                       real: bool = False) -> np.ndarray:
+                       real: bool = False,
+                       dtype: np.dtype | type = float) -> np.ndarray:
     """Compute the frame response (diagonal of the frame operator).
 
     ``resp[k] = sum_m |H_m(k)|^2 / a_m``
@@ -93,11 +95,17 @@ def filterbankresponse(g: list[dict], a, L: int,
     >>> from cool_frames.numpy.filters import audfilters
     >>> from cool_frames.numpy.filterbanks import filterbankresponse
     >>> g, a, fc, L, _info = audfilters(8000, 8000)
-    >>> resp = filterbankresponse(g, a, L)
+    >>> resp = filterbankresponse(g, a, L, real=True)
     >>> resp.shape
-    (8000,)
-    >>> np.all(resp > 0)
+    (10368,)
+    >>> bool(np.all(resp > 0))   # covered everywhere, so the frame is invertible
     True
+
+    ``real=True`` is what makes that last claim true, and this example used to
+    omit it: with the default ``real=False`` the negative-frequency half of a
+    single-sided bank is simply empty, so 4376 of the 10368 bins are exactly
+    zero and ``np.all(resp > 0)`` is ``False``.  The response is only
+    everywhere-positive once the one-sided spectrum is folded.
     """
     M      = len(g)
     a_norm = normalise_a(a, M)
@@ -115,9 +123,9 @@ def filterbankresponse(g: list[dict], a, L: int,
         resp_inv = np.empty_like(resp)
         resp_inv[0] = resp[0]
         resp_inv[1:] = resp[1:][::-1]
-        return (resp + resp_inv).real  # type: ignore[no-any-return]
+        return np.asarray((resp + resp_inv).real, dtype=dtype)
 
-    return resp.real  # type: ignore[no-any-return]
+    return np.asarray(resp.real, dtype=dtype)
 
 
 # ---------------------------------------------------------------------------

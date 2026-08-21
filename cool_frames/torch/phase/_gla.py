@@ -72,10 +72,11 @@ def gla(
     >>> import torch
     >>> from cool_frames.torch.phase import gla
     >>> from cool_frames.torch.filters import audfilters
-    >>> # Create target magnitudes (e.g., from a spectrogram)
-    >>> s = [torch.abs(torch.randn(64, dtype=torch.complex64)) for _ in range(28)]
-    >>> g = audfilters(16000)
-    >>> c, f, relres, niter = gla(s, g, a=64, maxit=50)
+    >>> from cool_frames.torch.filterbanks import filterbank
+    >>> g, a, fc, L, _ = audfilters(16000, 8000)
+    >>> # Target magnitudes, with each channel the length the bank produces
+    >>> s = [cm.abs() for cm in filterbank(torch.randn(8000), g, a, L=L)]
+    >>> c, f, relres, niter = gla(s, g, a, L=L, Ls=8000, maxit=5)
     >>> f.shape[0] > 0
     True
     >>> niter <= 50

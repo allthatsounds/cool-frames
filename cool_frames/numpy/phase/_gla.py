@@ -79,7 +79,9 @@ def gla(
     >>> from cool_frames.numpy.phase import gla
     >>> # Generate some target magnitudes
     >>> g, a, fc, L, _info = audfilters(8000, 8000)
-    >>> s_list = [np.random.rand(512) for _ in g]
+    >>> from cool_frames.numpy.filterbanks import filterbank
+    >>> x = np.random.default_rng(0).standard_normal(8000)
+    >>> s_list = [np.abs(cm) for cm in filterbank(x, g, a, L=L)]
     >>> c, f, relres, niter = gla(s_list, g, a, L=L, maxit=10)
     >>> len(c) == len(g)  # same number of channels
     True

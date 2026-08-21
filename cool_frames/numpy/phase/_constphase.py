@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import warnings
 
 import numpy as np
 
@@ -282,6 +283,7 @@ def filterbankconstphase(
     fgrad: list[np.ndarray] | None = None,
     sqtfr: np.ndarray | None = None,
     fs: float | None = None,
+    rng: np.random.Generator | int | None = None,
 ) -> tuple:
     """Reconstruct phase for a filterbank using fixed-order PGHI.
 
@@ -315,8 +317,17 @@ def filterbankconstphase(
             the magnitude path for the phase gradients to be estimated from
             the magnitudes; without it the gradients fall back to zero and
             PGHI degenerates to zero-phase reconstruction.
-    fs    : sampling rate in Hz.  Required on the magnitude path when ``fc``
-            is given in Hz; on the signal path it is read from the filters.
+    fs    : sampling rate in Hz.  On the signal path it is read from the
+            filters.  On the magnitude path, supplying it is what makes ``fc``
+            unambiguous: without it, an ``fc`` that looks like Hz is normalised
+            by assuming the top channel sits at Nyquist, which is exact for
+            every single-sided designer here but wrong by about a factor of two
+            for a two-sided bank.  That inference warns.
+    rng   : seed or ``numpy.random.Generator`` for the random phase assigned to
+            below-threshold coefficients.  Pass one for reproducible output;
+            the default draws from a fresh local generator, which varies
+            between calls but — unlike the global ``np.random`` this used to
+            use — leaves the caller's random stream alone.
 
     Returns
     -------
@@ -365,29 +376,50 @@ def filterbankconstphase(
         # Build fc_norm from fc_param (needed before gradient computation).
         #
         # The integrator and the gradient estimator both want centre
-        # frequencies normalised to [0, 2] with 2 == fs.  The previous code
-        # guessed the sampling rate as ``max(fc) * 2`` whenever it saw a value
-        # above 2.0, which is wrong for every filterbank whose top channel is
-        # not centred exactly at fs/4, and which silently mis-scaled the
-        # estimated phase gradient.  Require the caller to be explicit instead.
+        # frequencies normalised to [0, 2] with 2 == fs.  When ``fs`` is given
+        # that is a plain division and there is nothing to guess.
+        #
+        # When it is not, the sampling rate is genuinely underdetermined: `fc`
+        # alone cannot distinguish a single-sided bank spanning [0, fs/2] from
+        # a two-sided one spanning [0, fs).  The old code resolved this by
+        # assuming the top channel sits at Nyquist, silently.  That assumption
+        # turns out to be *exact* for every single-sided designer the package
+        # ships — `audfilters`, `cqtfilters` (which appends a Nyquist channel
+        # whatever `fmax` is set to) and `gabfilters(real=True)` all put their
+        # last channel at fs/2 — and wrong by a factor of about two for a
+        # two-sided bank, whose channels run past Nyquist.
+        #
+        # So the inference is kept, because it is right for the overwhelming
+        # majority of callers and removing it would break them for no gain.
+        # What is not kept is the silence: the assumption and the case it fails
+        # in are now stated at the point of use, so a two-sided caller finds out
+        # from a warning rather than from a bad reconstruction.
         if fc_param is None:
             fc_norm = np.zeros(M)
         else:
             fc_norm = np.asarray(fc_param, dtype=float).ravel()
-            if fs is not None:
-                fc_norm = fc_norm / float(fs) * 2.0
-            elif np.max(np.abs(fc_norm)) > 2.0:
-                raise ValueError(
-                    "filterbankconstphase: centre frequencies look like Hz "
-                    f"(max {np.max(fc_norm):g} > 2) but no 'fs' was given. "
-                    "Pass fs=<sampling rate>, or normalise fc yourself to "
-                    "[0, 2] where 2 corresponds to the sampling rate."
-                )
             if fc_norm.size != M:
                 raise ValueError(
                     f"filterbankconstphase: fc has {fc_norm.size} entries but "
                     f"there are {M} channels."
                 )
+            if fs is not None:
+                fc_norm = fc_norm / float(fs) * 2.0
+            elif np.max(np.abs(fc_norm)) > 2.0:
+                fc_max = float(np.max(np.abs(fc_norm)))
+                warnings.warn(
+                    "filterbankconstphase: centre frequencies look like Hz "
+                    f"(max {fc_max:g} > 2) but no 'fs' was given, so the "
+                    f"sampling rate is being inferred as {2 * fc_max:g} Hz by "
+                    "assuming the top channel is centred at Nyquist. That is "
+                    "exact for audfilters, cqtfilters and gabfilters(real=True), "
+                    "and wrong by about a factor of two for a two-sided bank "
+                    "whose channels run past Nyquist. Pass fs=<sampling rate> "
+                    "to remove the ambiguity, or normalise fc yourself to "
+                    "[0, 2] where 2 corresponds to fs.",
+                    stacklevel=2,
+                )
+                fc_norm = fc_norm / fc_max
 
         # When tgrad/fgrad not provided for magnitude-only input, compute them
         # from the magnitudes via comp_filterbankphasegradfrommag. Falling
@@ -467,7 +499,15 @@ def filterbankconstphase(
             for m in range(M):
                 gm = g[m]
                 if "H" in gm:
-                    H_vals = np.asarray(gm["H"](L))
+                    # ``H`` may be a callable(L) or an already-materialised
+                    # array — both are valid filter descriptors, and the torch
+                    # wrappers and ``prepare_filters`` produce the latter.
+                    # Assuming callable made this branch raise
+                    # ``TypeError: 'numpy.ndarray' object is not callable`` for
+                    # every such bank, i.e. for the whole torch backend
+                    # whenever ``fc`` was not passed explicitly.
+                    H_raw = gm["H"]
+                    H_vals = np.asarray(H_raw(L) if callable(H_raw) else H_raw)
                     fo = int(gm["foff"](L)) if callable(gm["foff"]) else int(gm["foff"])
                     n_h = len(H_vals)
                     # Weighted centre frequency
@@ -491,22 +531,34 @@ def filterbankconstphase(
 
     phase_flat = fixed_order_pghi(abss_flat, tgrad_flat, fgrad_flat, N, a_int, fc_norm, tol=tol)
 
-    # Assign random phases to below-threshold coefficients
+    # Assign random phases to below-threshold coefficients.
+    #
+    # Randomising here is correct and deliberate: the phase of a coefficient at
+    # the noise floor carries no information, and integrating through it would
+    # propagate that noise into its neighbours.  What was wrong is *which*
+    # generator supplied it.  ``np.random.uniform`` draws from NumPy's global
+    # state, which made this function (a) irreproducible — four identical calls
+    # returned four different answers — and (b) a source of action at a
+    # distance, silently advancing the caller's global random stream as a side
+    # effect of doing a transform.
+    #
+    # A local Generator fixes both.  The default still varies between calls, so
+    # nobody starts depending on a particular arbitrary phase, but it no longer
+    # touches global state; pass ``rng=<int or Generator>`` for reproducibility.
     sMax = float(np.max(abss_flat)) if abss_flat.size > 0 else 1.0
     absthr = sMax * tol
     low_idx = np.where(abss_flat <= absthr)[0]
-    phase_flat[low_idx] = np.random.uniform(0, 2 * np.pi, size=len(low_idx))
+    generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
+    phase_flat[low_idx] = generator.uniform(0, 2 * np.pi, size=len(low_idx))
 
     # Re-split into per-channel arrays
     c_new = []
-    usedmask = []
     offset = 0
     for m in range(M):
         nm = N[m]
         phi = phase_flat[offset : offset + nm]
         a_m = abss_list[m].ravel()
         c_new.append((a_m * np.exp(1j * phi)).reshape(np.asarray(c[m]).shape))
-        usedmask.append(a_m > absthr)
         offset += nm
 
     return c_new  # type: ignore[return-value]

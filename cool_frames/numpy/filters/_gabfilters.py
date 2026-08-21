@@ -40,7 +40,7 @@ def _dgtlength(Ls: int, a: int, M: int) -> int:
 # _gabwin – resolve window specification to a numeric vector
 # ---------------------------------------------------------------------------
 
-def _gabwin(g, a: int, M: int, L: int, norm: str = "energy") -> np.ndarray:
+def _gabwin(g, M: int, norm: str = "energy") -> np.ndarray:
     """Resolve a window specification to a numeric vector of length M.
 
     Handles:
@@ -286,7 +286,7 @@ def gabfilters(fs: float, Ls: int, *,
     L = _dgtlength(Ls, a, M)
 
     # Resolve window to a numeric vector (length M, energy-normalised)
-    g0 = _gabwin(g, a, M, L, norm=norm)
+    g0 = _gabwin(g, M, norm=norm)
 
     # Centre frequencies: 2*k/M for k = 0, …, M-1  (normalised to [0,2))
     fc_full = 2.0 * np.arange(M) / M

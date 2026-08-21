@@ -72,10 +72,18 @@ def plotfft(coef, fs=None, dynrange=None, ax=None, *, real=False, L=None):
             else np.fft.rfftfreq(L)
         xlabel = "Frequency (Hz)" if fs is not None else "Normalized Frequency"
     else:
+        # Two-sided: ``fftfreq`` returns [0 .. +Nyquist) then [-Nyquist .. 0),
+        # so plotting the coefficients against it in DFT order drew the line
+        # left-to-right to Nyquist and then jumped back to -Nyquist, producing
+        # a horizontal streak across the middle of every two-sided plot.  Shift
+        # both the axis and the data into ascending frequency order.
         N = len(coef)
-        freq = np.fft.fftfreq(N, d=1.0 / float(fs)) if fs is not None \
+        freq = np.fft.fftshift(
+            np.fft.fftfreq(N, d=1.0 / float(fs)) if fs is not None
             else np.fft.fftfreq(N)
-        xlabel = "Frequency (Hz)" if fs is not None else "Bin"
+        )
+        mag = np.fft.fftshift(np.asarray(mag))
+        xlabel = "Frequency (Hz)" if fs is not None else "Normalized Frequency"
 
     if ax is None:
         ax = plt.gca()

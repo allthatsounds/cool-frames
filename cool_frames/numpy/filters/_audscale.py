@@ -107,10 +107,10 @@ def freqtoaud(f, scale: str = "erb"):
     --------
     >>> import numpy as np
     >>> from cool_frames.numpy.filters import freqtoaud
-    >>> freqtoaud(1000.0)  # 1 kHz in ERB units
-    9.264...
-    >>> freqtoaud([100, 1000, 10000], scale='erb')
-    array([ 1.26..., 9.26..., 26.9...])
+    >>> round(float(freqtoaud(1000.0)), 3)  # 1 kHz on the ERB-rate scale
+    15.572
+    >>> np.round(freqtoaud([100, 1000, 10000], scale='erb'), 3)
+    array([ 3.359, 15.572, 35.205])
     """
     scale = _check_scale(scale)
     f = np.asarray(f, dtype=float)
@@ -179,10 +179,10 @@ def audtofreq(aud, scale: str = "erb"):
     --------
     >>> import numpy as np
     >>> from cool_frames.numpy.filters import audtofreq
-    >>> audtofreq(9.264)  # ~1 kHz in ERB units back to Hz
-    999.9...
-    >>> audtofreq([1, 5, 10], scale='mel')
-    array([  65.4...,  269.8...,  658.4...])
+    >>> round(float(audtofreq(15.572)), 1)  # back to ~1 kHz
+    1000.0
+    >>> np.round(audtofreq([1, 5, 10], scale='mel'), 3)
+    array([0.621, 3.113, 6.239])
     """
     scale = _check_scale(scale)
     aud = np.asarray(aud, dtype=float)
@@ -244,8 +244,8 @@ def freqtoerb(f):
     Examples
     --------
     >>> from cool_frames.numpy.filters import freqtoerb
-    >>> freqtoerb(1000.0)
-    9.264...
+    >>> round(float(freqtoerb(1000.0)), 3)
+    15.572
     """
     return freqtoaud(f, "erb")
 
@@ -268,8 +268,8 @@ def erbtofreq(erb):
     Examples
     --------
     >>> from cool_frames.numpy.filters import erbtofreq
-    >>> erbtofreq(9.264)
-    999.9...
+    >>> round(float(erbtofreq(15.572)), 1)
+    1000.0
     """
     return audtofreq(erb, "erb")
 
@@ -304,7 +304,7 @@ def audspace(fmin: float, fmax: float, n: int, scale: str = "erb") -> np.ndarray
     >>> freqs = audspace(50, 16000, 128)
     >>> len(freqs)
     128
-    >>> freqs[0], freqs[-1]
+    >>> round(float(freqs[0]), 6), round(float(freqs[-1]), 6)
     (50.0, 16000.0)
     """
     aud_min = freqtoaud(fmin, scale)
@@ -378,10 +378,10 @@ def audfiltbw(fc, scale: str = "erb") -> np.ndarray | float:
     Examples
     --------
     >>> from cool_frames.numpy.filters import audfiltbw
-    >>> audfiltbw(1000.0)  # ERB bandwidth at 1 kHz
-    128.4...
-    >>> audfiltbw([100, 1000, 10000], scale='erb')
-    array([ 32.4..., 128.4..., 832.2...])
+    >>> round(float(audfiltbw(1000.0)), 3)  # ERB bandwidth at 1 kHz
+    132.633
+    >>> np.round(audfiltbw([100, 1000, 10000], scale='erb'), 3)
+    array([  35.493,  132.633, 1104.031])
     """
     scale = _check_scale(scale)
     fc = np.asarray(fc, dtype=float)
@@ -479,7 +479,7 @@ def gammatonefir(fc, fs, n=None, *, betamul=1.0183,
     >>> len(filters)
     2
     >>> filters[0]['h'].shape
-    (2048,)
+    (1120,)
     """
     fc = np.atleast_1d(np.asarray(fc, dtype=float))
     if np.any(fc < 0) or np.any(fc > fs / 2):

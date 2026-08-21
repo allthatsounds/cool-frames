@@ -100,7 +100,7 @@ def filterbankresponse(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> resp = filterbankresponse(g, a, L)
     >>> resp.shape
-    torch.Size([8000])
+    torch.Size([10368])
     """
     g_np = _torch_filters_to_numpy(g, L)
     resp_np = _np_filterbankresponse(g_np, a, L, real=real)
@@ -146,7 +146,7 @@ def filterbankfreqz(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> H = filterbankfreqz(g, a, L)
     >>> H.shape
-    torch.Size([32, 8000])
+    torch.Size([10368, 35])
     """
     g_np = _torch_filters_to_numpy(g, L)
     H_np = _np_filterbankfreqz(g_np, a, L)
@@ -179,7 +179,7 @@ def filterbankdual(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> g_dual = filterbankdual(g, a, L)
     >>> len(g_dual)
-    32
+    35
     """
     return _frame_solver(_np_filterbankdual, g, a, L, real=real, device=device, dtype=dtype)
 
@@ -205,7 +205,7 @@ def filterbanktight(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> g_tight = filterbanktight(g, a, L)
     >>> len(g_tight)
-    32
+    35
     """
     return _frame_solver(_np_filterbanktight, g, a, L, real=real, device=device, dtype=dtype)
 
@@ -239,7 +239,7 @@ def filterbankscale(
     >>> scales = [0.5] * len(g)
     >>> g_scaled = filterbankscale(g, scales, L=L)
     >>> len(g_scaled)
-    32
+    35
     """
     if device is None:
         device = _infer_device(g)
@@ -287,8 +287,9 @@ def ifilterbankiter(
     --------
     >>> from cool_frames.torch.filters import audfilters
     >>> g, a, _, L, _ = audfilters(16000, 8000)
-    >>> c = [torch.randn(32) for _ in range(len(g))]
-    >>> xr, relres, niter = ifilterbankiter(c, g, a, Ls=8000)  # doctest: +SKIP
+    >>> from cool_frames.torch.filterbanks import filterbank
+    >>> c = filterbank(torch.randn(8000), g, a, L=L)
+    >>> xr, relres, niter = ifilterbankiter(c, g, a, Ls=8000)
     >>> xr.shape
     torch.Size([8000])
     """
@@ -322,7 +323,7 @@ def filterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
 ) -> tuple[list[torch.Tensor], float, int]:
     """Iterative filterbank analysis via Conjugate Gradient.
 
@@ -342,7 +343,13 @@ def filterbankiter(
     tol   : relative residual tolerance
     maxit : maximum CG iterations
     alg   : ``'cg'`` or ``'pcg'``
-    real  : if True, use real-filterbank synthesis
+    real  : if True, use real-filterbank synthesis.  Defaults to ``None``,
+            meaning derive it from the filters — see the NumPy
+            ``filterbankiter`` for why: the old ``False`` default diverged on
+            the package's flagship single-sided bank (100 iterations to a
+            relative residual of 58) and disagreed with every sibling in the
+            family.  Kept in parity with the NumPy backend deliberately; a
+            default that differs between backends is its own bug.
 
     Returns
     -------
@@ -364,6 +371,11 @@ def filterbankiter(
 
     if L is None:
         L = _filterbanklength(Ls, a_norm)
+
+    if real is None:
+        from ...numpy.filterbanks._core import filterbank_is_real as _is_real
+
+        real = bool(_is_real(g, a_norm, int(L)))
 
     # Zero-pad
     if Ls < L:

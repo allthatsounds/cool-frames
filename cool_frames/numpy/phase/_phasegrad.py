@@ -16,6 +16,7 @@ import numpy as np
 from ..filterbanks._core import filterbank
 from ..filterbanks._utils import normalise_a
 from ..filters._design import filterbanklength
+from ..filters._hval import eval_H as _eval_H
 
 # ---------------------------------------------------------------------------
 # comp_phasegradfilters – build derivative filters ch and cd
@@ -88,7 +89,7 @@ def comp_phasegradfilters(g: list[dict], a, L: int) -> tuple[list[dict], list[di
                 Multiplies the filter response by centered DFT indices, implementing
                 the time-domain derivative in the frequency domain.
                 """
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
                 # Centered DFT indices (fftindex with Nyquist=0)
@@ -108,7 +109,7 @@ def comp_phasegradfilters(g: list[dict], a, L: int) -> tuple[list[dict], list[di
                 Computes the periodic time-domain derivative of the compact filter
                 using FFT roundtrip, scaling by L/n_h for proper normalization.
                 """
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 # fftindex(Lg, 0): centered indices of length n_h, Nyquist=0
                 n_idx = np.arange(n_h, dtype=float)

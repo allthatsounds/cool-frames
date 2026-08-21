@@ -301,8 +301,8 @@ def recommend_filterbank(
     >>> rec = recommend_filterbank(x, fs)
     >>> print(rec.designer)
     cqtfilters
-    >>> print(rec.rationale)
-    ...
+    >>> print(rec.rationale)  # doctest: +ELLIPSIS
+    Strongly harmonic signal...
 
     Notes
     -----

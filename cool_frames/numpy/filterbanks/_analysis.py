@@ -26,19 +26,22 @@ Public API
 
 Examples
 --------
->>> from cool_frames.filterbanks import audfilters, filterbank
->>> from cool_frames.filters import filterbanklength
->>> from cool_frames.numpy.layer2._analysis import (
-...     analyze_coefficients, analyze_filterbank, print_report)
+>>> import numpy as np
+>>> from cool_frames.numpy.filterbanks import (
+...     analyze_coefficients, analyze_filterbank, filterbank)
+>>> from cool_frames.numpy.filters import audfilters, filterbanklength
 >>> g, a, fc, _, _info = audfilters(8000, 512)
 >>> L = filterbanklength(512, a)
->>> x = np.random.randn(L)
+>>> x = np.random.default_rng(0).standard_normal(L)
 >>> c = filterbank(x, g, a)
 >>> report = analyze_coefficients(c, a)
->>> print_report(report)
->>> # Or in one shot:
->>> report = analyze_filterbank(g, a, L)
->>> print_report(report)
+>>> sorted(report)[:2]
+['coherence', 'dynamics']
+>>> report = analyze_filterbank(g, a, L)   # or in one shot
+>>> report['coefficients']['energy']['total'] > 0
+True
+
+``print_report(report)`` pretty-prints any of these to stdout.
 """
 from __future__ import annotations
 
@@ -365,6 +368,17 @@ def analyze_filterbank(
         eig_info = analyze_frame_operator(g, a, L, real=real)
 
     # ------ coefficient analysis on a deterministic test signal ------
+    #
+    # NOTE: the 8000 here is *not* a sampling rate and this is not a bug, though
+    # it reads like one and was once filed as one.  ``t`` is a sample index, so
+    # ``440 * t / 8000`` is a digital frequency of 0.055 cycles/sample — the
+    # tones sit at 0.110, 0.250 and 0.625 of Nyquist whatever the bank's real
+    # sampling rate is, and none of them can alias.  The probe is deliberately
+    # scale-invariant: it exercises the same relative part of the spectrum for a
+    # 4 kHz bank as for a 48 kHz one.
+    #
+    # Rewriting these as Hz against the filters' own ``fs`` is numerically
+    # identical (checked to 5e-14) and buys nothing, so don't.
     t = np.arange(L, dtype=float)
     x_test = (np.sin(2 * np.pi * 440 * t / 8000)
               + 0.5 * np.sin(2 * np.pi * 1000 * t / 8000)
@@ -726,6 +740,45 @@ def pgrpdelay(g: dict, L: int) -> np.ndarray:
     return ggd  # type: ignore[no-any-return]
 
 
+def _negative_half_is_redundant(H: np.ndarray) -> bool:
+    """Is there anything on the negative-frequency half worth plotting?
+
+    Two quite different filters answer "no", and ``magresp`` has to catch both:
+
+    * a **real-valued** filter (a real FIR, or a real window's transfer
+      function), whose negative half is the conjugate mirror of the positive
+      one — redundant;
+    * a **single-sided band-limited** filter, as the auditory and constant-Q
+      designers produce, whose negative half is simply empty.
+
+    A genuinely two-sided complex filter answers "yes" to neither and must be
+    plotted over the full circle.
+
+    ``np.isrealobj`` does not settle the first case: ``np.fft.fft`` of a real
+    signal is complex-typed, so a real FIR filter is not a real *object*.  Test
+    conjugate symmetry instead.
+    """
+    H = np.asarray(H).ravel()
+    n = H.size
+    if n < 2:
+        return True
+    if np.isrealobj(H):
+        return True
+
+    # Real-valued in time <=> conjugate-symmetric in frequency.
+    mirrored = np.concatenate([[H[0]], H[:0:-1]])
+    scale = float(np.max(np.abs(H))) or 1.0
+    if np.max(np.abs(H - np.conj(mirrored))) <= 1e-8 * scale:
+        return True
+
+    # Otherwise: is the negative half empty?  Same 0.3 threshold, and the same
+    # factor-of-five separation, as `filterbank_is_real` uses for a whole bank.
+    half = n // 2
+    pos_e = float(np.sum(np.abs(H[1:half]) ** 2))
+    neg_e = float(np.sum(np.abs(H[half + 1:]) ** 2))
+    return neg_e <= 0.3 * max(pos_e, 1e-30)
+
+
 def magresp(g, L: int | None = None, *,
             fs: float | None = None,
             norm: str = "null",
@@ -782,9 +835,22 @@ def magresp(g, L: int | None = None, *,
     if norm.lower() not in ("null", "none", ""):
         H, _ = setnorm(H, norm)
 
-    # Decide real-only
+    # Decide real-only.
+    #
+    # This used to key off the descriptor's ``realonly`` flag, which is the one
+    # place in the package that flag is read — and the designers do not agree
+    # about it.  ``cqtfilters`` sets ``realonly=1`` on 76 of its 78 channels
+    # while ``audfilters`` sets 0 on all of its, although both produce
+    # single-sided banks, so the same plotting call returned a one-sided axis
+    # for a CQT filter and a two-sided one for an auditory filter.
+    #
+    # Ask the filter instead of the label: a single-sided filter has
+    # negligible energy on the negative-frequency half.  This is the per-filter
+    # form of the test ``filterbank_is_real`` applies to a whole bank, and it
+    # agrees with it, so the plot and the transform now answer the same
+    # question the same way.
     if posfreq is None:
-        posfreq = np.isrealobj(H) or (is_dict and not g.get("realonly", 0) == 0)
+        posfreq = _negative_half_is_redundant(H)
 
     if posfreq:
         mag = np.abs(H[:L // 2 + 1])
@@ -794,10 +860,17 @@ def magresp(g, L: int | None = None, *,
             freq = np.linspace(0, fs / 2, len(mag))
     else:
         mag = np.abs(np.fft.fftshift(H))
+        # The data is fftshift-ed, so the axis must be the fftshift-ed bin
+        # frequencies — not a linspace.  ``linspace(-1, 1, L)`` steps by
+        # 2/(L-1) where the bins step by 2/L, and it ends at +1, which is not
+        # a bin: the true two-sided range is [-1, 1 - 2/L].  The result was an
+        # axis stretched by one bin across its whole width, so every plotted
+        # feature sat slightly off its real frequency and the error grew
+        # towards the edges.
         if fs is None:
-            freq = np.linspace(-1, 1, L)
+            freq = np.fft.fftshift(np.fft.fftfreq(L)) * 2.0
         else:
-            freq = np.linspace(-fs / 2, fs / 2, L)
+            freq = np.fft.fftshift(np.fft.fftfreq(L, d=1.0 / float(fs)))
 
     mag_db = 20.0 * np.log10(mag + np.finfo(float).tiny)
 

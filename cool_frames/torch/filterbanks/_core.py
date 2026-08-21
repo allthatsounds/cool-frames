@@ -185,12 +185,10 @@ def filterbank(
     >>> from cool_frames.torch.filters import audfilters
     >>> # Create a real signal
     >>> x = torch.randn(8000)
-    >>> # Load auditory filters at 16 kHz (M=28 channels)
-    >>> g = audfilters(16000)
-    >>> # Analyze with hop size 64
-    >>> c = filterbank(x, g, a=64)
+    >>> g, a, fc, L, _info = audfilters(16000, 8000)
+    >>> c = filterbank(x, g, a, L=L)   # the bank's own hop sizes
     >>> len(c)
-    28
+    35
     >>> c[0].shape[0] > 0
     True
     """

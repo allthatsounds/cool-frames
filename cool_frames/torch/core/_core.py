@@ -267,7 +267,7 @@ def comp_filterbank_fftbl(
     >>> foff = np.array([0, 64, 128])
     >>> a = np.array([16, 16, 16])
     >>> realonly = np.array([0, 0, 0])
-    >>> c = comp_filterbank_fftbl(F, G, foff, a, realonly)  # doctest: +SKIP
+    >>> c = comp_filterbank_fftbl(F, G, foff, a, realonly)
     >>> len(c)
     3
     """
@@ -362,7 +362,7 @@ def comp_ifilterbank_fftbl(
     >>> foff = np.array([0, 64, 128])
     >>> a = np.array([16, 16, 16])
     >>> realonly = np.array([0, 0, 0])
-    >>> F = comp_ifilterbank_fftbl(c, G, foff, a, realonly, L=512)  # doctest: +SKIP
+    >>> F = comp_ifilterbank_fftbl(c, G, foff, a, realonly, L=512)
     >>> F.shape
     torch.Size([512])
     """

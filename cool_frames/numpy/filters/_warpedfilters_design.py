@@ -42,89 +42,6 @@ def _comp_filterbank_a(a, M: int) -> np.ndarray:
 # Nyquist and zero-frequency filters
 # ---------------------------------------------------------------------------
 
-def _comp_nyquistfilt(winname, fs, chan_max, freqtoscale, scaletofreq,
-                      bwmul, bins, Ls):
-    """High-pass filter for warped filterbanks.
-
-    Port of comp_nyquistfilt.m.
-    """
-    kk = chan_max
-    while scaletofreq(kk - bwmul) < fs / 2:
-        kk += 1 / bins
-    Maxfilt = kk
-
-    Minpos = math.ceil(Ls / fs * scaletofreq(chan_max + 1 / bins - bwmul))
-    sample_indices = np.arange(Minpos - 1, math.floor(Ls / 2) + 1)
-    samples = freqtoscale(sample_indices * fs / Ls)
-
-    n_filts = round(bins * (Maxfilt - chan_max))
-    n_samples = len(samples)
-    FILTS = np.zeros((n_filts, n_samples))
-    for k in range(n_filts):
-        FILTS[k, :] = firwin_eval(winname, (samples - (chan_max + (k + 1) / bins)) / (2 * bwmul))
-
-    H = np.zeros(2 * n_samples - 1)
-    H[:n_samples] = np.sqrt(np.sum(np.abs(FILTS)**2, axis=0))
-    H[n_samples:] = H[n_samples - 2::-1]
-    return H
-
-
-def comp_zerofilt(winname, fs, chan_min, freqtoscale, scaletofreq,
-                  bwmul, bins, Ls):
-    """Low-pass (DC) edge filter for warped filterbanks.
-
-    Constructs the low-frequency complement filter that covers the
-    frequency range below the lowest analysis channel.
-
-    Port of MATLAB ``comp_zerofilt.m``.
-
-    Parameters
-    ----------
-    winname : str
-        Window name (passed to ``firwin_eval``).
-    fs : float
-        Sampling frequency.
-    chan_min : float
-        Scale-domain position of the lowest analysis channel.
-    freqtoscale : callable
-        Frequency-to-scale mapping (e.g., ``freqtoerb``).
-    scaletofreq : callable
-        Scale-to-frequency mapping (e.g., ``erbtofreq``).
-    bwmul : float
-        Bandwidth multiplier.
-    bins : int
-        Number of bins per unit scale.
-    Ls : int
-        Signal length.
-
-    Returns
-    -------
-    H : ndarray
-        Frequency response of the low-pass edge filter.
-    """
-    kk = chan_min
-    while scaletofreq(kk + bwmul) > fs / Ls:
-        kk -= 1 / bins
-    Minfilt = kk
-
-    Maxpos = math.floor(Ls / fs * scaletofreq(chan_min - 1 / bins + bwmul))
-    sample_indices = np.arange(0, Maxpos + 1)
-    samples = freqtoscale(sample_indices * fs / Ls)
-    if np.isinf(samples[0]):
-        samples[0] = samples[1]
-
-    n_filts = round(bins * (chan_min - Minfilt))
-    n_samples = len(samples)
-    FILTS = np.zeros((n_filts, n_samples))
-    for k in range(n_filts):
-        FILTS[k, :] = firwin_eval(winname, (samples - (chan_min - (k + 1) / bins)) / (2 * bwmul))
-
-    H = np.zeros(2 * n_samples - 1)
-    H[n_samples - 1:] = np.sqrt(np.sum(np.abs(FILTS)**2, axis=0))
-    H[:n_samples - 1] = H[-1:n_samples - 1:-1]
-    return H
-
-
 # ---------------------------------------------------------------------------
 # Main: warpedfilters
 # ---------------------------------------------------------------------------
@@ -309,12 +226,19 @@ def warpedfilters(
         fc_arr = np.concatenate([fc_arr, -np.flipud(fc_arr[1:M-1])])  # type: ignore[assignment]
         fsupp = np.concatenate([fsupp, np.flipud(fsupp[1:M-1])])  # type: ignore[assignment]
 
-    # Determine symmetry flag
+    # Determine symmetry flag.
+    #
+    # A log-like warp diverges at DC, so its negative-frequency channels cannot
+    # be built by evaluating the warp below zero — they have to be mirrored from
+    # the positive side.  That is what this flag records, and until now it was
+    # computed and then dropped on the floor: `warpedblfilter` took no such
+    # argument, so every negative-fc channel of a `freqrange='complex'` bank was
+    # built by evaluating the warp outside its domain.
     try:
-        sym = freqtoscale(0) < -1e10
-    except (ValueError, RuntimeWarning):
-        sym = True
-    symmetry = sym
+        with np.errstate(divide="ignore", invalid="ignore"):
+            symmetry = bool(freqtoscale(0) < -1e10)
+    except (ValueError, RuntimeWarning, FloatingPointError):
+        symmetry = True
 
     # Build inner filters via warpedblfilter
     g: list[dict[str, Any] | None] = [None] * len(fc_arr)
@@ -337,6 +261,7 @@ def warpedfilters(
             scaletofreq=scaletofreq,
             scal=float(scal[idx]),
             norm=norm,
+            do_symmetric=symmetry,
         )
 
     # Edge filters via shared complement construction
@@ -357,7 +282,7 @@ def warpedfilters(
             scal=float(scal[0]),
             fsupp_lp=fsupp_dc,
             taper_ratio=ratio_dc,
-            min_win=1,
+            min_win=min_win,
         )
 
     # Nyquist highpass
@@ -371,7 +296,7 @@ def warpedfilters(
         scal=float(scal[M - 1]),
         fsupp_hp=fsupp_nyq,
         taper_ratio=ratio_nyq,
-        min_win=1,
+        min_win=min_win,
     )
 
     info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "warpedfilters"}
