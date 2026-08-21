@@ -39,7 +39,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Restore benchmark baseline
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: benchmarks/.benchmarks
           key: bench-baseline-${{ runner.os }}-${{ hashFiles('cool_frames/**/*.py') }}
@@ -64,7 +64,7 @@ jobs:
 
       - name: Save baseline (manual trigger)
         if: github.event.inputs.save_baseline == 'yes'
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: benchmarks/.benchmarks
           key: bench-baseline-${{ runner.os }}-${{ hashFiles('cool_frames/**/*.py') }}
