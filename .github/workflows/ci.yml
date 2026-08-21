@@ -78,7 +78,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage-numpy-${{ matrix.python-version }}.xml
           flags: numpy
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage-torch-${{ matrix.python-version }}.xml
           flags: torch
