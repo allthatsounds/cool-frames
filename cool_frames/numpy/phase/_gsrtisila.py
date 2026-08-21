@@ -123,23 +123,26 @@ def gsrtisila(
 
     n_groups = len(time_groups)
 
+    # Normalised centre frequencies, recovered from the filters themselves.
+    # (Before v0.1.1 both branches below used `m / M`, a linear ramp reaching
+    # ~0.96 cycles/sample — nearly twice Nyquist — irrespective of the actual
+    # filter layout.)
+    if startphase in ("spsi", "unwrap"):
+        from ._centerfreq import filter_center_frequencies
+
+        fc_norm = filter_center_frequencies(g, L)
+
     # SPSI pre-initialization
     if startphase == "spsi":
         from ._spsi import spsi
 
-        fc = np.zeros(M)
-        for m in range(M):
-            filter_m = g[m]
-            if "fc" in filter_m:
-                fc[m] = filter_m["fc"]
-            else:
-                fc[m] = m / M
-        c_spsi, _ = spsi(s_abs, a_int, fc)
+        # fs=1.0: fc_norm is already in cycles per sample.
+        c_spsi, _ = spsi(s_abs, a_int, fc_norm, 1.0)
         c = [np.asarray(ci, dtype=complex).ravel().copy() for ci in c_spsi]
 
     # Phase accumulator for unwrap mode
     if startphase == "unwrap":
-        omega = np.array([2.0 * np.pi * a_int[m] * (m / M) for m in range(M)])
+        omega = np.array([2.0 * np.pi * a_int[m] * fc_norm[m] for m in range(M)])
 
     # Process each time group with look-ahead
     for gi in range(n_groups):

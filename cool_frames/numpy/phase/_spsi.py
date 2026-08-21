@@ -25,6 +25,7 @@ def spsi(
     s_list: list[np.ndarray],
     a: np.ndarray,
     fc: np.ndarray,
+    fs: float,
     *,
     startphase: np.ndarray | None = None,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
@@ -37,13 +38,28 @@ def spsi(
     s_list : list of M arrays, each (N_m,)
         Magnitude coefficients per channel.
     a : (M,) int — hop sizes per channel
-    fc : (M,) float — normalised centre frequencies
+    fc : (M,) float — centre frequencies **in Hz**, exactly as returned by
+        ``audfilters`` and the other filterbank constructors.
+    fs : float — sampling rate in Hz.  Pass ``fs=1.0`` if ``fc`` is already
+        normalised (cycles per sample).
     startphase : (M,) optional initial phase per channel
 
     Returns
     -------
     c_list : list of M complex arrays
     phase_list : list of M float arrays
+
+    Notes
+    -----
+    ``fc`` is in Hz and ``fs`` is required because the algorithm advances the
+    phase by ``2*pi*a*fc/fs`` per hop, and getting the unit wrong is silent: up
+    to v0.1.0 this function took normalised frequencies while every constructor
+    returned Hz, and passing Hz produced a result *worse than leaving the phase
+    at zero*.  Taking Hz plus an explicit ``fs`` makes the natural call the
+    correct one.
+
+    A ``fc`` whose maximum exceeds the Nyquist frequency ``fs/2`` is rejected,
+    since that is the signature of the same unit mix-up in the other direction.
 
     References
     ----------
@@ -52,6 +68,18 @@ def spsi(
     """
     a = np.asarray(a, dtype=int).ravel()
     fc = np.asarray(fc, dtype=float).ravel()
+
+    fs = float(fs)
+    if not np.isfinite(fs) or fs <= 0:
+        raise ValueError(f"spsi: fs must be a positive sampling rate, got {fs!r}")
+    if fc.size and np.max(np.abs(fc)) > 0.5 * fs * (1.0 + 1e-9):
+        raise ValueError(
+            f"spsi: max|fc| = {np.max(np.abs(fc)):.4g} exceeds the Nyquist frequency "
+            f"fs/2 = {0.5 * fs:.4g}. `fc` is expected in Hz and `fs` in Hz; if `fc` is "
+            f"already normalised (cycles per sample), pass fs=1.0."
+        )
+    fc = fc / fs
+
     M = len(a)
 
     N = np.array([len(s) for s in s_list], dtype=int)

@@ -16,6 +16,7 @@ from typing import Literal
 
 import torch
 
+from .._dtypes import resolve
 from ..filterbanks._core import filterbank, ifilterbank
 
 
@@ -32,6 +33,7 @@ def gla(
     method: Literal["gla", "fgla"] = "gla",
     alpha: float = 0.99,
     startphase: Literal["input", "zero", "rand"] = "zero",
+    seed: int | None = None,
 ) -> tuple[list[torch.Tensor], torch.Tensor, torch.Tensor, int]:
     """Griffin-Lim Algorithm for filterbanks (PyTorch).
 
@@ -53,6 +55,10 @@ def gla(
     method : ``'gla'`` or ``'fgla'`` (fast Griffin-Lim)
     alpha : acceleration parameter for fGLA
     startphase : ``'input'``, ``'zero'``, or ``'rand'``
+    seed : int, optional
+        Seed for ``startphase='rand'``.  ``None`` (the default) draws from
+        fresh entropy, so repeated calls differ; pass an integer to make a
+        random start reproducible.
 
     Returns
     -------
@@ -86,7 +92,8 @@ def gla(
 
     # Determine device and dtype from inputs
     device = s_list[0].device if isinstance(s_list[0], torch.Tensor) else torch.device("cpu")
-    dtype = torch.float64
+    # The caller's dtype wins; see cool_frames/torch/_dtypes.py.
+    dtype, cdtype = resolve(*(s_list if isinstance(s_list, list) else [s_list]))
 
     s_abs = [torch.abs(s.to(dtype=dtype, device=device)).flatten() for s in s_list]
 
@@ -103,16 +110,26 @@ def gla(
 
     gd = filterbankdual(g, a_norm, L, real=real)
 
+    # Generator for `startphase='rand'`.  `None` means torch's global RNG,
+    # i.e. unseeded; an explicit `seed` makes a random start reproducible.
+    _rng = None
+    if seed is not None:
+        _rng = torch.Generator(device=device)
+        _rng.manual_seed(int(seed))
+
     # Initialise coefficients
     if startphase == "zero":
-        c = [s.clone().to(dtype=torch.complex128) for s in s_abs]
+        c = [s.clone().to(dtype=cdtype) for s in s_abs]
     elif startphase == "rand":
         c = [
-            s * torch.exp(2j * torch.pi * torch.rand(len(s), device=device, dtype=dtype))
+            s
+            * torch.exp(
+                2j * torch.pi * torch.rand(len(s), generator=_rng, device=device, dtype=dtype)
+            )
             for s in s_abs
         ]
     else:  # 'input'
-        c = [s.to(dtype=torch.complex128, device=device).flatten().clone() for s in s_list]
+        c = [s.to(dtype=cdtype, device=device).flatten().clone() for s in s_list]
 
     # Normalisation
     s_flat = torch.cat(s_abs)
@@ -170,6 +187,10 @@ def gla(
 
             if res < tol:
                 break
+
+        # The momentum step leaves the constraint set; project the extrapolated
+        # point back so that |c_out| == s, matching the rest of the family.
+        c = [s_abs[m].to(c[m].dtype) * torch.exp(1j * torch.angle(c[m])) for m in range(M)]
     else:
         raise ValueError(f"Unknown method '{method}', expected 'gla' or 'fgla'")
 

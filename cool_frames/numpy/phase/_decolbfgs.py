@@ -41,6 +41,7 @@ def decolbfgs(
     tol: float = 1e-6,
     p: float = 2.0 / 3.0,
     startphase: Literal["input", "zero", "rand"] = "zero",
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, int]:
     """Décorsière's L-BFGS phase retrieval for filterbanks.
 
@@ -59,6 +60,10 @@ def decolbfgs(
     tol : convergence tolerance
     p : compression parameter for the objective (default: 2/3)
     startphase : ``'input'``, ``'zero'``, or ``'rand'``
+    seed : int, optional
+        Seed for ``startphase='rand'``.  ``None`` (the default) draws from
+        fresh entropy, so repeated calls differ; pass an integer to make a
+        random start reproducible.
 
     Returns
     -------
@@ -101,7 +106,7 @@ def decolbfgs(
     if startphase == "zero":
         c0 = [s.copy().astype(complex) for s in s_abs]
     elif startphase == "rand":
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         c0 = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
     else:  # 'input'
         c0 = [np.asarray(s, dtype=complex).ravel().copy() for s in s_list]
@@ -131,15 +136,28 @@ def decolbfgs(
         for m in range(M):
             cm = np.asarray(c[m]).ravel()
             cm_abs = np.abs(cm)
-            cm_p = np.power(cm_abs + np.finfo(float).tiny, p)
+            cm_p = np.power(cm_abs, p)
             diff = cm_p - s_p[m]
             obj += np.sum(diff**2)
 
-            # Gradient w.r.t. c_m:
-            # d/d(c_m) |c_m|^p = p * |c_m|^(p-2) * conj(c_m)
-            # d/d(c_m) (|c_m|^p - s^p)^2
-            #   = 2 * (|c_m|^p - s^p) * p * |c_m|^(p-2) * conj(c_m)
-            dcm = 2.0 * diff * p * np.power(cm_abs + np.finfo(float).tiny, p - 2.0) * np.conj(cm)
+            # Wirtinger derivative of the objective with respect to conj(c_m):
+            #     d|c|/d(conj c)      = c / (2|c|)
+            #     d(|c|^p)/d(conj c)  = (p/2) |c|^(p-2) c
+            #     dJ/d(conj c)        = p (|c|^p - s^p) |c|^(p-2) c
+            #
+            # Note ``c``, not ``conj(c)``.  For a real-valued objective of a
+            # complex argument the chain rule back to the real signal is
+            # ``Re(A^H dJ/d(conj c))``, and ``ifilterbank(..., real=True)``
+            # already supplies the factor of two that the single-sided
+            # (Hermitian) representation implies — so no extra factor here.
+            # Both points are verified against central finite differences in
+            # tests/layer3_repr/unit/test_phase_retrieval_family.py.
+            #
+            # |c|^(p-2) diverges as |c| -> 0 for p < 2, so the magnitude is
+            # floored.  Where cm is exactly zero the product is zero anyway;
+            # the floor only stops it being inf * 0 = nan.
+            cm_abs_safe = np.maximum(cm_abs, np.finfo(float).eps)
+            dcm = p * diff * np.power(cm_abs_safe, p - 2.0) * cm
             grad_c.append(dcm)
 
         # Residual for tracking
@@ -154,9 +172,13 @@ def decolbfgs(
         grad_x = ifilterbank(grad_c, g, a_norm, Ls=L, real=real)
 
         if real:
+            # ifilterbank(real=True) already carries the factor of two implied
+            # by the single-sided (Hermitian) representation.
             grad_x = np.real(grad_x).ravel()
         else:
-            grad_x = np.concatenate([np.real(grad_x).ravel(), np.imag(grad_x).ravel()])
+            # Two-sided synthesis does not, so supply it here: for x = u + iv
+            # and w = A^H dJ/d(conj c), dJ/du = 2 Re(w) and dJ/dv = 2 Im(w).
+            grad_x = 2.0 * np.concatenate([np.real(grad_x).ravel(), np.imag(grad_x).ravel()])
 
         return float(obj), grad_x.astype(float)
 

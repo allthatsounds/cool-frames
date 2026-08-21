@@ -281,6 +281,7 @@ def filterbankconstphase(
     tgrad: list[np.ndarray] | None = None,
     fgrad: list[np.ndarray] | None = None,
     sqtfr: np.ndarray | None = None,
+    fs: float | None = None,
 ) -> tuple:
     """Reconstruct phase for a filterbank using fixed-order PGHI.
 
@@ -306,8 +307,16 @@ def filterbankconstphase(
     L     : DFT length (signal path only)
     fc    : (M,) centre frequencies in Hz (optional when f is signal).
     tol   : relative magnitude threshold
-    tgrad : precomputed instantaneous frequencies (optional)
+    tgrad : precomputed instantaneous frequencies (optional).  Same convention
+            as ``filterbankphasegrad``: absolute normalised instantaneous
+            frequency in [0, 2] with 2 == fs, *not* a deviation from ``fc``.
     fgrad : precomputed group delays (optional)
+    sqtfr : (M,) sqrt of the per-channel time-frequency ratios.  Required on
+            the magnitude path for the phase gradients to be estimated from
+            the magnitudes; without it the gradients fall back to zero and
+            PGHI degenerates to zero-phase reconstruction.
+    fs    : sampling rate in Hz.  Required on the magnitude path when ``fc``
+            is given in Hz; on the signal path it is read from the filters.
 
     Returns
     -------
@@ -353,17 +362,32 @@ def filterbankconstphase(
         else:
             a_int = [int(a_int_param[m, 0]) for m in range(M)]
 
-        # Build fc_norm from fc_param (needed before gradient computation)
-        if fc_param is not None:
-            # Assume normalized frequencies [0, 2] or Hz (if L provided as reference)
-            fc_norm = np.asarray(fc_param, dtype=float)
-            if np.max(fc_norm) > 2.0:  # Likely Hz, need to normalize by sampling rate
-                # Estimate sampling rate from center frequencies (rough heuristic)
-                # Assume highest frequency is around Nyquist
-                fs_est = np.max(fc_norm) * 2
-                fc_norm = fc_norm / fs_est * 2.0
-        else:
+        # Build fc_norm from fc_param (needed before gradient computation).
+        #
+        # The integrator and the gradient estimator both want centre
+        # frequencies normalised to [0, 2] with 2 == fs.  The previous code
+        # guessed the sampling rate as ``max(fc) * 2`` whenever it saw a value
+        # above 2.0, which is wrong for every filterbank whose top channel is
+        # not centred exactly at fs/4, and which silently mis-scaled the
+        # estimated phase gradient.  Require the caller to be explicit instead.
+        if fc_param is None:
             fc_norm = np.zeros(M)
+        else:
+            fc_norm = np.asarray(fc_param, dtype=float).ravel()
+            if fs is not None:
+                fc_norm = fc_norm / float(fs) * 2.0
+            elif np.max(np.abs(fc_norm)) > 2.0:
+                raise ValueError(
+                    "filterbankconstphase: centre frequencies look like Hz "
+                    f"(max {np.max(fc_norm):g} > 2) but no 'fs' was given. "
+                    "Pass fs=<sampling rate>, or normalise fc yourself to "
+                    "[0, 2] where 2 corresponds to the sampling rate."
+                )
+            if fc_norm.size != M:
+                raise ValueError(
+                    f"filterbankconstphase: fc has {fc_norm.size} entries but "
+                    f"there are {M} channels."
+                )
 
         # When tgrad/fgrad not provided for magnitude-only input, compute them
         # from the magnitudes via comp_filterbankphasegradfrommag. Falling

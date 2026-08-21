@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from ...numpy.phase._constphase import filterbankconstphase as _np_filterbankconstphase
+from .._dtypes import resolve
 from ..filterbanks._frame import _torch_filters_to_numpy
 
 
@@ -58,14 +59,17 @@ def filterbankconstphase(
     >>> len(c) == len(g)
     True
     >>> c[0].dtype
-    torch.complex128
+    torch.complex64
     """
-    # Convert signal to numpy
+    # Convert signal to numpy.  The caller's dtype decides the output width;
+    # the numpy core always computes in double.
     if isinstance(f, torch.Tensor):
         device = f.device
+        _dtype, cdtype = resolve(f)
         f_np = f.detach().cpu().numpy()
     else:
         device = torch.device("cpu")
+        cdtype = torch.complex128
         f_np = np.asarray(f)
 
     # Convert filters
@@ -103,7 +107,7 @@ def filterbankconstphase(
         c_np = result
         mask_np = np.ones(1)
 
-    c_torch = [torch.tensor(cm, dtype=torch.complex128, device=device) for cm in c_np]
+    c_torch = [torch.tensor(cm, dtype=cdtype, device=device) for cm in c_np]
     mask_torch = (
         torch.tensor(mask_np, device=device)
         if isinstance(mask_np, np.ndarray)

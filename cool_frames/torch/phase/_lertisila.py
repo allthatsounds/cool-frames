@@ -29,6 +29,7 @@ from typing import Literal
 
 import torch
 
+from .._dtypes import resolve
 from ..filterbanks._core import filterbank, ifilterbank
 from ..filterbanks._frame import filterbankdual
 
@@ -44,6 +45,7 @@ def lertisila(
     maxit: int = 5,
     lookahead: int | None = None,
     startphase: Literal["zhu", "zero", "rand", "input"] = "zhu",
+    seed: int | None = None,
     variant: Literal["trunc", "modtrunc"] = "trunc",
     energy_order: bool = False,
 ) -> tuple[list[torch.Tensor], torch.Tensor, float, int]:
@@ -81,7 +83,8 @@ def lertisila(
     """
     # Determine device and dtype from inputs
     device = s_list[0].device if isinstance(s_list[0], torch.Tensor) else torch.device("cpu")
-    dtype = torch.float64
+    # The caller's dtype wins; see cool_frames/torch/_dtypes.py.
+    dtype, cdtype = resolve(*(s_list if isinstance(s_list, list) else [s_list]))
 
     M = len(g)
     s_abs = [torch.abs(s.to(dtype=dtype, device=device)).flatten() for s in s_list]
@@ -101,16 +104,26 @@ def lertisila(
     if lookahead is None:
         lookahead = 2
 
+    # Generator for `startphase='rand'`.  `None` means torch's global RNG,
+    # i.e. unseeded; an explicit `seed` makes a random start reproducible.
+    _rng = None
+    if seed is not None:
+        _rng = torch.Generator(device=device)
+        _rng.manual_seed(int(seed))
+
     # Initialise coefficients
     if startphase == "rand":
         c = [
-            s * torch.exp(2j * torch.pi * torch.rand(len(s), device=device, dtype=dtype))
+            s
+            * torch.exp(
+                2j * torch.pi * torch.rand(len(s), generator=_rng, device=device, dtype=dtype)
+            )
             for s in s_abs
         ]
     elif startphase == "input":
-        c = [s.to(dtype=torch.complex128, device=device).flatten().clone() for s in s_list]
+        c = [s.to(dtype=cdtype, device=device).flatten().clone() for s in s_list]
     else:
-        c = [s.clone().to(dtype=torch.complex128) for s in s_abs]
+        c = [s.clone().to(dtype=cdtype) for s in s_abs]
 
     a_int = a_norm[:, 0].astype(int)
 
@@ -181,7 +194,7 @@ def lertisila(
         if startphase == "zhu" and gi + lookahead < n_groups:
             _, la_group = time_groups[gi + lookahead]
             for _t, m, n in la_group:
-                c[m][n] = torch.tensor(0.0 + 0.0j, dtype=torch.complex128, device=device)
+                c[m][n] = torch.tensor(0.0 + 0.0j, dtype=cdtype, device=device)
 
         for it in range(maxit):
             c = _project_and_update(c, range(gi, la_end), first_iter=(it == 0))

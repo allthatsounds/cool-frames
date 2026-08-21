@@ -44,6 +44,7 @@ def lertisila(
     maxit: int = 5,
     lookahead: int | None = None,
     startphase: Literal["zhu", "zero", "rand", "input"] = "zhu",
+    seed: int | None = None,
     variant: Literal["trunc", "modtrunc"] = "trunc",
     energy_order: bool = False,
 ) -> tuple[list[np.ndarray], np.ndarray, float, int]:
@@ -101,7 +102,7 @@ def lertisila(
 
     # Initialise coefficients
     if startphase == "rand":
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         c = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
     elif startphase == "input":
         c = [np.asarray(s, dtype=complex).ravel().copy() for s in s_list]

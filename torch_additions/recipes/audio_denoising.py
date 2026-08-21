@@ -10,7 +10,7 @@ Example:
 from __future__ import annotations
 
 import torch
-from cool_frames.torch.filterbanks import filterbank, filterbanktight, ifilterbank
+from cool_frames.torch.filterbanks import filterbank, filterbankdual, ifilterbank
 from cool_frames.torch.filters import audfilters
 
 
@@ -68,10 +68,15 @@ def denoise(
         dtype=dtype,
     )
 
-    # Make tight for synthesis
-    gd = filterbanktight(g, a, L, real=True)
+    # Synthesise with the canonical *dual* of the analysis frame.
+    #
+    # Until v0.1.1 this used `filterbanktight(g, a, L)`, which is the tight
+    # frame associated with `g` — correct only if the analysis had also been
+    # done with it.  Pairing `filterbank(f, g, a)` with a tight synthesis is
+    # not a round trip: with thresholding effectively disabled the residual was
+    # 28.7 (relative), where `filterbankdual` gives 4.2e-16.
+    gd = filterbankdual(g, a, L, real=True)
 
-    # Synthesise with tight dual
     f_denoised = ifilterbank(c_thresholded, gd, a, len(f))
 
     stats = {
