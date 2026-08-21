@@ -54,8 +54,8 @@ dev = [
     "matplotlib",
     "build",
     "twine",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "ruff==0.16.4",   # pinned to match CI; see .github/workflows/ci.yml
+    "mypy==1.20.2",
 ]
 docs = [
     "sphinx>=7",

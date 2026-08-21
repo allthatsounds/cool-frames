@@ -26,7 +26,9 @@ jobs:
           python-version: "3.13"
 
       - name: Install tools
-        run: pip install ruff mypy
+        # Pinned: an unpinned linter turns main red when a new release
+        # promotes a preview rule to stable, with no code change.
+        run: pip install "ruff==0.16.4" "mypy==1.20.2"
 
       - name: Ruff check
         run: ruff check cool_frames/numpy/core/ cool_frames/numpy/phase/ cool_frames/torch/ torch_additions/ tests/torch_backend/ tests/test_hypothesis_properties.py benchmarks/ examples/

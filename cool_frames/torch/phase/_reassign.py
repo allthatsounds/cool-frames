@@ -15,6 +15,8 @@ MATLAB originals
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 
 from ...numpy.filterbanks._utils import normalise_a
@@ -223,7 +225,11 @@ def filterbankreassign(
         s = [torch.as_tensor(fi) for fi in f]
         tgrad = [torch.as_tensor(gi) for gi in g]
         fgrad = [torch.as_tensor(ai) for ai in a]
-        a_hops: int | None | object = L
+        # Deliberately dynamic: in this call convention ``L`` carries the hop
+        # sizes, and the signal branch below rebinds this to the (M, 2) array
+        # from ``normalise_a``. ``comp_filterbankreassign`` takes ``a`` untyped
+        # for the same reason.
+        a_hops: Any = L
         M = len(s)
 
         # fc can be frequencies or filter cell
@@ -329,7 +335,11 @@ def filterbanksynchrosqueeze(
         c = [torch.as_tensor(fi) for fi in f]
         tgrad = [torch.as_tensor(gi) for gi in g]
         fgrad = [torch.as_tensor(ai) for ai in a]
-        a_hops: int | None | object = L
+        # Deliberately dynamic: in this call convention ``L`` carries the hop
+        # sizes, and the signal branch below rebinds this to the (M, 2) array
+        # from ``normalise_a``. ``comp_filterbankreassign`` takes ``a`` untyped
+        # for the same reason.
+        a_hops: Any = L
         M = len(c)
 
         # fc can be frequencies or filter cell
