@@ -35,8 +35,10 @@ class TestTightFrameUnitConditionImpl:
 
     def test_tight_unit_condition(self, needs_impl):
         from cool_frames.filterbanks import filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -53,8 +55,10 @@ class TestTighteningDoesNotWorsenConditionImpl:
 
     def test_condition_not_worsened(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds, filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -73,8 +77,10 @@ class TestTighteningPreservesFilterCountImpl:
 
     def test_filter_count_preserved(self, needs_impl):
         from cool_frames.filterbanks import filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gt = filterbanktight(g, a, L)
@@ -88,8 +94,10 @@ class TestDualReciprocalBoundsImpl:
 
     def test_dual_reciprocal_bounds(self, needs_impl):
         from cool_frames.filterbanks import filterbankdual  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -108,8 +116,10 @@ class TestOriginalFrameValidImpl:
 
     def test_original_is_frame(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         A, B = filterbankbounds(g, a, L)

@@ -26,8 +26,7 @@ import numpy as np
 def aud_fb():
     """Return (g, a, L, A, B, M) for an auditory filterbank."""
     from cool_frames.filterbanks import filterbankbounds
-    from cool_frames.filters import audfilters
-    from cool_frames.filters import filterbanklength
+    from cool_frames.filters import audfilters, filterbanklength
 
     g, a, fc, _, _info = audfilters(8000, 256)
     L = filterbanklength(256, a)
@@ -132,15 +131,29 @@ class TestAnalyzeCoefficients:
         assert report_e['frame']['energy_ratio'] > 0
 
     def test_uniform_input(self, needs_impl):
-        """A 2-D numpy array should be accepted as uniform coefficients."""
-        from cool_frames.numpy.filterbanks._analysis import analyze_coefficients
+        """A stacked array is accepted, in the layout ``filterbank`` produces.
 
-        C = np.random.default_rng(0).standard_normal((10, 64))
+        ``filterbank(..., stack=True)`` returns ``(N, M)`` — time down the rows,
+        channels across the columns, the same convention ``plotfilterbank``
+        uses.  Until v0.1.1 ``analyze_coefficients`` read it as ``(M, N)``, so
+        every per-channel statistic was computed over time slices; this test
+        asserted the wrong convention against an arbitrary random array, which
+        is why it did not catch it.  Anchoring to the producer removes the
+        ambiguity.
+        """
+        from cool_frames.numpy.filterbanks import filterbank
+        from cool_frames.numpy.filterbanks._analysis import analyze_coefficients
+        from cool_frames.numpy.filters import audfilters
+
+        g, _a, _fc, L, _info = audfilters(4000, 512)
+        x = np.random.default_rng(0).standard_normal(512)
+        C = filterbank(x, g, np.full(len(g), 32), L=L, stack=True)
+
         report = analyze_coefficients(C)
 
         assert report['shape']['uniform'] is True
-        assert report['shape']['M'] == 10
-        assert report['shape']['N'] == 64
+        assert report['shape']['M'] == C.shape[1] == len(g)
+        assert report['shape']['N'] == C.shape[0]
         assert report['coherence']['mean_abs_correlation'] is not None
 
     def test_zero_signal(self, needs_impl):
@@ -255,8 +268,7 @@ class TestAnalyzeFrameOperator:
     """Tests for ``analyze_frame_operator``."""
 
     def test_returns_expected_keys(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -269,8 +281,7 @@ class TestAnalyzeFrameOperator:
             assert key in report, f"Missing key '{key}'"
 
     def test_eigenvalues_array(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -283,8 +294,7 @@ class TestAnalyzeFrameOperator:
         assert np.all(np.diff(eigvals) >= -1e-10), "Eigenvalues should be sorted"
 
     def test_positive_definite(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -295,8 +305,7 @@ class TestAnalyzeFrameOperator:
         assert report['eigenvalues_min'] > 0
 
     def test_symmetry(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -307,8 +316,7 @@ class TestAnalyzeFrameOperator:
             f"Frame operator not symmetric: err={report['symmetry_error']:.2e}"
 
     def test_nuclear_norm_positive(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -320,8 +328,7 @@ class TestAnalyzeFrameOperator:
         assert report['operator_norm'] > 0
 
     def test_erank_in_range(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_frame_operator
 
         g, a, fc, _, _info = audfilters(8000, 128)
@@ -375,8 +382,7 @@ class TestPrintReport:
         assert "Condition number" in output
 
     def test_eigenvalue_report_prints(self, needs_impl):
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import (
             analyze_frame_operator,
             print_report,
@@ -471,8 +477,7 @@ class TestEdgeCases:
 
     def test_cqt_filterbank(self, needs_impl):
         """CQT filterbank should analyse without error."""
-        from cool_frames.filters import cqtfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import cqtfilters, filterbanklength
         from cool_frames.numpy.filterbanks._analysis import analyze_filterbank
 
         g, a, fc, _, _info = cqtfilters(8000, 256, fmin=50, fmax=3900, bins=12)

@@ -25,8 +25,10 @@ class TestFilterbanklengthcoefImpl:
 
     def test_matches_filterbanklength(self, needs_impl):
         from cool_frames.filterbanks import filterbank, filterbanklengthcoef  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -73,8 +75,10 @@ class TestCentFreqsImpl:
 
     def test_length(self, needs_impl):
         from cool_frames.diagnostics import center_freqs  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls = 1024
         g, a, fc, _, _info = audfilters(8000, Ls)
         L = filterbanklength(Ls, a)
@@ -85,8 +89,10 @@ class TestCentFreqsImpl:
     def test_normalised_range(self, needs_impl):
         """Normalised frequencies must lie in (-1, 1]."""
         from cool_frames.diagnostics import center_freqs  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls = 1024
         g, a, fc, _, _info = audfilters(8000, Ls)
         L = filterbanklength(Ls, a)
@@ -97,8 +103,10 @@ class TestCentFreqsImpl:
     def test_monotone_interior(self, needs_impl):
         """Interior centre frequencies (excluding last boundary filter) are non-decreasing."""
         from cool_frames.diagnostics import center_freqs  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls = 1024
         g, a, fc, _, _info = audfilters(8000, Ls)
         L = filterbanklength(Ls, a)
@@ -111,8 +119,10 @@ class TestCentFreqsImpl:
     def test_consistent_with_audfilters_fc(self, needs_impl):
         """center_freqs (normalised) must correlate strongly with audfilters fc/Nyquist."""
         from cool_frames.diagnostics import center_freqs  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -133,8 +143,8 @@ class TestCentFreqsImpl:
 class TestPackCoefficients:
     def test_roundtrip_nonuniform(self):
         import numpy as np
-        from cool_frames.filters import audfilters
         from cool_frames.filterbanks import filterbank, pack_coefficients, unpack_coefficients
+        from cool_frames.filters import audfilters
         g, a, fc, L, _info = audfilters(8000, 4000)
         c = filterbank(np.random.default_rng(0).standard_normal(L), g, a, L)
         dense, mask = pack_coefficients(c)

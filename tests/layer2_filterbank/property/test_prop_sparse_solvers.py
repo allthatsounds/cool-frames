@@ -34,7 +34,9 @@ def _has_sparse():
     (Paper 15). Skip cleanly until/if they are implemented here."""
     try:
         from cool_frames.filterbanks import (  # noqa: F401
-            filterbankbp, filterbankgrouplasso, filterbanklasso,
+            filterbankbp,
+            filterbankgrouplasso,
+            filterbanklasso,
         )
         return True
     except (ImportError, AttributeError):
@@ -51,8 +53,7 @@ _requires_sparse = pytest.mark.skipif(
 def _make_fb(Ls=1024, fs=8000, seed=42):
     """Create a real filterbank, signal, and coefficients."""
     from cool_frames.filterbanks import filterbank
-    from cool_frames.filters import audfilters
-    from cool_frames.filters import filterbanklength
+    from cool_frames.filters import audfilters, filterbanklength
 
     g, a, fc, _, _info = audfilters(fs, Ls)
     L = filterbanklength(Ls, a)
@@ -111,8 +112,7 @@ class TestIfilterbankiterTight:
         if not _has_impl():
             pytest.skip("not available")
         from cool_frames.filterbanks import filterbank, filterbanktight, ifilterbankiter
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -137,8 +137,7 @@ class TestFilterbankanaiter:
         if not _has_impl():
             pytest.skip("not available")
         from cool_frames.filterbanks import filterbankiter, ifilterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -177,8 +176,7 @@ class TestFilterbankBP:
         if not _has_impl():
             pytest.skip("not available")
         from cool_frames.filterbanks import filterbank, filterbankbp, filterbankdual
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         Ls, fs = 512, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

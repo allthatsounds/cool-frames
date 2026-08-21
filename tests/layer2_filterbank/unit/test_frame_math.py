@@ -38,8 +38,10 @@ class TestFilterbankboundsImpl:
 
     def test_bounds_ordering(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         A, B = filterbankbounds(g, a, L)
@@ -47,8 +49,10 @@ class TestFilterbankboundsImpl:
 
     def test_real_bounds_positive(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         A, B = filterbankbounds(g, a, L)
@@ -57,8 +61,10 @@ class TestFilterbankboundsImpl:
 
     def test_real_bounds_ordering(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         A, B = filterbankbounds(g, a, L)
@@ -67,8 +73,10 @@ class TestFilterbankboundsImpl:
     def test_bounds_match_parseval(self, needs_impl):
         """Weighted coefficient energy ratio must lie in [A, B]."""
         from cool_frames.filterbanks import filterbank, filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -93,8 +101,10 @@ class TestFilterbankdualImpl:
 
     def test_dual_filter_count(self, needs_impl):
         from cool_frames.filterbanks import filterbankdual  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gd = filterbankdual(g, a, L)
@@ -120,8 +130,10 @@ class TestFilterbankdualImpl:
         Tolerance: 1e-10 (machine precision).
         """
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L   = filterbanklength(Ls, a)
@@ -150,8 +162,10 @@ class TestFilterbankrealdualImpl:
 
     def test_runs(self, needs_impl):
         from cool_frames.filterbanks import filterbankdual  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gdr = filterbankdual(g, a, L)
@@ -169,8 +183,10 @@ class TestFilterbanktightImpl:
     def test_tight_equal_bounds(self, needs_impl):
         """After tightening, real frame bounds must be approximately equal."""
         from cool_frames.filterbanks import filterbankbounds, filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gt = filterbanktight(g, a, L)
@@ -181,8 +197,10 @@ class TestFilterbanktightImpl:
 
     def test_tight_filter_count(self, needs_impl):
         from cool_frames.filterbanks import filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gt = filterbanktight(g, a, L)
@@ -194,9 +212,16 @@ class TestFilterbanktightImpl:
         Matches MATLAB TestFrameMath: uses ``ifilterbank(..., 'real')``
         and tolerance ``1e-0``.
         """
-        from cool_frames.filterbanks import filterbank, filterbankbounds, filterbanktight, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbank,
+            filterbankbounds,
+            filterbanktight,
+            ifilterbank,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -220,8 +245,10 @@ class TestFilterbankrealtightImpl:
 
     def test_runs(self, needs_impl):
         from cool_frames.filterbanks import filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         gt_r = filterbanktight(g, a, L)
@@ -246,8 +273,10 @@ class TestFilterbankscaleImpl:
     def test_scale_multiplies_bounds_squared(self, needs_impl):
         """Scaling by s should multiply real frame bounds by s²."""
         from cool_frames.filterbanks import filterbankbounds, filterbankscale  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         AF, BF = filterbankbounds(g, a, L)
@@ -261,8 +290,10 @@ class TestFilterbankscaleImpl:
 
     def test_scale_by_one_identity(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds, filterbankscale  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         g, a, fc, _, _info = audfilters(8000, 1024)
         L = filterbanklength(1024, a)
         AF, BF = filterbankbounds(g, a, L)

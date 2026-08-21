@@ -49,8 +49,7 @@ import numpy as np
 def _make_filterbank(fb_type="aud", fs=8000, Ls=512):
     """Build a filterbank and return (g, a, L, A, B, M)."""
     from cool_frames.filterbanks import filterbankbounds
-    from cool_frames.filters import audfilters, cqtfilters
-    from cool_frames.filters import filterbanklength
+    from cool_frames.filters import audfilters, cqtfilters, filterbanklength
 
     if fb_type == "aud":
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -127,8 +126,7 @@ class TestConditionNumber:
     def test_tight_frame_condition_one(self, needs_impl):
         """Tight frame has κ = 1 (ideal for gradient-based optimisation)."""
         from cool_frames.filterbanks import filterbankbounds, filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         g, a, fc, _, _info = audfilters(8000, 512)
         L = filterbanklength(512, a)
@@ -156,8 +154,7 @@ class TestConditionNumber:
         S^{-1} S (using the dual for synthesis) is the identity, i.e. κ = 1.
         """
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         g, a, fc, _, _info = audfilters(8000, 512)
         L = filterbanklength(512, a)
@@ -272,8 +269,7 @@ class TestEigenvalueStructure:
     def test_tight_frame_constant_singular_values(self, needs_impl):
         """A tight frame's real analysis matrix has all non-zero 2σ² equal."""
         from cool_frames.filterbanks import filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         L_small = 128
         g, a, fc, _, _info = audfilters(8000, L_small)
@@ -606,8 +602,7 @@ class TestSpectralConcentration:
         extractor: narrowband signals should activate few channels.
         """
         from cool_frames.filterbanks import filterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         fs = 8000
         Ls = 2048
@@ -656,8 +651,7 @@ class TestSpectralConcentration:
         which for ERB-spaced filters means more energy in higher channels.
         """
         from cool_frames.filterbanks import filterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         fs = 8000
         Ls = 4096
@@ -698,8 +692,7 @@ class TestFrequencyShiftEquivariance:
         peak energy should shift to match the modulation frequency.
         """
         from cool_frames.filterbanks import filterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         fs = 16000
         Ls = 2048
@@ -744,8 +737,7 @@ class TestFrequencyShiftEquivariance:
         energy per channel is invariant: ‖c_m(x_shifted)‖² = ‖c_m(x)‖².
         """
         from cool_frames.filterbanks import filterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         fs = 8000
         Ls = 1024

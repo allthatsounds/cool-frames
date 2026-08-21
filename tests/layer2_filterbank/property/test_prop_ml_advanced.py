@@ -29,8 +29,7 @@ import numpy as np
 def _make_filterbank(fb_type="aud", fs=8000, Ls=512):
     """Build a filterbank and return (g, a, L, A, B, M)."""
     from cool_frames.filterbanks import filterbankbounds
-    from cool_frames.filters import audfilters, cqtfilters
-    from cool_frames.filters import filterbanklength
+    from cool_frames.filters import audfilters, cqtfilters, filterbanklength
 
     if fb_type == "aud":
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -318,8 +317,7 @@ class TestLipschitzContinuity:
         making it nearly isometric (distance-preserving up to scale).
         """
         from cool_frames.filterbanks import filterbankbounds, filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         g, a, fc, _, _info = audfilters(8000, 512)
         L = filterbanklength(512, a)
@@ -405,8 +403,7 @@ class TestGradientNormPreservation:
         is S_g^{-1} S_g = I, meaning perfect gradient flow.
         """
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         g, a, fc, _, _info = audfilters(8000, 512)
         L = filterbanklength(512, a)
@@ -550,8 +547,7 @@ class TestNoiseAmplification:
     def test_snr_preserved_through_reconstruction(self, needs_impl):
         """SNR is approximately preserved through analysis → dual synthesis."""
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         fs = 8000
         Ls = 512
@@ -640,8 +636,7 @@ class TestEffectiveRank:
     def test_tight_frame_maximal_erank(self, needs_impl):
         """A tight frame has maximal effective rank (all eigenvalues equal)."""
         from cool_frames.filterbanks import filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         L_small = 128
         g, a, fc, _, _info = audfilters(8000, L_small)
@@ -735,8 +730,7 @@ class TestWhiteningDecorrelation:
         original frame (lower off-diagonal energy ratio).
         """
         from cool_frames.filterbanks import filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         L_small = 128
         g, a, fc, _, _info = audfilters(8000, L_small)
@@ -881,8 +875,7 @@ class TestSpectralGap:
         a poorly conditioned frame (large κ) has wide gaps.
         """
         from cool_frames.filterbanks import filterbanktight
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
 
         L_small = 128
         g, a, fc, _, _info = audfilters(8000, L_small)

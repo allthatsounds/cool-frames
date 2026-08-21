@@ -7,8 +7,9 @@ frame quality now comes from filterbankbounds(..., return_kappa=True).
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+import numpy as np
 
 
 def _bank(fs=8000, Ls=4000):

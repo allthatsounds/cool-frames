@@ -40,8 +40,10 @@ class TestDualBoundsReciprocalImpl:
 
     def test_dual_bounds_reciprocal(self, needs_impl):
         from cool_frames.filterbanks import filterbankdual  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -59,9 +61,15 @@ class TestDualResponseWithinBoundsImpl:
     """PropDualFrameCondition: dual response lies in [Ad, Bd]."""
 
     def test_response_within_bounds(self, needs_impl):
-        from cool_frames.filterbanks import filterbankbounds, filterbankdual, filterbankresponse  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbankbounds,
+            filterbankdual,
+            filterbankresponse,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -81,8 +89,10 @@ class TestTightFrameConstantResponseImpl:
 
     def test_tight_response_constant(self, needs_impl):
         from cool_frames.filterbanks import filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -99,8 +109,10 @@ class TestDualBoundsConsistencyImpl:
 
     def test_bounds_product_is_one(self, needs_impl):
         from cool_frames.filterbanks import filterbankdual  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)

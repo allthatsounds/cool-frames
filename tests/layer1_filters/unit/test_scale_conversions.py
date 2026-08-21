@@ -1,9 +1,11 @@
 """Tests for the general (non-auditory) scale conversions added 2026-06-12:
 linear, log/octave, semitone (12-TET), third-octave (IEC 61260)."""
 from __future__ import annotations
-import numpy as np
+
 import pytest
-from cool_frames.numpy.filters import freqtoaud, audtofreq, audspace, audfiltbw
+
+import numpy as np
+from cool_frames.numpy.filters import audfiltbw, audspace, audtofreq, freqtoaud
 
 NEW = ["linear", "log", "semitone", "third-octave"]
 

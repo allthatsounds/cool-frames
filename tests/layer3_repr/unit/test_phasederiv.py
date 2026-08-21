@@ -192,8 +192,7 @@ class TestFilterbankphasederivImpl:
 
     def test_output_structure(self, needs_impl):
         """Returns (dict, list) with correct keys and M channels."""
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.phase import filterbankphasederiv
 
         Ls, fs = 1024, 8000
@@ -213,9 +212,8 @@ class TestFilterbankphasederivImpl:
 
     def test_cell_sizes_match_filterbank(self, needs_impl):
         """Derivative arrays must have same length as filterbank coefficients."""
-        from cool_frames.filters import audfilters
         from cool_frames.filterbanks import filterbank as fb
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.phase import filterbankphasederiv
 
         Ls, fs = 1024, 8000
@@ -235,8 +233,7 @@ class TestFilterbankphasederivImpl:
 
     def test_derivatives_are_real(self, needs_impl):
         """All second-order derivatives must be real-valued."""
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.phase import filterbankphasederiv
 
         Ls, fs = 1024, 8000
@@ -255,8 +252,7 @@ class TestFilterbankphasederivImpl:
 
     def test_single_deriv_string(self, needs_impl):
         """Passing a single string instead of list should work."""
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.phase import filterbankphasederiv
 
         Ls, fs = 1024, 8000
@@ -284,8 +280,7 @@ class TestFilterbankphasederivImpl:
 
     def test_pure_tone_tt_near_zero(self, needs_impl):
         """For a pure tone, tt (chirp rate) should be near zero in high-energy bins."""
-        from cool_frames.filters import audfilters
-        from cool_frames.filters import filterbanklength
+        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.phase import filterbankphasederiv
 
         Ls, fs = 2048, 16000

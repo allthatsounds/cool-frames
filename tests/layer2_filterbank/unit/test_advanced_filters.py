@@ -109,15 +109,15 @@ class TestFirfilterLayer2Impl:
     """TestAdvancedFilters: firfilter structural checks."""
 
     def test_has_h_field(self, needs_impl):
-        from cool_frames.filters.lowlevel import firfilter  # type: ignore
         from cool_frames.filters import firwin
+        from cool_frames.filters.lowlevel import firfilter  # type: ignore
         h = firwin("hann", 32)
         g = firfilter(h)
         assert "h" in g or hasattr(g, "h"), "firfilter struct must have field 'h'"
 
     def test_realonly_flag(self, needs_impl):
-        from cool_frames.filters.lowlevel import firfilter  # type: ignore
         from cool_frames.filters import firwin
+        from cool_frames.filters.lowlevel import firfilter  # type: ignore
         h = firwin("hann", 32)
         g_real = firfilter(h, realonly=True)
         g_cplx = firfilter(h, realonly=False)

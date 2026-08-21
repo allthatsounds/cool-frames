@@ -188,7 +188,10 @@ class TestCompFilterbankPreImpl:
     def test_pre_firfilter_matches_comp_transferfunction(self, needs_impl):
         """comp_filterbank_pre + comp_transferfunction == direct comp_transferfunction."""
         from cool_frames.filters.lowlevel import firfilter  # type: ignore
-        from cool_frames.numpy.filters._filters import comp_filterbank_pre, comp_transferfunction  # type: ignore
+        from cool_frames.numpy.filters._filters import (  # type: ignore
+            comp_filterbank_pre,
+            comp_transferfunction,
+        )
         L      = 256
         g0     = firfilter("hann", 32)
         g_pre  = comp_filterbank_pre([g0], np.array([4]), L, 0)

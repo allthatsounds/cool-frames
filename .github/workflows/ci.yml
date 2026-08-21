@@ -31,10 +31,10 @@ jobs:
         run: pip install "ruff==0.16.4" "mypy==1.20.2"
 
       - name: Ruff check
-        run: ruff check cool_frames/numpy/core/ cool_frames/numpy/phase/ cool_frames/torch/ torch_additions/ tests/torch_backend/ tests/test_hypothesis_properties.py benchmarks/ examples/
+        run: ruff check .
 
       - name: Ruff format check
-        run: ruff format --check cool_frames/numpy/core/ cool_frames/numpy/phase/ cool_frames/torch/ torch_additions/ tests/torch_backend/ tests/test_hypothesis_properties.py benchmarks/ examples/
+        run: ruff format --check .
 
       # Mypy over the torch backend + core numpy math (plugingen removed in the
       # 2026-06 consolidation).
@@ -185,6 +185,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs tags for the version in the docs
 
       - uses: actions/setup-python@v5
         with:
@@ -198,11 +200,33 @@ jobs:
       - name: Build Sphinx HTML
         run: sphinx-build -b html docs/ docs/_build/html
 
-      - name: Upload docs
-        uses: actions/upload-artifact@v4
+      - name: Upload docs as a Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: docs-html
-          path: docs/_build/html/
+          path: docs/_build/html
+
+  # -----------------------------------------------------------------------
+  # Publish the built docs to GitHub Pages (pushes to main only).
+  # Requires Settings -> Pages -> Source: GitHub Actions.
+  # -----------------------------------------------------------------------
+  deploy-docs:
+    name: Deploy docs
+    needs: docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   # -----------------------------------------------------------------------
   # Package build check

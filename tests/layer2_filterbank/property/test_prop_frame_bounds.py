@@ -23,8 +23,10 @@ class TestFrameBoundsUniformImpl:
 
     def test_uniform_subsampling(self, needs_impl):
         from cool_frames.filterbanks import filterbank, filterbankbounds  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -61,8 +63,10 @@ class TestFrameBoundsNonuniformImpl:
     def test_nonuniform_subsampling(self, needs_impl):
         try:
             from cool_frames.filterbanks import filterbank, filterbankbounds  # type: ignore
-            from cool_frames.filters import cqtfilters  # type: ignore
-            from cool_frames.filters import filterbanklength  # type: ignore
+            from cool_frames.filters import (
+                cqtfilters,  # type: ignore
+                filterbanklength,  # type: ignore
+            )
         except ImportError:
             pytest.skip("cqtfilters not available")
         Ls, fs = 1024, 8000

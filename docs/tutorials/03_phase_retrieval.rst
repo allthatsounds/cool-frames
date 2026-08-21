@@ -72,9 +72,11 @@ filterbank that produced them:
    # Single-pass alternative: SPSI phase estimate + dual-frame synthesis
    from cool_frames.filterbanks import filterbankdual, ifilterbank
 
-   c_spsi, _ = spsi(s_mag, a, fc)
+   # spsi takes fc in Hz plus the sampling rate, so audfilters' output goes
+   # straight in.  (Pass fs=1.0 if your fc is already in cycles per sample.)
+   c_spsi, _phase = spsi(s_mag, a, fc, fs)
    gd = filterbankdual(g, a, L)
-   f_spsi = ifilterbank(c_spsi, gd, a, Ls=Ls)
+   f_spsi = ifilterbank(c_spsi, gd, a, Ls=Ls, real=True)
 
 Calling the phase-retrieval functions directly
 ----------------------------------------------
@@ -85,13 +87,14 @@ For more control (e.g. tracking convergence or setting tolerance):
 
    from cool_frames.numpy.phase import gla, filterbankconstphase
 
-   # GLA – 50 iterations
-   f_gla, info = gla(
+   # GLA – 50 iterations.  The return is always a 4-tuple.
+   c_gla, f_gla, relres, niter = gla(
        s_mag, g, a, L=L, Ls=Ls,
        real=True,
        maxit=50,
-       tol=1e-6,           # stop early if residual drops below this
+       tol=1e-6,           # stop early if the residual drops below this
    )
+   print(niter, relres[-1])   # iterations actually run, final residual
 
    # PGHI
    c_pghi = filterbankconstphase(f, g, a, L=L, fc=fc)
@@ -128,14 +131,21 @@ Choosing an algorithm
 Real-time phase reconstruction
 -------------------------------
 
-For streaming applications use the causal variants in
-:mod:`cool_frames.numpy.phase`:
+For streaming applications use the causal, look-ahead members of the family —
+``rtisila`` and its enhanced variants — which advance frame by frame rather
+than iterating over the whole signal:
 
 .. code-block:: python
 
-   from cool_frames.numpy.phase import rtpghifb
+   from cool_frames.numpy.phase import gsrtisila, lertisila, rtisila
 
-   # Process block by block
-   state = None
-   for block_mag in stream_magnitudes:
-       c_block, state = rtpghifb(block_mag, g, a, fc, L, state=state)
+   c_rt, f_rt, relres, niter = rtisila(
+       s_mag, g, a, L=L, Ls=Ls, real=True,
+       maxit=5,          # inner iterations per frame
+       lookahead=None,   # None selects a default from the window length
+   )
+
+``lertisila`` and ``gsrtisila`` take the same arguments and trade more work per
+frame for better consistency.  All three cost seconds rather than milliseconds
+on signals of a few thousand samples — they are designed for low *latency*, not
+low total cost.

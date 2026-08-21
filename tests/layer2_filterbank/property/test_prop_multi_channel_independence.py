@@ -25,8 +25,10 @@ class TestTwoColumnIndependenceImpl:
 
     def test_two_column_independence(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -57,8 +59,10 @@ class TestOutputChannelDimensionImpl:
     @pytest.mark.parametrize("W", [1, 2, 3, 5])
     def test_output_channel_dim(self, needs_impl, W):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -79,8 +83,10 @@ class TestCrossChannelLinearityImpl:
 
     def test_cross_channel_linearity(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -108,8 +114,10 @@ class TestThreeColumnIndependenceImpl:
 
     def test_three_column_independence(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

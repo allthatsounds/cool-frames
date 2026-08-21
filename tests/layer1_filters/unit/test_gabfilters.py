@@ -84,11 +84,40 @@ class TestFilterDescriptors:
                 f"Filter H length {len(g['H'])} != L={L}"
 
     def test_all_filters_share_prototype_h(self):
+        """Interior channels are the same prototype; the edges carry 1/sqrt(2).
+
+        See the matching property test for why: the DC and Nyquist channels
+        have no conjugate partner, so the real-mode fold would double-count
+        them without the edge scaling that v0.1.1 added.
+        """
         gout, *_ = gabfilters(16000, _LS, window='hann', a=_A, M=_M)
-        H0 = gout[0]['H']
-        for g in gout[1:]:
-            np.testing.assert_array_equal(g['H'], H0,
-                err_msg="All filters should share the same prototype H")
+
+        # Compare against an unscaled interior channel, so no round trip
+        # through 1/sqrt(2) is involved.
+        H0 = gout[1]['H']
+        for g in gout[1:-1]:
+            np.testing.assert_array_equal(
+                g['H'], H0, err_msg="Interior filters should share one prototype H")
+
+        np.testing.assert_allclose(
+            gout[0]['H'] * math.sqrt(2.0), H0, rtol=1e-12, atol=1e-12)
+        if _M % 2 == 0:
+            np.testing.assert_allclose(
+                gout[-1]['H'] * math.sqrt(2.0), H0, rtol=1e-12, atol=1e-12)
+
+
+    def test_edge_channels_carry_the_real_mode_scaling(self):
+        """The edge scaling is what makes the bank tight.
+
+        Without it a 4x-overlap Hann DGT — an exactly tight frame — read
+        kappa = 1.667, with a 67 % response spike at DC and Nyquist.
+        """
+        from cool_frames.numpy.filterbanks import filterbankbounds
+
+        gout, a, _fc, L, _info = gabfilters(16000, _LS, window='hann', a=_A, M=_M)
+        A, B = filterbankbounds(gout, a, L)
+        assert A > 0
+        assert abs(B / A - 1.0) < 1e-3, f"expected a tight frame, got kappa = {B / A:.4f}"
 
 
 # ---------------------------------------------------------------------------

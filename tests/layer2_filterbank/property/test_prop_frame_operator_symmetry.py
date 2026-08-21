@@ -35,8 +35,10 @@ class TestFrameOperatorSelfAdjointImpl:
     """PropFrameOperatorSymmetry: S_g is self-adjoint."""
 
     def test_self_adjoint(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -58,8 +60,10 @@ class TestFrameOperatorPSDImpl:
     """PropFrameOperatorSymmetry: S_g is PSD."""
 
     def test_positive_semi_definite(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -77,8 +81,10 @@ class TestFrameOperatorZeroImpl:
     """PropFrameOperatorSymmetry: S_g(0) = 0."""
 
     def test_zero_input(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L   = filterbanklength(Ls, a)
@@ -92,8 +98,10 @@ class TestFrameOperatorLinearImpl:
     """PropFrameOperatorSymmetry: S_g is linear."""
 
     def test_linearity(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

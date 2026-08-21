@@ -67,7 +67,7 @@ def main() -> None:
     print(f"  fGLA  ({it_f:3d} it): spectral convergence = {sc(np.real(x_f)[:Ls]):.4f}")
 
     try:
-        _, phase = spsi(s, a, fc)
+        _, phase = spsi(s, a, fc, fs)  # fc in Hz, fs required
         c_spsi = [sm * np.exp(1j * ph) for sm, ph in zip(s, phase)]
         from cool_frames.numpy.filterbanks import filterbankdual, ifilterbank
 

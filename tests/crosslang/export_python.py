@@ -26,10 +26,8 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import os
 import platform
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -44,25 +42,26 @@ for _p in [str(_fb_root), str(_core_root)]:
 
 import scipy.io as sio
 
+from cool_frames.filterbanks import (
+    filterbank,
+    filterbankbounds,
+    filterbankdual,
+    ifilterbank,
+)
+from cool_frames.filters import audfilters, cqtfilters
+
 # --------------------------------------------------------------------------
 # Import the Python filterbank port
 # --------------------------------------------------------------------------
 from cool_frames.numpy.core._core import (
-    postpad,
     floor23,
     involute,
     modcent,
-)
-from cool_frames.numpy.filters._firwin import firwin
-from cool_frames.numpy.filters._filters import filter_freqresp
-from cool_frames.filters import audfilters, cqtfilters
-from cool_frames.filterbanks import (
-    filterbank,
-    ifilterbank,
-    filterbankdual,
-    filterbankbounds,
+    postpad,
 )
 from cool_frames.numpy.filterbanks._utils import normalise_a
+from cool_frames.numpy.filters._filters import filter_freqresp
+from cool_frames.numpy.filters._firwin import firwin
 
 
 def _save_mat(path: Path, data: dict, label: str = ""):
@@ -264,7 +263,7 @@ def export_python(outdir: Path) -> None:
 
     # ── Summary ──────────────────────────────────────────────────────────
     mat_files = sorted(outdir.glob("*.mat"))
-    print(f"\n=== Python export complete ===")
+    print("\n=== Python export complete ===")
     print(f"Total files: {len(mat_files)}")
     for p in mat_files:
         print(f"  {p.name:<36s}  {p.stat().st_size / 1024:5.0f} kB")

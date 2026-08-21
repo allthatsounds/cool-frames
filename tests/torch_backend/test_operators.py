@@ -170,7 +170,9 @@ class TestFramemul:
 
         result = framemul(f_t, d["g_tight"], d["g_tight"], d["a"], sigma, d["L"])
 
-        assert result.dtype == torch.float32 or result.dtype == torch.float64
+        # Exactly float32: the backend now preserves the input dtype rather
+        # than upcasting to double, so this no longer needs to accept either.
+        assert result.dtype == torch.float32
         assert torch.isreal(result).all() or torch.max(torch.abs(torch.imag(result))) < 1e-9
 
     def test_with_dual_frame(self, torch_dual_setup):
@@ -577,4 +579,9 @@ class TestMultiplierProperties:
         Mh = framemul(h_t, d["g_tight"], d["g_tight"], d["a"], sigma, d["L"])
 
         expected = alpha * Mf + beta * Mh
-        np.testing.assert_allclose(torch_to_np(M_sum), torch_to_np(expected), atol=1e-6, rtol=1e-4)
+        # float32 tolerance.  Until v0.1.1 the backend silently computed in
+        # float64 regardless of the input dtype, so this comparison used to get
+        # double precision for free; now that float32 input really is computed
+        # in float32, an FFT round trip plus a scaled sum accumulates a few
+        # times float32 epsilon (~1.2e-7) on a signal whose peak is ~4.
+        np.testing.assert_allclose(torch_to_np(M_sum), torch_to_np(expected), atol=1e-5, rtol=1e-4)

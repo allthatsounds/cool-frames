@@ -262,28 +262,62 @@ class TestReconstruct:
     """
 
     def test_reconstruct_callable(self, erb_filterbank, noise_signal):
-        """Test that reconstruct function exists and is callable."""
+        """``reconstruct`` runs on well-formed input for every working method.
+
+        This used to call ``method='pghi'`` inside a ``try``.  That branch was
+        random phase wearing PGHI's name, and it now raises
+        ``NotImplementedError`` deliberately — see
+        ``test_reconstruct_pghi_is_wired_to_the_real_algorithm`` below.
+        """
         from torch_additions.recipes import reconstruct
 
-        fb = erb_filterbank
-        # Use small dummy magnitude arrays to test API
-        n_channels = len(fb["g"])
-        max_frames = 10
-        s_mag = [torch.ones(max_frames, dtype=torch.float32) for _ in range(n_channels)]
+        from cool_frames.numpy.filterbanks import filterbank as _np_filterbank
 
-        # Just verify it doesn't crash on well-formed input
-        # (Don't verify exact output due to dtype issues in underlying library)
-        try:
+        fb = erb_filterbank
+        # Real magnitudes, not ones: a flat spectrum is a degenerate input for
+        # a phase-retrieval routine and hides most of what could go wrong.
+        rng = np.random.default_rng(0)
+        x = rng.standard_normal(fb["Ls"])
+        c = _np_filterbank(x, fb["g"], fb["a"], L=fb["L"])
+        s_mag = [torch.from_numpy(np.abs(np.asarray(cm)).ravel()) for cm in c]
+
+        for method in ("pghi", "gla", "fgla", "legla", "spsi"):
             reconstructed, info = reconstruct(
-                s_mag, fb["g"], fb["a"], fb["L"], fb["Ls"], method="pghi"
+                s_mag, fb["g"], fb["a"], fb["L"], fb["Ls"], method=method
             )
             assert isinstance(reconstructed, torch.Tensor)
             assert isinstance(info, dict)
-        except RuntimeError as e:
-            # Some dtype mismatches are known issues in the underlying library
-            if "scalar type" in str(e):
-                pytest.skip(f"Dtype mismatch in underlying library: {e}")
-            raise
+            assert info["method"] == method
+            assert torch.all(torch.isfinite(torch.as_tensor(reconstructed).real))
+
+    def test_reconstruct_pghi_is_wired_to_the_real_algorithm(self, erb_filterbank):
+        """``'pghi'`` drew random phase and reported ``converged: True``.
+
+        It was bitwise identical to the ``'spsi'`` branch and 57 dB worse than
+        ``'gla'``.  It then briefly raised ``NotImplementedError``, because the
+        PGHI *magnitude* path in ``filterbankconstphase`` measured no better
+        than zero phase — its gradient estimator was returning the
+        instantaneous-frequency deviation from each channel's centre frequency
+        while the heap integrator consumes the absolute value.  With that fixed
+        it is wired up for real; the quality checks live in
+        ``tests/regressions/test_audit_v0_1_1_judgement.py``.
+        """
+        from torch_additions.recipes import reconstruct
+
+        from cool_frames.numpy.filterbanks import filterbank as _np_filterbank
+
+        fb = erb_filterbank
+        rng = np.random.default_rng(1)
+        x = rng.standard_normal(fb["Ls"])
+        c = _np_filterbank(x, fb["g"], fb["a"], L=fb["L"])
+        s_mag = [torch.from_numpy(np.abs(np.asarray(cm)).ravel()) for cm in c]
+
+        reconstructed, info = reconstruct(
+            s_mag, fb["g"], fb["a"], fb["L"], fb["Ls"], method="pghi"
+        )
+        assert info["method"] == "pghi"
+        assert info["n_iters"] == 0
+        assert torch.all(torch.isfinite(torch.as_tensor(reconstructed).real))
 
     def test_reconstruct_returns_dict(self):
         """Test that reconstruct info dict has expected structure."""

@@ -9,8 +9,9 @@ while exercising non-uniform hop sizes.
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -25,8 +26,8 @@ def fb_setup(request):
 
     Returns dict with keys: g, g_tight, a, L, M, f, fc
     """
+    from cool_frames.numpy.filterbanks import filterbank, filterbanktight
     from cool_frames.numpy.filters import audfilters
-    from cool_frames.numpy.filterbanks import filterbanktight, filterbank
 
     fs, Ls = request.param
     g, a, fc, L, _info = audfilters(fs, Ls)
@@ -77,8 +78,8 @@ def _operator_matrix(sigma, d):
 @pytest.fixture()
 def dual_setup():
     """Build a filterbank with separate analysis/synthesis (real dual) frames."""
-    from cool_frames.numpy.filters import audfilters
     from cool_frames.numpy.filterbanks import filterbankdual
+    from cool_frames.numpy.filters import audfilters
 
     fs, Ls = 16000, 4096
     g, a, fc, L, _info = audfilters(fs, Ls)
@@ -168,8 +169,8 @@ class TestFramemul:
 
     def test_with_dual_frame(self, dual_setup):
         """Identity symbol with original + dual => perfect reconstruction."""
-        from cool_frames.numpy.operators import framemul
         from cool_frames.numpy.filterbanks import filterbank
+        from cool_frames.numpy.operators import framemul
 
         d = dual_setup
         c = filterbank(d['f'], d['g'], d['a'], d['L'])
@@ -244,8 +245,8 @@ class TestFramemulinv:
 
     def test_roundtrip_dual(self, dual_setup):
         """Apply then invert with original + dual frame."""
-        from cool_frames.numpy.operators import framemul, framemulinv
         from cool_frames.numpy.filterbanks import filterbank
+        from cool_frames.numpy.operators import framemul, framemulinv
 
         d = dual_setup
         c = filterbank(d['f'], d['g'], d['a'], d['L'])
@@ -382,7 +383,6 @@ class TestFramemuleigs:
     def test_eigenvalue_bounds(self, fb_setup):
         """Eigenvalues bounded by A*min(sigma) and B*max(sigma)."""
         from cool_frames.numpy.operators import framemuleigs
-        from cool_frames.numpy.filterbanks import filterbankresponse
 
         d = fb_setup
         sigma = _random_symbol(d['c'])
