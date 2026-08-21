@@ -52,18 +52,40 @@ def _log_warp():
     Deliberately *not* clamped (``np.log(max(f, tiny))``): a clamped log gives
     ``freqtoscale(0) = -27.6``, which is finite, so the flag comes out False and
     the branch under test is never entered.
+
+    ``log(0) = -inf`` is therefore the point rather than an accident, so the
+    divide-by-zero it reports is suppressed here rather than avoided.  The
+    ``-inf`` then propagates into the window evaluation and becomes ``nan``,
+    which ``comp_warpedfreqresponse`` zeroes out by design — hence
+    ``invalid="ignore"`` in :func:`_build_warped` as well.  ``np.errstate`` is
+    the right mechanism for these: they are NumPy floating-point conditions,
+    and ``warnings.catch_warnings`` does not reliably suppress them under
+    pytest's own warning capture.
     """
-    return (
-        lambda f: np.log(np.asarray(f, dtype=float)),
-        lambda s: np.exp(np.asarray(s, dtype=float)),
-    )
+
+    def freqtoscale(f):
+        with np.errstate(divide="ignore"):
+            return np.log(np.asarray(f, dtype=float))
+
+    def scaletofreq(s):
+        return np.exp(np.asarray(s, dtype=float))
+
+    return freqtoscale, scaletofreq
 
 
 def _dense(gm, L):
-    """Expand a filter descriptor to its full-length transfer function."""
+    """Expand a filter descriptor to its full-length transfer function.
+
+    ``H`` is a lazy closure, so evaluating it here re-enters the warp — outside
+    whatever context :func:`_build_warped` was called in.  The ``-inf`` from
+    ``log(0)`` reaches the window evaluation and becomes ``nan``, which
+    ``comp_warpedfreqresponse`` zeroes out by design, so the ``invalid value``
+    it reports is expected and belongs suppressed at the call, not globally.
+    """
     H = gm.get("H")
     if callable(H):
-        H = H(L)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            H = H(L)
     H = np.asarray(H).ravel()
     foff = gm.get("foff", 0)
     if callable(foff):
@@ -78,7 +100,7 @@ def _build_warped(**kw):
     from cool_frames.numpy.filters import warpedfilters
 
     f2s, s2f = _log_warp()
-    with warnings.catch_warnings():
+    with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
         warnings.simplefilter("ignore")
         return warpedfilters(f2s, s2f, FS, 50.0, FS / 2, 4, LS, **kw)
 
@@ -108,7 +130,9 @@ def test_warpedfilters_min_win_reaches_the_edge_filters():
         for gm in g:
             H = gm.get("H")
             if callable(H):
-                H = H(L)
+                # Same lazy-closure re-entry as in _dense; see the note there.
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    H = H(L)
             sizes.append(np.asarray(H).ravel().size)
         return sizes
 

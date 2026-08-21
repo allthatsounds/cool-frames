@@ -203,7 +203,8 @@ def warpedfilters(
 
     Examples
     --------
-    >>> f2s = lambda f: np.log(np.asarray(f, dtype=float))
+    >>> tiny = np.finfo(float).tiny  # clamped: this example only shows the call
+    >>> f2s = lambda f: np.log(np.maximum(np.asarray(f, dtype=float), tiny))
     >>> s2f = lambda s: np.exp(np.asarray(s, dtype=float))
     >>> g, a, fc, L, _ = warpedfilters(
     ...     f2s, s2f, 16000, 50.0, 8000.0, 4, 8000, device='cpu')
