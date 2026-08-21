@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# Pages deployments are serialised: a queued run waits rather than racing an
+# in-flight one. `cancel-in-progress: false` so a deploy already publishing is
+# never killed half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,23 +35,36 @@ jobs:
         run: |
           python -m sphinx -b html docs/ docs/_build/html
 
-      # Upload as artifact so it can be downloaded for review
+      # Plain artifact, for downloading and reviewing the built HTML.
       - name: Upload docs artifact
         uses: actions/upload-artifact@v4
         with:
           name: docs-html
           path: docs/_build/html
 
-   deploy:
-     needs: build
-     runs-on: ubuntu-latest
-     permissions:
-       pages: write
-       id-token: write
-     environment:
-       name: github-pages
-       url: ${{ steps.deployment.outputs.page_url }}
-     steps:
-       - name: Deploy to GitHub Pages
-         id: deployment
-         uses: actions/deploy-pages@v4
+      # Pages artifact, for the deploy job. This is a *different* upload:
+      # `actions/deploy-pages` consumes an artifact named `github-pages` that
+      # `upload-pages-artifact` produces (a tarball with the right metadata).
+      # It cannot read a plain `upload-artifact` upload, so without this step
+      # the deploy job fails at run time with "Unable to find artifact".
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # Job-level `permissions` replaces the workflow default outright rather
+      # than merging with it, so `contents: read` has to be repeated here.
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
