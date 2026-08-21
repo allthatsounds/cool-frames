@@ -35,19 +35,16 @@ jobs:
           name: docs-html
           path: docs/_build/html
 
-  # NOTE: Uncomment the deploy job below once GitHub Pages is enabled
-  #       in Settings → Pages → Source: GitHub Actions
-  #
-  # deploy:
-  #   needs: build
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     pages: write
-  #     id-token: write
-  #   environment:
-  #     name: github-pages
-  #     url: ${{ steps.deployment.outputs.page_url }}
-  #   steps:
-  #     - name: Deploy to GitHub Pages
-  #       id: deployment
-  #       uses: actions/deploy-pages@v4
+   deploy:
+     needs: build
+     runs-on: ubuntu-latest
+     permissions:
+       pages: write
+       id-token: write
+     environment:
+       name: github-pages
+       url: ${{ steps.deployment.outputs.page_url }}
+     steps:
+       - name: Deploy to GitHub Pages
+         id: deployment
+         uses: actions/deploy-pages@v4
