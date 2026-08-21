@@ -29,33 +29,35 @@ applications and likewise needs explicit user intent.
 from __future__ import annotations
 
 import dataclasses
-import numpy as np
 from typing import Any
+
+import numpy as np
 
 
 @dataclasses.dataclass
 class FilterbankRecommendation:
     """Result of ``recommend_filterbank``.
 
-    Attributes
-    ----------
-    designer : str
-        Recommended filter design function name
-        (e.g. ``"audfilters"``, ``"cqtfilters"``, ``"timeadaptivefilters"``).
-    params : dict
-        Suggested keyword arguments for the designer.
-    rationale : str
-        Human-readable explanation of why this designer was chosen.
-    metrics : dict
-        Signal analysis metrics that informed the recommendation.
-    alternatives : list of dict
-        Other viable designers with brief reasoning.
+    The attributes are documented on the fields themselves rather than in an
+    ``Attributes`` section: autodoc picks up dataclass fields *and* the section,
+    and describing them twice makes Sphinx emit a "duplicate object description"
+    warning for every one of them.
     """
 
+    #: Recommended filter design function name
+    #: (e.g. ``"audfilters"``, ``"cqtfilters"``, ``"timeadaptivefilters"``).
     designer: str
+
+    #: Suggested keyword arguments for the designer.
     params: dict[str, Any]
+
+    #: Human-readable explanation of why this designer was chosen.
     rationale: str
+
+    #: Signal analysis metrics that informed the recommendation.
     metrics: dict[str, float | None]
+
+    #: Other viable designers with brief reasoning.
     alternatives: list[dict[str, Any]]
 
 
@@ -374,9 +376,23 @@ def recommend_filterbank(
         # is ~0.32 octaves. To have ≥2 bins in that interval:
         # bins_per_oct ≥ 2 / 0.32 ≈ 6.  For n=8: ≥ 2/(1/(8·ln2)) ≈ 11.
         # We pick enough resolution to separate up to the 8th harmonic.
-        _cqt_bins = max(12, min(96, int(np.ceil(8 * np.log(2) * 2))))
-        # In practice 12-48 is the useful range.  If f0 is very low
-        # (< 100 Hz), use finer resolution to separate close harmonics.
+        # Until v0.1.1 this line read
+        #     max(12, min(96, ceil(8 * log(2) * 2)))
+        # which contains no `f0` at all and evaluates to 12 for every input —
+        # so detecting an f0 made the resolution *coarser* than the no-f0
+        # default of 48, and the `f0_est > 500` branch below could never change
+        # anything (min(12, 24) == 12).
+        #
+        # Resolving harmonics up to the n-th needs bins_per_octave >= 2*n*ln2
+        # (the spacing between harmonics n and n+1 is ~1/(n*ln2) octaves, and
+        # we want two bins across it).  Ask for the 8th harmonic, but only as
+        # far as the octave actually reaches: a high f0 has fewer harmonics
+        # below Nyquist and needs less resolution.
+        _n_harm = 8.0
+        _cqt_bins = int(np.ceil(2.0 * _n_harm * np.log(2.0)))
+        _cqt_bins = max(12, min(96, _cqt_bins))
+        # A very low f0 packs its harmonics closer in log-frequency, so give it
+        # more resolution; a high f0 needs less.
         if f0_est < 100:
             _cqt_bins = max(_cqt_bins, 48)
         elif f0_est > 500:

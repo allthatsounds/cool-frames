@@ -47,8 +47,8 @@ import warnings
 
 import numpy as np
 
-from ._firtools import transferfunction
 from ..core._core import setnorm
+from ._firtools import transferfunction
 
 # ====================================================================
 # Internal helpers
@@ -65,10 +65,19 @@ def _as_hop_vector(a, M: int) -> np.ndarray:
 
 
 def _coeff_list(c) -> list[np.ndarray]:
-    """Normalise coefficients to a list of 1-D complex arrays."""
+    """Normalise coefficients to a list of 1-D complex arrays.
+
+    A stacked array from ``filterbank(..., stack=True)`` is ``(N, M)`` —
+    time down the rows, channels across the columns, the same convention
+    ``plotfilterbank`` uses.  Until v0.1.1 this read it as ``(M, N)`` and took
+    the *rows*, so every per-channel statistic was computed over the wrong
+    axis: a 23-channel bank was reported as having M = 16, with the peak
+    channel, Gini coefficient and entropy all computed across time slices
+    instead of channels.  No error was raised.
+    """
     if isinstance(c, np.ndarray) and c.ndim == 2:
-        # Uniform (M, N) matrix → list of M rows
-        return [c[m] for m in range(c.shape[0])]
+        # Uniform (N, M) matrix -> list of M columns
+        return [c[:, m] for m in range(c.shape[1])]
     return [np.asarray(cm).ravel() for cm in c]
 
 
@@ -104,8 +113,9 @@ def analyze_coefficients(
 
     Parameters
     ----------
-    c : list of M arrays (non-uniform) or (M, N) ndarray (uniform)
-        Filterbank coefficients as returned by ``filterbank()``.
+    c : list of M arrays (non-uniform) or (N, M) ndarray (uniform)
+        Filterbank coefficients as returned by ``filterbank()`` — the stacked
+        form is ``(N, M)``, i.e. what ``filterbank(..., stack=True)`` returns.
     a : hop sizes (scalar, (M,), or (M, 2)).  Optional — used for
         per-channel bandwidth weighting.  If *None*, unit hops assumed.
     signal_energy : ‖x‖² of the original signal.  If provided, enables
@@ -254,6 +264,15 @@ def _gini(values: np.ndarray) -> float:
 # 2.  Filterbank / frame-operator analysis
 # ====================================================================
 
+# NOTE (v0.1.1): every `filterbank`/`ifilterbank` call in this module now
+# passes the caller's `L` explicitly.  Omitting it let `filterbanklength`
+# silently round up to the lcm-multiple, so the coefficient counts were
+# computed at one length while the frame section used another: redundancy came
+# out inflated by L_actual/L_requested (3.63 reported against a true 2.15), and
+# a *false* "the painless condition is not satisfied" note fired to explain the
+# resulting mismatch on a bank that is painless.
+
+
 def analyze_filterbank(
     g: list[dict],
     a,
@@ -285,8 +304,8 @@ def analyze_filterbank(
         ``rank``        – effective rank, nuclear norm, spectral gap
         ``coefficients``– coefficient-level analysis of a test signal
     """
-    from ._frame import filterbankbounds
     from ._core import filterbank, ifilterbank
+    from ._frame import filterbankbounds
 
     M = len(g)
     hops = _as_hop_vector(a, M)
@@ -300,7 +319,7 @@ def analyze_filterbank(
 
     # ------ N_list and redundancy ------
     x_dummy = np.zeros(L)
-    c_dummy = filterbank(x_dummy, g, a)
+    c_dummy = filterbank(x_dummy, g, a, L=L)
     N_list = [len(np.asarray(cm).ravel()) for cm in c_dummy]
     Nsum = sum(N_list)
     redundancy = Nsum / L
@@ -314,11 +333,11 @@ def analyze_filterbank(
         x = rng.standard_normal(L)
         x_norm_sq = np.dot(x, x)
 
-        c = filterbank(x, g, a)
+        c = filterbank(x, g, a, L=L)
         coeff_energy = sum(np.sum(np.abs(np.asarray(cm).ravel()) ** 2) for cm in c)
         coeff_energy_ratios.append(coeff_energy / x_norm_sq)
 
-        Sgx = np.real(np.asarray(ifilterbank(c, g, a, real=real)))[:L]
+        Sgx = np.real(np.asarray(ifilterbank(c, g, a, Ls=L, real=real)))[:L]
         frame_op_ratios.append(np.linalg.norm(Sgx) / np.sqrt(x_norm_sq))
 
     frame_op_ratios = np.array(frame_op_ratios)  # type: ignore[assignment]
@@ -350,7 +369,7 @@ def analyze_filterbank(
     x_test = (np.sin(2 * np.pi * 440 * t / 8000)
               + 0.5 * np.sin(2 * np.pi * 1000 * t / 8000)
               + 0.3 * np.sin(2 * np.pi * 2500 * t / 8000))
-    c_test = filterbank(x_test, g, a)
+    c_test = filterbank(x_test, g, a, L=L)
     coeff_report = analyze_coefficients(
         c_test, a, signal_energy=float(np.dot(x_test, x_test)))
 
@@ -454,8 +473,8 @@ def analyze_frame_operator(
     for j in range(L):
         ej = np.zeros(L)
         ej[j] = 1.0
-        c = filterbank(ej, g, a)
-        Sej = np.real(np.asarray(ifilterbank(c, g, a, real=real)))
+        c = filterbank(ej, g, a, L=L)
+        Sej = np.real(np.asarray(ifilterbank(c, g, a, Ls=L, real=real)))
         S[:, j] = Sej[:L]
 
     S_sym = 0.5 * (S + S.T)

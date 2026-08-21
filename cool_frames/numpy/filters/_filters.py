@@ -836,6 +836,11 @@ def _parse_biquad_varargs(args):
     return kw
 
 
+# Smallest fraction used when inverting a sigmoid.  logit(1e-13) ~= -30, which
+# round-trips through the sigmoid to within 1e-13 while staying finite.
+_LOGIT_EPS = 1e-13
+
+
 def biquadfilter(fc, bw, *args,
                  fs: float | None = None,
                  norm: str = "energy",
@@ -942,11 +947,14 @@ def biquadfilter(fc, bw, *args,
             theta_ii = math.pi / (1.0 + math.exp(-phi_ii))
         else:
             theta_ii = math.pi * abs(fc_ii)
-            frac = theta_ii / math.pi
-            if 0 < frac < 1:
-                phi_ii = math.log(frac) - math.log(1.0 - frac)
-            else:
-                phi_ii = 0.0
+            # `phi = logit(theta/pi)` diverges at the endpoints (DC and
+            # Nyquist).  Until v0.1.1 those fell back to phi = 0.0, which is
+            # the sigmoid's *midpoint*, not its limit: re-instantiating a DC
+            # resonator from its own stored (rho, phi) moved it to fs/4.
+            # Clamp into the open interval instead, so the round trip
+            # `theta -> phi -> theta` stays faithful to ~1e-13.
+            frac = min(max(theta_ii / math.pi, _LOGIT_EPS), 1.0 - _LOGIT_EPS)
+            phi_ii = math.log(frac) - math.log(1.0 - frac)
 
         # Pole radius
         if rho is not None:
@@ -954,10 +962,10 @@ def biquadfilter(fc, bw, *args,
             r_ii = 1.0 / (1.0 + math.exp(-rho_ii))
         else:
             r_ii = max(0.0, min(1.0 - 1e-6, 1.0 - math.pi * bw_ii / 2.0))
-            if 0 < r_ii < 1:
-                rho_ii = math.log(r_ii) - math.log(1.0 - r_ii)
-            else:
-                rho_ii = 0.0
+            # Same endpoint problem as `phi` above: r = 0 used to be reported
+            # as rho = 0.0, which decodes back to r = 0.5.
+            frac_r = min(max(r_ii, _LOGIT_EPS), 1.0 - _LOGIT_EPS)
+            rho_ii = math.log(frac_r) - math.log(1.0 - frac_r)
 
         # Build closures with captured values
         r_c, theta_c, scal_c, norm_c = r_ii, theta_ii, scal, norm

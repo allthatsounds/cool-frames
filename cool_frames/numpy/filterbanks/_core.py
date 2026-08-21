@@ -101,6 +101,76 @@ def filterbank(f, g: list[dict], a, L: int | None = None, stack: bool = False):
 # ---------------------------------------------------------------------------
 
 
+def _negative_frequency_ratio(g_ready: list, L: int) -> float:
+    """Energy on the negative-frequency half, relative to the positive half.
+
+    Used to detect an analysis/synthesis convention mismatch.  Measured on the
+    *filters*, not on the reconstructed spectrum: until v0.1.1 the check used
+    the latter, where a single-sided ERB bank scores 0.383 and two-sided banks
+    0.28-1.0 — overlapping ranges, so the flagship ``audfilters`` bank slipped
+    past the 0.3 threshold and reconstructed with 46 % error in silence.
+
+    On the filters themselves the two families separate cleanly::
+
+        single-sided (aud, cqt, gab, wavelet)               0.007 - 0.122
+        two-sided (gab real=False, warped/wavelet complex)  0.590 - 1.000
+
+    so a 0.3 threshold has a factor-of-five margin on both sides.
+    """
+    half = L // 2
+    pos = neg = 0.0
+    for gm in g_ready:
+        H = gm.get("H")
+        if H is None or len(np.asarray(H)) == 0:
+            # A time-domain (FIR) filter is real, hence two-sided.
+            return 1.0
+        H = np.asarray(H)
+        foff = int(gm.get("foff", 0) or 0)
+        idx = (foff + np.arange(H.size)) % L
+        mag2 = np.abs(H) ** 2
+        pos += float(np.sum(mag2[(idx >= 1) & (idx < half)]))
+        neg += float(np.sum(mag2[idx > half]))
+    return neg / max(pos, 1e-30)
+
+
+def filterbank_is_real(g: list[dict], a, L: int) -> bool:
+    """Is this a single-sided (real-audio) filterbank?
+
+    Returns ``True`` when the filters carry essentially all their energy on the
+    non-negative frequencies — the convention produced by ``audfilters``,
+    ``cqtfilters``, ``gabfilters`` and the real wavelet designs, and the one
+    for which ``real=True`` is correct in ``ifilterbank``, ``filterbankdual``
+    and the phase-retrieval routines.  Returns ``False`` for genuinely
+    two-sided banks (complex wavelets, warped banks, ``gabfilters`` with
+    ``real=False``), where folding the spectrum would double-count.
+
+    This is the same measurement ``ifilterbank`` uses for its
+    convention-mismatch warning; see :func:`_negative_frequency_ratio` for the
+    separation between the two families and the factor-of-five threshold
+    margin.
+
+    Parameters
+    ----------
+    g : list of M filter dicts
+    a : hop sizes (needed to prepare the filters at length ``L``)
+    L : int — DFT length the filters are evaluated on.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from cool_frames.numpy.filters import audfilters
+    >>> from cool_frames.numpy.filterbanks import filterbank_is_real
+    >>> g, a, fc, L, _info = audfilters(8000, 8000)
+    >>> filterbank_is_real(g, a, L)
+    True
+    """
+    from ._utils import prepare_filters as _prep
+
+    a_norm = normalise_a(a, len(g))
+    g_ready, _m_td, _m_fft, _m_fftbl = _prep(g, a_norm, int(L))
+    return _negative_frequency_ratio(g_ready, int(L)) <= 0.3
+
+
 def ifilterbank(
     c: list[np.ndarray], g: list[dict], a, Ls: int | None = None, real: bool = True
 ) -> np.ndarray:
@@ -155,32 +225,27 @@ def ifilterbank(
 
     F = comp_ifilterbank(c2d, g, a_norm, L)
 
-    # Detect an obvious analysis/synthesis convention mismatch (cheap, on F).
-    # A single-sided (real-audio) frame has energy only on the positive-frequency
-    # half; a two-sided (complex) frame fills both halves. Warn when ``real`` does
-    # not match the apparent frame -- the mismatch reconstructs silently wrong.
-    if L >= 8:
-        half = L // 2
-        f_pos = float(np.linalg.norm(F[1:half]))
-        f_neg = float(np.linalg.norm(F[half + 1 :]))
-        # single-sided (real-audio) frames carry little negative-half energy
-        # (empirically f_neg/f_pos ~ 0.1); two-sided (complex) frames carry
-        # comparable energy on both halves (~1.0). Thresholds 0.3 / 0.7 separate
-        # them with a wide margin, so the warning fires only on a clear mismatch.
-        if real and f_neg > 0.7 * f_pos:
-            warnings.warn(
-                "ifilterbank(real=True) but the synthesis filters appear two-sided "
-                "(comparable negative-frequency energy); folding will double-count. "
-                "Pass real=False for complex/two-sided frames.",
-                stacklevel=2,
-            )
-        elif (not real) and f_pos > 0.0 and f_neg < 0.3 * f_pos:
-            warnings.warn(
-                "ifilterbank(real=False) but the synthesis filters appear single-sided "
-                "(little negative-frequency energy); this will not reconstruct a real "
-                "signal. Pass real=True (the default) for real-audio frames.",
-                stacklevel=2,
-            )
+    # Detect an analysis/synthesis convention mismatch, measured on the
+    # synthesis *filters*.  See `_negative_frequency_ratio` for why not on F.
+    from ._utils import prepare_filters as _prep
+
+    g_ready, _m_td, _m_fft, _m_fftbl = _prep(g, a_norm, L)
+    ratio = _negative_frequency_ratio(g_ready, L)
+    if real and ratio > 0.3:
+        warnings.warn(
+            "ifilterbank(real=True) but the synthesis filters appear two-sided "
+            f"(negative/positive frequency energy {ratio:.2f}); folding will "
+            "double-count. Pass real=False for complex/two-sided frames.",
+            stacklevel=2,
+        )
+    elif (not real) and ratio < 0.3:
+        warnings.warn(
+            "ifilterbank(real=False) but the synthesis filters appear single-sided "
+            f"(negative/positive frequency energy {ratio:.2f}); this will not "
+            "reconstruct a real signal. Pass real=True (the default) for "
+            "real-audio frames.",
+            stacklevel=2,
+        )
 
     if real:
         # Single-sided filterbank: mirrors the one-sided spectrum
@@ -330,14 +395,29 @@ def ifilterbankiter(
         return np.fft.ifft(F_out, axis=0).ravel()
 
     # Preconditioner (diagonal of frame operator)
-    precond = None
+    # Diagonal (Jacobi) preconditioner.
+    #
+    # `filterbankresponse` is the frame-operator diagonal indexed by *DFT bin*,
+    # while the CG vectors here live in the *time* domain.  Until v0.1.1 the
+    # code multiplied the time-domain residual by that frequency-domain
+    # diagonal, which is not a preconditioner at all — it is an arbitrary
+    # window, and it consistently slowed convergence (9 -> 15 iterations on a
+    # gabfilters bank where the correct preconditioner takes 4).
+    #
+    # The frame operator of a shift-invariant filterbank is diagonal in
+    # frequency, so the preconditioner has to be applied there: transform,
+    # divide, transform back.
+    apply_precond = None
     if alg == "pcg":
         try:
             resp = filterbankresponse(g, a, L, real=real)
             resp_safe = np.where(np.abs(resp) < 1e-14, 1.0, resp)
-            precond = 1.0 / resp_safe
+
+            def apply_precond(v, _resp=resp_safe):
+                return np.fft.ifft(np.fft.fft(v) / _resp)
+
         except Exception:
-            precond = None
+            apply_precond = None
 
     # ------------------------------------------------------------------
     # Conjugate Gradient iteration
@@ -348,8 +428,8 @@ def ifilterbankiter(
     else:
         x = np.zeros(L, dtype=complex)
         r = b.copy()  # r = b - A x = b  (x=0)
-    if precond is not None:
-        z = precond * r
+    if apply_precond is not None:
+        z = apply_precond(r)
     else:
         z = r.copy()
     p = z.copy()
@@ -374,8 +454,8 @@ def ifilterbankiter(
         if relres_k < tol:
             break
 
-        if precond is not None:
-            z_new = precond * r
+        if apply_precond is not None:
+            z_new = apply_precond(r)
         else:
             z_new = r.copy()
         rz_new = np.vdot(r, z_new).real
@@ -389,11 +469,15 @@ def ifilterbankiter(
     # Report the honest analysis residual ||F(x)-c||/||c|| (not the
     # normal-equation residual, which can look small while the reconstruction
     # is still off for an ill-conditioned operator).
-    relres_final = _analysis_relres(x)
+    #
+    # Measured on the value actually returned.  Until v0.1.1 this was computed
+    # on the complex CG iterate `x` while `np.real(x)` was returned, so the
+    # function could report a converged 3.2e-07 for a signal whose true
+    # residual was 0.226.
+    x_real = np.real(x)
+    relres_final = _analysis_relres(x_real.astype(complex))
 
-    xr = np.real(x)
-    if Ls is not None and Ls <= L:
-        xr = xr[:Ls]
+    xr = x_real[:Ls] if (Ls is not None and Ls <= L) else x_real
 
     return xr, relres_final, niter
 
@@ -480,20 +564,35 @@ def filterbankiter(
         return np.fft.ifft(F_out, axis=0).ravel()
 
     # Preconditioner
-    precond = None
+    # Diagonal (Jacobi) preconditioner.
+    #
+    # `filterbankresponse` is the frame-operator diagonal indexed by *DFT bin*,
+    # while the CG vectors here live in the *time* domain.  Until v0.1.1 the
+    # code multiplied the time-domain residual by that frequency-domain
+    # diagonal, which is not a preconditioner at all — it is an arbitrary
+    # window, and it consistently slowed convergence (9 -> 15 iterations on a
+    # gabfilters bank where the correct preconditioner takes 4).
+    #
+    # The frame operator of a shift-invariant filterbank is diagonal in
+    # frequency, so the preconditioner has to be applied there: transform,
+    # divide, transform back.
+    apply_precond = None
     if alg == "pcg":
         try:
             resp = filterbankresponse(g, a, L, real=real)
             resp_safe = np.where(np.abs(resp) < 1e-14, 1.0, resp)
-            precond = 1.0 / resp_safe
+
+            def apply_precond(v, _resp=resp_safe):
+                return np.fft.ifft(np.fft.fft(v) / _resp)
+
         except Exception:
-            precond = None
+            apply_precond = None
 
     # CG on  FF* x = f
     b = f_pad
     x = np.zeros(L, dtype=complex)
     r = b.copy()
-    z = (precond * r) if precond is not None else r.copy()
+    z = apply_precond(r) if apply_precond is not None else r.copy()
     p = z.copy()
     rz = np.vdot(r, z).real
 
@@ -516,7 +615,7 @@ def filterbankiter(
         if relres_k < tol:
             break
 
-        z_new = (precond * r) if precond is not None else r.copy()
+        z_new = apply_precond(r) if apply_precond is not None else r.copy()
         rz_new = np.vdot(r, z_new).real
         if abs(rz) < 1e-30:
             break

@@ -22,7 +22,13 @@ from ._analysis import (
     pgrpdelay,
     print_report,
 )
-from ._core import filterbank, filterbanklengthcoef, ifilterbank, ifilterbankiter
+from ._core import (
+    filterbank,
+    filterbank_is_real,
+    filterbanklengthcoef,
+    ifilterbank,
+    ifilterbankiter,
+)
 from ._frame import (
     painlessfilterbank,
     filterbankbounds,
@@ -39,7 +45,7 @@ from ._utils import filterbankwin, pack_coefficients, unpack_coefficients
 
 __all__ = [
     # --- filterbanks own symbols (LTFAT) ---
-    "filterbank", "ifilterbank", "ifilterbankiter",
+    "filterbank", "filterbank_is_real", "ifilterbank", "ifilterbankiter",
     "filterbankiter",
     "filterbanklengthcoef", "filterbankwin", "plotfilterbank",
     "pack_coefficients", "unpack_coefficients",

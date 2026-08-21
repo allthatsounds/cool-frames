@@ -298,7 +298,13 @@ def warpedfilters(
         scal[0] = scal[0] / math.sqrt(2)
         scal[M-1] = scal[M-1] / math.sqrt(2)
     elif freqrange == "complex":
-        a = np.vstack([a, np.flipud(a[1:M-1])])  # type: ignore[assignment]
+        # `a` is 1-D for regsampling/uniform and 2-D only for the fractional
+        # modes, so an unconditional vstack raised
+        # "all the input array dimensions except for the concatenation axis
+        # must match" on the default sampling.  `waveletfilters` has the same
+        # construct written correctly; mirror it.
+        _stack = np.vstack if np.asarray(a).ndim == 2 else np.concatenate
+        a = _stack([a, np.flipud(a[1:M-1])])  # type: ignore[assignment]
         scal = np.concatenate([scal, np.flipud(scal[1:M-1])])  # type: ignore[assignment]
         fc_arr = np.concatenate([fc_arr, -np.flipud(fc_arr[1:M-1])])  # type: ignore[assignment]
         fsupp = np.concatenate([fsupp, np.flipud(fsupp[1:M-1])])  # type: ignore[assignment]

@@ -28,6 +28,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from .._dtypes import resolve
 from ..filterbanks._core import filterbank, ifilterbank
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,11 @@ def framemul(
     framemulinv : inverse (PCG)
     MATH_REFERENCE.md §15a
     """
-    f = torch.as_tensor(f, dtype=torch.float32)
+    # The caller's dtype wins.  Until v0.1.1 every entry point forced float32,
+    # so a float64 call matched the NumPy backend only to ~1.8e-07 and
+    # `torch.autograd.gradcheck` failed outright.
+    f = torch.as_tensor(f)
+    _rdtype, _cdtype = resolve(f)
     c = filterbank(f, g_analysis, a, L)
     c_masked = [c[m] * sigma[m] for m in range(len(c))]
     result = ifilterbank(c_masked, g_synthesis, a, L, real=real)
@@ -177,7 +182,11 @@ def framemulinv(
         Convergence info with keys 'relres' (final relative residual),
         'iter' (number of iterations), 'converged' (bool).
     """
-    f = torch.as_tensor(f, dtype=torch.float32)
+    # The caller's dtype wins.  Until v0.1.1 every entry point forced float32,
+    # so a float64 call matched the NumPy backend only to ~1.8e-07 and
+    # `torch.autograd.gradcheck` failed outright.
+    f = torch.as_tensor(f)
+    _rdtype, _cdtype = resolve(f)
     len(f)
 
     def _apply_normal(x):
@@ -193,7 +202,7 @@ def framemulinv(
     rhs = framemuladj(f, g_analysis, g_synthesis, a, sigma, L, real=real)
 
     # Conjugate gradient - work with the actual output length of framemuladj
-    x = torch.zeros(len(rhs), dtype=torch.float32, device=f.device)
+    x = torch.zeros(len(rhs), dtype=rhs.dtype, device=f.device)
     r = rhs - _apply_normal(x)
     p = r.clone()
     rsold = torch.dot(r, r)
@@ -202,8 +211,12 @@ def framemulinv(
         return x, {"relres": 0.0, "iter": 0, "converged": True}
 
     converged = False
+    # `k` used to stay 0 because the loop bound the variable `_k`, so the
+    # reported iteration count was always 1 regardless of the work done.
+    # `k` is read after the loop for the iteration count, so it must be the
+    # loop variable — but ruff cannot see that, hence the explicit noqa.
     k = 0
-    for _k in range(maxit):
+    for k in range(maxit):  # noqa: B007
         Ap = _apply_normal(p)
         pAp = torch.dot(p, Ap)
         if pAp <= 0:
@@ -242,11 +255,14 @@ def framemulappr(
     L: int,
     *,
     real: bool = True,
+    method: str = "auto",
+    max_gram: int = 2000,
+    rcond: float | None = None,
 ) -> list[torch.Tensor]:
     """Find the frame multiplier symbol that best approximates an operator.
 
-    Computes the symbol sigma that minimises the Hilbert-Schmidt norm
-    ||T - M_sigma||_HS, following the method of Balazs (2007).
+    Computes the symbol sigma minimising the Hilbert-Schmidt norm
+    ``||T - M_sigma||_HS``, following Balazs (2007).
 
     Parameters
     ----------
@@ -258,69 +274,60 @@ def framemulappr(
         Hop sizes.
     L : int
         Transform length.
+    real, method, max_gram, rcond
+        As in :func:`cool_frames.numpy.operators.framemulappr`.
 
     Returns
     -------
     sigma : list of M Tensors
-        Optimal symbol for each subband.
+        Symbol for each subband, on ``T``'s device and dtype.
 
     Notes
     -----
-    This function materialises the full synthesis matrices and is O(L^2 M)
-    in memory. For large L, consider iterative alternatives.
+    This delegates to the NumPy implementation.  Fitting a symbol to a dense
+    ``(L, L)`` operator is setup-time work — the same category as the dual
+    windows, which this backend already computes with NumPy — and nothing
+    downstream differentiates through it.
+
+    .. versionchanged:: 0.1.1
+       Was a separate, incorrect implementation.  It built its synthesis
+       matrix by *analysing* with ``g_synthesis`` instead of measuring the
+       synthesis atoms, only ever performed the diagonal approximation
+       (NumPy's ``method='full'`` least-squares solve, ``max_gram`` and
+       ``rcond`` were absent), and never read ``real`` — ``real=False`` output
+       was bitwise identical to ``real=True``.  On an operator constructed as
+       an exact multiplier, where a zero-error symbol provably exists, NumPy
+       returned 1.05e-15 Hilbert-Schmidt error and this returned **1.033** —
+       worse than returning a zero symbol.
 
     See Also
     --------
     MATH_REFERENCE.md §15a
     """
-    T = torch.as_tensor(T, dtype=torch.complex128)
-    device = T.device
-    M = len(g_analysis)
+    from ...numpy.operators._framemul import framemulappr as _np_framemulappr
 
-    # Compute analysis and synthesis coefficient vectors for each
-    # standard basis vector. This gives us the frame matrices.
-    # D_a[m][:, k] = filterbank(e_k, g_a, a, L)[m]
-    # D_s[m][:, k] = filterbank(e_k, g_s, a, L)[m]
+    T_t = torch.as_tensor(T)
+    device = T_t.device
+    rdtype, cdtype = resolve(T_t)
 
-    # First, figure out coefficient lengths
-    e0 = torch.zeros(L, dtype=torch.float32, device=device)
-    e0[0] = 1.0
-    c0 = filterbank(e0, g_analysis, a, L)
-    Nm = [len(c0[m]) for m in range(M)]
+    sigma_np = _np_framemulappr(
+        T_t.detach().cpu().numpy(),
+        g_analysis,
+        g_synthesis,
+        a,
+        L,
+        real=real,
+        method=method,
+        max_gram=max_gram,
+        rcond=rcond,
+    )
 
-    # Build analysis and synthesis matrices per channel
-    sigma = []
-    for m in range(M):
-        # Build D_a[m] and D_s[m] column by column
-        Da_m = torch.zeros((Nm[m], L), dtype=torch.complex128, device=device)
-        Ds_m = torch.zeros((Nm[m], L), dtype=torch.complex128, device=device)
-
-        for k in range(L):
-            ek = torch.zeros(L, dtype=torch.float32, device=device)
-            ek[k] = 1.0
-            c_a = filterbank(ek, g_analysis, a, L)
-            c_s = filterbank(ek, g_synthesis, a, L)
-            Da_m[:, k] = torch.as_tensor(c_a[m], dtype=torch.complex128, device=device)
-            Ds_m[:, k] = torch.as_tensor(c_s[m], dtype=torch.complex128, device=device)
-
-        # For each time index n in channel m:
-        # Diagonal of Gram: ||Da_m[n,:]||^2 * ||Ds_m[n,:]||^2
-        Da_norms_sq = torch.sum(torch.abs(Da_m) ** 2, dim=1)
-        Ds_norms_sq = torch.sum(torch.abs(Ds_m) ** 2, dim=1)
-        gram_diag = Da_norms_sq * Ds_norms_sq
-
-        # Lower symbol
-        # lower[n] = conj(Da_m[n,:]) @ T @ conj(Ds_m[n,:])
-        T_Ds_conj = T @ torch.conj(Ds_m).t()  # (L, Nm)
-        lower = torch.stack(
-            [torch.dot(torch.conj(Da_m[n, :]), T_Ds_conj[:, n]) for n in range(Nm[m])]
-        )
-
-        # Solve (diagonal approximation)
-        s_m = torch.where(gram_diag > 1e-30, lower / gram_diag, torch.zeros_like(lower))
-        sigma.append(torch.real(s_m))
-
-    return sigma
+    out = []
+    for s in sigma_np:
+        s = np.asarray(s)
+        dt = cdtype if np.iscomplexobj(s) else rdtype
+        out.append(torch.as_tensor(s, device=device).to(dt))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -364,9 +371,12 @@ def framemuleigs(
     """
     CROSSOVER = 200
 
+    # Precision follows the symbol, which is the only tensor argument here.
+    _eig_rdtype, _ = resolve(*(sigma if isinstance(sigma, list) else [sigma]))
+
     def _apply_mul(x):
         if isinstance(x, np.ndarray):
-            x = torch.as_tensor(x, dtype=torch.float32)
+            x = torch.as_tensor(x, dtype=_eig_rdtype)
         result = framemul(x, g_analysis, g_synthesis, a, sigma, L, real=real)
         if isinstance(result, torch.Tensor):
             return result.detach().cpu().numpy()
@@ -375,9 +385,9 @@ def framemuleigs(
     if L <= CROSSOVER:
         # Direct: build full matrix and use torch.linalg.eigvalsh
         device = sigma[0].device if sigma else torch.device("cpu")
-        mat = torch.zeros((L, L), dtype=torch.float32, device=device)
+        mat = torch.zeros((L, L), dtype=_eig_rdtype, device=device)
         for k in range(L):
-            ek = torch.zeros(L, dtype=torch.float32, device=device)
+            ek = torch.zeros(L, dtype=_eig_rdtype, device=device)
             ek[k] = 1.0
             mat[:, k] = framemul(ek, g_analysis, g_synthesis, a, sigma, L, real=real)
 
@@ -395,7 +405,7 @@ def framemuleigs(
         # eigsh requires symmetric operator — true for real sigma + same frames
         eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200)  # type: ignore[no-any-return]
         idx = np.argsort(-np.abs(eigvals))  # type: ignore[assignment]
-        result = torch.as_tensor(eigvals[idx], dtype=torch.float32)  # type: ignore[assignment]
+        result = torch.as_tensor(eigvals[idx], dtype=_eig_rdtype)  # type: ignore[assignment]
         if sigma:
             result = result.to(sigma[0].device)
         return result

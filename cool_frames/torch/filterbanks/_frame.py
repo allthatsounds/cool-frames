@@ -378,8 +378,14 @@ def filterbankiter(
         return c_out, 0.0, 0
 
     # Frame operator: A x = ifft( synth( ana( ifft(X) ) ) )
+    #
+    # The operator acts on the full length-L vector.  Until v0.1.1 this sliced
+    # `x_vec[:Ls]` and let `filterbank` re-pad, which makes the map a
+    # projection rather than F*F: with Ls < L the iteration diverged (relres
+    # 399.7 after 60 iterations, against NumPy's 8.5e-11 in 17).  With Ls == L
+    # the slice was a no-op, which is why it went unnoticed.
     def _apply_frame_op(x_vec: torch.Tensor) -> torch.Tensor:
-        x_sig = x_vec[:Ls] if Ls <= L else x_vec
+        x_sig = x_vec
         if mono:
             c_tmp = _filterbank(x_sig.real, g, a, L)
         else:
