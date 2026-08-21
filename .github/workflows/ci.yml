@@ -86,7 +86,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-numpy-${{ matrix.python-version }}
           path: results-numpy-*.xml
@@ -121,7 +121,7 @@ jobs:
 
       - name: Upload cross-language report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: crosslang-report
           path: tests/crosslang/results/crosslang_report.*
@@ -170,7 +170,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results-torch-${{ matrix.python-version }}
           path: results-torch-*.xml
@@ -197,7 +197,7 @@ jobs:
         run: sphinx-build -b html docs/ docs/_build/html
 
       - name: Upload docs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docs-html
           path: docs/_build/html/
@@ -227,7 +227,7 @@ jobs:
         run: twine check dist/*
 
       - name: Upload dist
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/

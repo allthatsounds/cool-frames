@@ -70,7 +70,7 @@ jobs:
           key: bench-baseline-${{ runner.os }}-${{ hashFiles('cool_frames/**/*.py') }}
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: bench_results.json
@@ -100,7 +100,7 @@ jobs:
             -q
 
       - name: Upload torch benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-torch-results
           path: bench_torch_results.json
@@ -142,7 +142,7 @@ jobs:
             -q
 
       - name: Upload torch GPU benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-torch-gpu-results
           path: bench_torch_gpu_results.json
