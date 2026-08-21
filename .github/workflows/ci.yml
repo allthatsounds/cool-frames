@@ -78,6 +78,16 @@ jobs:
             --cov-report=xml:coverage-numpy-${{ matrix.python-version }}.xml \
             --junitxml=results-numpy-${{ matrix.python-version }}.xml
 
+      # Doctests are part of the public documentation and were not covered by
+      # any job: `testpaths` limits pytest to tests/ and benchmarks/, so 33 of
+      # them had rotted, four with substantive factual errors (`cqtfilters`
+      # documented as returning 14 channels against an actual 66) and ten that
+      # could never have run at all (`audfilters(16000)` with the length
+      # argument missing, examples referring to undefined names). A doc example
+      # that is not executed is not documentation, it is a claim.
+      - name: Run doctests
+        run: pytest --doctest-modules cool_frames/ --tb=short -q
+
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v5

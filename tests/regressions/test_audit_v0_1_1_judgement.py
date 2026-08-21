@@ -232,27 +232,71 @@ def test_phasegradfrommag_returns_absolute_instantaneous_frequency(erb):
 
 
 @pytest.mark.requires_impl
-def test_constphase_rejects_hz_centre_frequencies_without_fs(erb):
-    """Guessing the sampling rate from ``max(fc)`` was worse than refusing.
+def test_constphase_infers_fs_from_hz_fc_but_says_so(erb):
+    """Inferring the sampling rate is fine; inferring it silently was not.
 
-    The magnitude path used to normalise any ``fc`` whose maximum exceeded 2.0
-    by assuming ``fs = max(fc) * 2`` — i.e. that the top channel sits exactly
-    at fs/4.  That is true of no filterbank in the package, so the gradients
-    were silently mis-scaled for every caller who passed Hz.  Refusing is the
-    only safe behaviour: the function cannot know the sampling rate, and a
-    wrong guess is indistinguishable downstream from a correct one.
+    The magnitude path normalises an ``fc`` that looks like Hz by assuming the
+    top channel sits at Nyquist.  Checked against the designers, that
+    assumption is *exact* for every single-sided bank the package ships —
+    ``audfilters``, ``cqtfilters`` (which appends a Nyquist channel whatever
+    ``fmax`` is) and ``gabfilters(real=True)`` — and wrong by about a factor of
+    two for a two-sided bank.
+
+    So the inference earns its place and this test pins two things about it:
+    that it reproduces the explicit-``fs`` answer *exactly* on a bank where the
+    assumption holds, and that it is not silent.  An earlier v0.1.1 build
+    raised here instead, which broke every existing caller to buy nothing on
+    the common path.
     """
     from cool_frames.numpy.phase import filterbankconstphase
 
-    x = _signals()["two_sines"]
+    x = _signals()["chirp"]
     s = _analyse(erb, x)
 
-    with pytest.raises(ValueError, match=r"fs|normalise|Hz"):
-        filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"])
+    def _first(res):
+        return res[0] if isinstance(res, tuple) else res
 
-    # ...and accepts them once told what fs is.
-    res = filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS)
-    assert len(res[0] if isinstance(res, tuple) else res) == len(erb["g"])
+    # Seeded, so the below-threshold random phase does not mask the
+    # comparison — see test_constphase_uses_a_local_generator below.
+    with pytest.warns(UserWarning, match=r"Nyquist"):
+        inferred = _first(
+            filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], rng=0)
+        )
+    explicit = _first(
+        filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS, rng=0)
+    )
+
+    assert np.allclose(inferred[0], explicit[0], rtol=1e-12, atol=0.0), (
+        "the inferred sampling rate does not reproduce the explicit-fs result "
+        "on audfilters, where the top channel is exactly at Nyquist"
+    )
+    assert _consistency(erb, s, inferred) == pytest.approx(
+        _consistency(erb, s, explicit), rel=1e-12
+    )
+
+
+@pytest.mark.requires_impl
+def test_constphase_does_not_warn_when_fc_is_already_normalised(erb):
+    """Normalised input is unambiguous, so it must pass without a warning.
+
+    Guards the other side of the branch: a caller who has already normalised
+    ``fc`` to [0, 2] should not be told the sampling rate is being guessed,
+    and a mismatched ``fc`` length should still be a hard error rather than
+    something the inference papers over.
+    """
+    import warnings as _warnings
+
+    from cool_frames.numpy.phase import filterbankconstphase
+
+    s = _analyse(erb, _signals()["chirp"])
+    fc_norm = erb["fc"] / FS * 2.0
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error", UserWarning)
+        filterbankconstphase(s, erb["a_int"], fc_norm, sqtfr=erb["sqtfr"])
+
+    with pytest.raises(ValueError, match=r"entries but"):
+        filterbankconstphase(s, erb["a_int"], fc_norm[:-1], sqtfr=erb["sqtfr"])
 
 
 @pytest.mark.requires_impl
@@ -530,3 +574,54 @@ def test_explicit_gradients_must_be_passed_by_keyword_and_are_honoured(erb):
         "explicit tgrad/fgrad changed nothing — the keywords are being ignored"
     )
     assert _consistency(erb, s, explicit) < _consistency(erb, s, estimated) + 1e-9
+
+
+@pytest.mark.requires_impl
+def test_constphase_is_reproducible_and_leaves_the_global_rng_alone(erb):
+    """Found while asserting that two equivalent calls agree — they did not.
+
+    ``filterbankconstphase`` assigns random phase to coefficients below the
+    magnitude threshold.  That part is deliberate and correct: the phase of a
+    coefficient at the noise floor carries no information, and integrating
+    through it would propagate that noise outward.
+
+    The defect was *which* generator supplied it.  ``np.random.uniform`` draws
+    from NumPy's global state, so four identical calls returned four different
+    answers (1.1e-4 absolute against a scale of 60), and every call silently
+    advanced the caller's global random stream — action at a distance from a
+    function that is nominally a transform.  A caller seeding ``np.random`` for
+    their own experiment had it perturbed by an unrelated library call.
+
+    Both halves are pinned here because they fail independently: a local
+    generator with no seed argument would fix the side effect but not
+    reproducibility, and a seeded global generator would do the reverse.
+    """
+    from cool_frames.numpy.phase import filterbankconstphase
+
+    s = _analyse(erb, _signals()["chirp"])
+
+    def _run(**kw):
+        res = filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS, **kw)
+        return res[0] if isinstance(res, tuple) else res
+
+    # Reproducible when seeded.
+    a, b = _run(rng=0), _run(rng=0)
+    for m, (u, v) in enumerate(zip(a, b)):
+        assert np.array_equal(np.asarray(u), np.asarray(v)), (
+            f"two seeded calls disagree in channel {m} — output is not reproducible"
+        )
+
+    # Different seeds must actually differ, or the seed is being ignored.
+    assert not np.array_equal(np.asarray(_run(rng=0)[0]), np.asarray(_run(rng=1)[0])), (
+        "rng=0 and rng=1 gave identical output — the seed is not reaching the draw"
+    )
+
+    # And the global stream is untouched.
+    np.random.seed(20260821)
+    expected = np.random.uniform()
+    np.random.seed(20260821)
+    _run()
+    assert np.random.uniform() == expected, (
+        "filterbankconstphase advanced NumPy's global random state; it must "
+        "draw from a local Generator"
+    )

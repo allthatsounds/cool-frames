@@ -118,6 +118,23 @@ Two smaller defects fell out of the same investigation:
   defaulted to `1.0` instead of the frequency spacing, leaving channel 0 and
   channel M−1 both half-scaled and divided by the wrong quantity.
 
+**A correction to an earlier entry in this file.** The first pass recorded that
+the magnitude path's fallback — inferring the sampling rate as `max(fc) * 2`
+when given Hz without `fs` — was "true of no filterbank in the package", and
+replaced it with a hard `ValueError`. That was **backwards**, and measuring it
+afterwards showed why: the inference amounts to assuming the top channel sits
+at Nyquist, and that is *exact* for every single-sided designer here —
+`audfilters`, `cqtfilters` (which appends a Nyquist channel whatever `fmax` is
+set to) and `gabfilters(real=True)` all put their last channel at fs/2. It is
+wrong by about a factor of two only for a two-sided bank, whose channels run
+past Nyquist, and `fc` alone cannot distinguish the two cases.
+
+So the hard error was the wrong trade: it broke every existing caller to buy
+nothing on the path they were actually on. The inference is restored, and what
+was actually wrong with it — the silence — is fixed instead: it now warns,
+naming the assumption and the case it fails in. Passing `fs` skips it entirely
+and is bitwise identical on a bank where the assumption holds.
+
 **A hypothesis that was wrong, recorded so it is not re-tried:** the two
 one-sided difference quotients are *summed*, which looks like a bug — they each
 estimate the same derivative, so averaging seems right. It is not. Averaging
@@ -168,57 +185,95 @@ else; CI runs bare `ruff check .` / `ruff format --check .` and inherits it. A
 bare local invocation is now exactly the CI check, so the overreach is not
 reachable by accident. A regression test asserts both halves.
 
-## Still open
+## Closed in the third pass — the carried-over items
 
-### Carried over
+All twelve carried-over items are now closed. Three of them were not what the
+register said they were, and those corrections are recorded here rather than
+quietly dropped.
 
-1. **`warpedfilters(min_win=...)` is inert** — the edge builders hardcode
-   `min_win=1` and `warpedblfilter` takes no such argument. `min_win=1` and
-   `min_win=4096` give bit-identical output, while the same parameter
-   demonstrably changes `audfilters`/`cqtfilters`/`greenwoodfilters`.
+| # | Item | Outcome |
+|---|---|---|
+| 1 | `warpedfilters(min_win=)` inert | **Fixed** — both edge builders were called with a literal `min_win=1`. |
+| 2 | `warpedfilters(freqrange='complex')` negative channels | **Fixed** — three separate defects; see below. |
+| 3 | `analyze_filterbank` hardcodes fs = 8000 | **Misdiagnosis** — see below. Comment corrected, code unchanged. |
+| 4 | `ifilterbank` ignores `Ls > L` | **Fixed** — now warns instead of silently returning `L` samples. |
+| 5 | `filterbankiter(real=False)` diverges | **Fixed** — `real` is derived from the filters; same fix applied to the torch twin, and to `ifilterbankiter`, which had the identical defect and was not filed. |
+| 6 | `torch.filters.hopfilters` always raises | **Fixed** — removed; there is no NumPy `hopfilters` to wrap. |
+| 7 | `torch.filters.firwin` has no `device` | **Fixed** — takes `device` and `dtype` like every sibling. |
+| 8 | Fixed output dtypes | **Fixed** — `dtype=` added to `filterbankresponse`, `filterbankfreqz`, `ifilterbankiter`; defaults unchanged. |
+| 9 | `magresp`/`plotfft` two-sided axes | **Fixed** — both. |
+| 10 | Stale doctests | **Fixed** — all 33, and they now run in CI. Two real defects fell out. |
+| 11 | Dead code | **Fixed** — six pieces removed. |
+| 12 | `realonly` inconsistency | **Fixed at the root** — `magresp` no longer keys off it. |
 
-2. **`warpedfilters(freqrange='complex')` negative-frequency channels are
-   wrong** (separate from the crash, which is fixed). The computed `symmetry`
-   flag is never forwarded to `warpedblfilter`: 254-bin peak error on
-   negative-fc channels against 3 bins on positive ones.
+### Item 2 was three defects, not one
 
-3. **`analyze_filterbank` hard-codes fs = 8000** for its probe signal although
-   the filters carry `fs`, so on a 4 kHz bank its 2500 Hz tone is above Nyquist.
+Each is silent, and each leaves the peak amplitudes intact, which is why
+"does it look like a filter" checks never caught any of them:
 
-4. **`ifilterbank` silently ignores `Ls > L`** — returns `L` samples, no warning.
+1. `warpedfilters` computed a `symmetry` flag and dropped it. `warpedblfilter`
+   took no such argument, so it could not be forwarded to
+   `comp_warpedfreqresponse`/`comp_warpedfoff` — which have always accepted it.
+   Every negative-fc channel was built by evaluating the warp below zero,
+   outside its domain.
+2. The mirrored branch of `comp_warpedfoff` had MATLAB's `+1` stripped from it
+   as a 1-based indexing artifact. It is not one — it compensates for the `n-1`
+   in the `H[::-1]` reversal — so every mirrored channel landed exactly one bin
+   low. A shift search found a uniform −1 offset across all 32 mirror pairs.
+3. The mirrored branch takes a deliberately wide window (~2B rather than the
+   filter's own B−A) because the roll-and-reverse arithmetic needs it, and never
+   trimmed back. The surplus is the aliased `win_hi` term the positive twin
+   discards: channel −2321.6 Hz came out with 3334 nonzero bins and 4.5× the
+   energy of its +2321.6 Hz twin.
 
-5. **`filterbankiter(real=False)`, its documented default, diverges** on the
-   standard `audfilters` bank (relres 50.5, error 1.8e+05). Its sibling
-   `ifilterbank` defaults to `real=True`: a default asymmetry across the family.
+With all three fixed, every negative channel is now **bitwise** the mirror of
+its positive twin (relative L2 difference 0.0 across all 32 pairs, against a
+median of 0.18 before).
 
-6. **`torch.filters.hopfilters`** is exported but always raises
-   `NotImplementedError` (there is no NumPy `hopfilters` to wrap).
+*A blind alley worth recording:* narrowing the mirrored truncation window to
+B−A looks obviously right and is wrong — it truncates the energy away entirely
+and takes the mirror error from 0.10 to 1.00. The wide window is load-bearing.
 
-7. **`torch.filters.firwin` has no `device` argument**, unlike every other
-   wrapper in the module.
+### Item 3 was a misdiagnosis
 
-8. **Fixed output dtypes** remain in `filterbankresponse` (float64),
-   `filterbankfreqz` (complex128) and `ifilterbankiter` (float64).
+The register recorded that `analyze_filterbank` "hard-codes fs = 8000 for its
+probe signal … so on a 4 kHz bank its 2500 Hz tone is above Nyquist". That is
+wrong. `t` is a *sample index*, so `440 * t / 8000` is a digital frequency of
+0.055 cycles/sample: the three tones sit at 0.110, 0.250 and 0.625 of Nyquist
+whatever the bank's real sampling rate is, and the highest is at 0.3125
+cycles/sample, comfortably below the 0.5 that would alias. The probe is
+deliberately scale-invariant.
 
-9. **`magresp`'s two-sided axis is off by one bin** (`linspace(-1,1,L)` uses
-    step `2/(L-1)`); **`plotfft`'s two-sided branch** plots against unshifted
-    `fftfreq`, so the line wraps mid-plot.
+Rewriting it in Hz against the filters' own `fs` was tried and is numerically
+identical to 5e-14, so the code is unchanged and only the comment is — plus a
+regression test pinning the property, because the expression *reads* like a bug
+and the next person to reach for the obvious fix should be told why not.
 
-10. **Stale doctests** — 13 failures under `--doctest-modules` in `filters/`,
-    12 of 25 in the audited torch modules, plus `_frame.py` and `_analysis.py`.
-    Four are substantive factual errors (e.g. `cqtfilters(...)` documented as 14
-    channels, actual 66). `pyproject.toml` limits `testpaths` to
-    `tests`/`benchmarks`, so none of it is covered by CI.
+### Two defects found while fixing item 10
 
-11. **Dead code** — `_design._build_lowpass`/`_build_highpass`,
-    `_cqtfilters._apply_taper_to_edge_filters`,
-    `_warpedfilters_design._comp_nyquistfilt`/`comp_zerofilt`;
-    `_gabfilters._gabwin` takes `a` and `L` and reads neither;
-    `core/_core.py:293` is a statement whose result is discarded.
+- **`firwin`'s `norm='energy'` did not normalise.** `_apply_norm` multiplied by
+  `sqrt(M)` for `'energy'`/`'2'` and by `M` for `'1'`/`'area'`, so a "unit
+  energy" Hann window of length 512 had an L2 norm of 313.5. This contradicted
+  `core._norm.normalize_window`, the public `setnorm` and
+  `_warpedfilters._setnorm` — all of which divide — and LTFAT. `firwin`'s
+  default is `'inf'`, which was always right, so the damage was confined to
+  explicit callers; `gabfilters` is the one in-tree caller that asks for energy.
+  Reconstruction and conditioning are unaffected (the dual scales inversely).
 
-12. **`realonly` is inconsistent across designers** and currently has zero
-    measurable effect anywhere (deliberate — see the design note in
-    `_filters.py`), but `cqtfilters` emits `realonly=1` channels regardless.
+- **`gm["H"](L)` assumed a callable.** A descriptor's `'H'` may be a
+  `callable(L)` or an already-materialised array; the designers produce the
+  former, `prepare_filters` and the torch wrappers the latter. Eight call sites
+  across the phase modules called it unconditionally, raising `TypeError:
+  'numpy.ndarray' object is not callable` for every materialised bank — in
+  effect for the whole torch backend whenever `fc` was not passed explicitly.
+  The check now lives in one helper, `filters._hval`.
+
+### And one on the analysis side
+
+**`ifilterbankiter` had `filterbankiter`'s defect too**, on the synthesis side,
+and was not filed: the documented `real=False` default reconstructed the
+flagship `audfilters` bank with **23 % error** where the correct mode reaches
+4.5e-16. Found by reading the two signatures next to each other.
 
 ## Verified clean
 

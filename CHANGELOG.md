@@ -265,10 +265,22 @@ comes within a decibel of what the same integrator achieves from the *true*
 gradients. It is weakest on stationary tones over a coarse filterbank, which is
 inherent to the method and is now documented rather than hidden.
 
-**Behavioural change:** `filterbankconstphase`'s magnitude path used to guess
-the sampling rate as `max(fc) * 2` whenever it saw an `fc` above 2.0 — true of
-no filterbank in the package. It now takes an explicit `fs`, and raises if
-given Hz without one.
+`filterbankconstphase` gains an `fs` parameter. Without it, an `fc` that looks
+like Hz is still normalised by assuming the top channel sits at Nyquist — which
+is exact for `audfilters`, `cqtfilters` and `gabfilters(real=True)`, and wrong
+by about a factor of two for a two-sided bank — but that inference now **warns**
+instead of happening silently. Passing `fs` skips it and is bitwise identical
+where the assumption holds. This is not a breaking change; an earlier v0.1.1
+build did raise here, which broke existing callers for no gain on the common
+path.
+
+- **`filterbankconstphase` drew its below-threshold random phase from NumPy's
+  global state.** Randomising the phase of coefficients at the noise floor is
+  correct — integrating through them propagates noise — but using
+  `np.random.uniform` made four identical calls return four different answers,
+  and silently advanced the caller's global random stream as a side effect of
+  running a transform. It now uses a local `Generator` and accepts
+  `rng=<seed or Generator>` for reproducible output.
 
 ### Also in this release
 
@@ -281,9 +293,56 @@ given Hz without one.
 - **The lint scope is declared once**, in `[tool.ruff] include` in
   `pyproject.toml`, so a bare `ruff check .` is exactly the CI check.
 
-### Still open
+### The remaining audit items are closed
 
-A tail of lower-severity items — all in `DEFECT_REGISTER.md` with measurements.
+All twelve items the audit had left open are fixed. The ones a caller will
+notice:
+
+- **`warpedfilters(freqrange='complex')` built its negative-frequency channels
+  by evaluating the warp outside its domain.** Three defects, all silent: the
+  computed `symmetry` flag was never forwarded (`warpedblfilter` took no such
+  argument); MATLAB's `+1` in the mirrored offset was stripped as a 1-based
+  artifact when it actually compensates for the `H[::-1]` reversal, putting
+  every mirrored channel one bin low; and the deliberately wide mirroring
+  window was never trimmed, leaving an aliased tail that gave one channel 4.5x
+  its twin's energy. Every negative channel is now bitwise the mirror of its
+  positive twin.
+- **`warpedfilters(min_win=...)` was inert** — both edge builders were called
+  with a literal `min_win=1`.
+- **`filterbankiter` and `ifilterbankiter` defaulted to `real=False`**, which
+  diverged on the package's flagship bank (100 iterations to a relative
+  residual of 58) and reconstructed it with 23 % error respectively. Both now
+  derive `real` from the filters, as `reconstruct` does; the torch
+  `filterbankiter` is fixed in parity.
+- **`firwin(norm='energy')` did not normalise** — it multiplied by `sqrt(M)`,
+  so a "unit energy" Hann window of length 512 had an L2 norm of 313.5. This is
+  `gabfilters`' default window norm, so Gabor coefficient *scales* change;
+  reconstruction and conditioning do not (the dual scales inversely).
+- **The phase modules assumed `filter['H']` was always a callable**, raising
+  `TypeError` for every materialised bank — in effect the whole torch backend
+  whenever `fc` was not passed explicitly.
+- **`ifilterbank` silently ignored `Ls > L`**, returning fewer samples than
+  asked for; it now warns.
+- **`magresp` and `plotfft` drew their two-sided axes wrongly** — a `linspace`
+  stretched by one bin against `fftshift`-ed data, and an unshifted axis that
+  made the plotted line double back across the middle.
+- **`hopfilters` is removed** from `cool_frames.torch.filters`; it raised
+  unconditionally, as there is no NumPy implementation to wrap.
+- **`torch.filters.firwin` takes `device` and `dtype`** like every sibling, and
+  `filterbankresponse`, `filterbankfreqz` and `ifilterbankiter` take `dtype`
+  (defaults unchanged).
+
+**All 33 doctests are fixed and now run in CI.** Four were substantively wrong
+— `cqtfilters` was documented as returning 14 channels against an actual 66,
+and the ERB-rate of 1 kHz as 9.264 against 15.572 — and ten could never have
+run at all. The two defects above (`firwin`'s norm and the callable-`H`
+assumption) were found by fixing them.
+
+One item in the register turned out to be a **misdiagnosis**:
+`analyze_filterbank`'s probe signal was recorded as aliasing on low-rate banks,
+but its `/8000` is a digital-frequency normalisation rather than a sampling
+rate, so the tones were always below Nyquist. The code is unchanged and the
+comment now says so.
 
 ## 0.1.0
 
