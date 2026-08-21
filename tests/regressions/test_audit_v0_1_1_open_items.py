@@ -866,3 +866,53 @@ def test_torch_phase_api_works_on_materialised_filters():
         assert sorted(res) == ["tf", "tt"] and len(res["tt"]) == len(g)
         tgrad, _fg, _s, _c2 = filterbankphasegrad(x, g, a, L=L)
         assert len(tgrad) == len(g)
+
+
+@pytest.mark.requires_torch_impl
+def test_torch_ifilterbankiter_derives_real_and_keeps_the_input_dtype():
+    """The fourth place the ``real=False`` default was hiding.
+
+    ``filterbankiter`` (NumPy), ``filterbankiter`` (torch) and
+    ``ifilterbankiter`` (NumPy) were all fixed; the torch ``ifilterbankiter``
+    was missed and went on reconstructing the flagship ``audfilters`` bank with
+    23 % error while its three siblings reached machine precision.  It was found
+    by diffing the two backends' signatures against each other rather than by
+    anything failing, which is the only way a defect in the *default* of a
+    function whose tests all pass an explicit value ever surfaces.
+
+    The output dtype is pinned in the same test because it was hardcoded to
+    float64 next door: the torch backend is dtype-polymorphic everywhere else,
+    and silently widening a float32 pipeline is precisely what that
+    polymorphism exists to prevent.
+    """
+    torch = pytest.importorskip("torch")
+    from cool_frames.numpy.filters import audfilters
+    from cool_frames.torch.filterbanks import filterbank, ifilterbankiter
+
+    x = np.random.default_rng(0).standard_normal(512)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        g, a, _fc, L, _info = audfilters(4000, 512)
+
+        for tdtype, rdtype, tol in (
+            (torch.float64, torch.float64, 1e-12),
+            (torch.float32, torch.float32, 1e-5),
+        ):
+            xt = torch.as_tensor(x, dtype=tdtype)
+            xr, _relres, _niter = ifilterbankiter(filterbank(xt, g, a, L=L), g, a, Ls=512)
+            assert xr.dtype == rdtype, (
+                f"a {tdtype} input produced a {xr.dtype} result; the output "
+                f"dtype should follow the coefficients"
+            )
+            out = np.real(np.asarray(xr.detach().double()))[:512]
+            err = np.linalg.norm(out - x) / np.linalg.norm(x)
+            assert err < tol, f"{tdtype}: round-trip error {err:.4g} with the derived real mode"
+
+        # The override still reaches the algorithm — this is the old broken mode.
+        xt = torch.as_tensor(x, dtype=torch.float64)
+        xr, _r, _n = ifilterbankiter(filterbank(xt, g, a, L=L), g, a, Ls=512, real=False)
+        out = np.real(np.asarray(xr.detach().double()))[:512]
+        assert np.linalg.norm(out - x) / np.linalg.norm(x) > 0.1, (
+            "real=False no longer reproduces the divergence, so the override is not being honoured"
+        )

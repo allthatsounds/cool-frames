@@ -271,15 +271,24 @@ def ifilterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
 ) -> tuple[torch.Tensor, float, int]:
     """Iterative filterbank synthesis via conjugate gradients.
 
     Delegates to the NumPy implementation and converts back to torch.
 
+    Parameters
+    ----------
+    real : if True, use real-filterbank synthesis.  Defaults to ``None``,
+        meaning derive it from the filters — see the NumPy ``ifilterbankiter``.
+        The old ``False`` default reconstructed the flagship ``audfilters`` bank
+        with 23 % error where the correct mode reaches 4.4e-16.  This is the
+        same defect as ``filterbankiter``'s and the NumPy twin's, and it
+        outlived both of those fixes by being in a fourth place nobody looked.
+
     Returns
     -------
-    xr     : reconstructed signal tensor
+    xr     : reconstructed signal tensor, in the coefficients' own real dtype
     relres : relative residual
     niter  : number of iterations used
 
@@ -306,7 +315,18 @@ def ifilterbankiter(
     result = _np_ifilterbankiter(c_np, g_np, a, Ls=Ls, tol=tol, maxit=maxit, alg=alg, real=real)
     xr_np, relres, niter = result[0], result[1], result[2]
 
-    xr = torch.tensor(xr_np, dtype=torch.float64, device=device)
+    # Follow the coefficients' precision rather than forcing float64: the torch
+    # backend is dtype-polymorphic everywhere else, and silently widening a
+    # float32 pipeline here is the thing that polymorphism exists to avoid.
+    out_dtype = torch.float64
+    for cm in c:
+        if isinstance(cm, torch.Tensor):
+            out_dtype = (
+                torch.float32 if cm.dtype in (torch.complex64, torch.float32) else torch.float64
+            )
+            break
+
+    xr = torch.as_tensor(xr_np, dtype=out_dtype, device=device)
     return xr, relres, niter
 
 

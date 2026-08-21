@@ -338,6 +338,13 @@ and the ERB-rate of 1 kHz as 9.264 against 15.572 — and ten could never have
 run at all. The two defects above (`firwin`'s norm and the callable-`H`
 assumption) were found by fixing them.
 
+- **`torch.ifilterbankiter` had the `real=False` default too.** It was the
+  fourth place that defect lived — after the NumPy `filterbankiter`, the torch
+  `filterbankiter` and the NumPy `ifilterbankiter` — and it outlived all three
+  fixes, reconstructing the flagship bank with 23 % error while its siblings
+  reached machine precision. Its output dtype was also hardcoded to float64;
+  it now follows the coefficients', like the rest of the torch backend.
+
 One item in the register turned out to be a **misdiagnosis**:
 `analyze_filterbank`'s probe signal was recorded as aliasing on low-rate banks,
 but its `/8000` is a digital-frequency normalisation rather than a sampling
