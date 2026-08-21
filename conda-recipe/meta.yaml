@@ -1,0 +1,56 @@
+{% set version = "0.1.0" %}
+
+package:
+  name: cool-frames
+  version: {{ version }}
+
+source:
+  path: ..
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
+
+requirements:
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=68
+    - setuptools-scm >=8
+    - wheel
+  run:
+    - python >=3.10
+    - numpy >=1.24
+    - scipy >=1.10
+
+test:
+  imports:
+    - cool-frames
+    - cool_frames.numpy.filters
+    - cool_frames.numpy.filterbanks
+    - cool_frames.numpy.phase
+  requires:
+    - pytest
+  commands:
+    - pytest tests/ --ignore=tests/torch_backend
+        -m "not slow and not requires_ref" -q
+
+about:
+  home: https://github.com/allthatsounds/cool-frames
+  license: EUPL-1.2
+  summary: >
+    Python port of the LTFAT filterbank — auditory, wavelet, and CQT filter
+    design, analysis/synthesis, phase retrieval, and frame theory.
+  description: |
+    cool-frames provides a NumPy reference implementation and a
+    differentiable PyTorch backend for non-uniform filterbank analysis and
+    synthesis, with auditory, constant-Q, wavelet, and Gabor filter design,
+    frame-theoretic validation, and phase retrieval algorithms including
+    Griffin-Lim, ADMM, RAAR, and PGHI.
+  doc_url: https://github.com/allthatsounds/cool-frames#readme
+  dev_url: https://github.com/allthatsounds/cool-frames
+
+extra:
+  recipe-maintainers:
+    - allthatsounds

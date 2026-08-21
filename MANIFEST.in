@@ -1,0 +1,25 @@
+# Include essential packaging files
+include LICENSE
+include README.md
+include pyproject.toml
+
+# Include type stubs marker
+include cool_frames/py.typed
+
+# Exclude build artifacts
+prune build
+
+# Exclude test suite (install pytest extra to run from checkout)
+prune tests
+
+# Exclude build artifacts and caches
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude *.egg-info
+global-exclude .DS_Store
+global-exclude *.m
+global-exclude *.mat
+global-exclude *.c
+global-exclude *.h
+global-exclude *.mk
+global-exclude Makefile*

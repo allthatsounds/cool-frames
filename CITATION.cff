@@ -1,0 +1,51 @@
+cff-version: 1.2.0
+title: "cool-frames: invertible time-frequency analysis"
+message: "If you use this software, please cite the toolbox paper."
+type: software
+authors:
+  - given-names: Clara
+    family-names: Hollomey
+    email: clara.hollomey@allthatsounds.com
+repository-code: "https://github.com/allthatsounds/cool-frames"
+license: EUPL-1.2
+version: 0.1.0
+date-released: "2026-08-21"
+keywords:
+  - audio
+  - filterbank
+  - signal-processing
+  - auditory
+  - constant-q
+  - wavelet
+  - phase-retrieval
+  - frame-theory
+  - ltfat
+abstract: >-
+  cool-frames is the frame-theory layer of COOL (Computational
+  Orchestration and Listening): a Python port and redesign of the LTFAT
+  filterbank module providing auditory, wavelet, constant-Q, Gabor and
+  warped filter design with exact analysis/synthesis and phase
+  retrieval, in NumPy and PyTorch. It includes
+  a 301-test property-based test suite grounded in frame theory for
+  cross-language validation against MATLAB LTFAT.
+preferred-citation:
+  type: article
+  title: "cool-frames: A Python Toolbox for Invertible Auditory Filterbanks with Frame-Theoretic Foundations"
+  authors:
+    - given-names: Clara
+      family-names: Hollomey
+      email: clara.hollomey@allthatsounds.com
+  year: 2026
+references:
+  - type: article
+    title: "Property-Based Testing for Signal Processing: A Frame-Theoretic Test Suite for Filterbank Implementations"
+    authors:
+      - given-names: Clara
+        family-names: Hollomey
+    year: 2026
+  - type: article
+    title: "A Comparative Study of Time-Frequency Representations for Signal Processing and Machine Learning"
+    authors:
+      - given-names: Clara
+        family-names: Hollomey
+    year: 2026

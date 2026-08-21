@@ -1,0 +1,180 @@
+[build-system]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cool-frames"
+dynamic = ["version"]
+description = "Invertible time-frequency analysis: auditory, wavelet, constant-Q, Gabor and warped filterbank design with exact analysis/synthesis, frame theory and phase retrieval, in NumPy and PyTorch."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "EUPL-1.2"
+authors = [
+    { name = "Clara Hollomey", email = "clara.hollomey@allthatsounds.com" },
+]
+keywords = [
+    "audio",
+    "filterbank",
+    "signal-processing",
+    "auditory",
+    "constant-q",
+    "wavelet",
+    "phase-retrieval",
+    "frame-theory",
+    "ltfat",
+    "cool-frames",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.0"]
+dev = [
+    "pytest>=7",
+    "pytest-cov",
+    "pytest-benchmark>=4",
+    "hypothesis>=6.80",
+    "matplotlib",
+    "build",
+    "twine",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+docs = [
+    "sphinx>=7",
+    "furo",
+    "sphinx-autobuild",
+]
+
+[project.urls]
+Homepage = "https://github.com/allthatsounds/cool-frames"
+Documentation = "https://allthatsounds.github.io/cool-frames/"
+Repository = "https://github.com/allthatsounds/cool-frames"
+Issues = "https://github.com/allthatsounds/cool-frames/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cool_frames*"]
+exclude = [
+    "tests*",
+    "benchmarks*",
+    "examples*",
+    "docs*",
+    "torch_additions*",  # parked torch extras (ridge ops); in-repo, not shipped
+]
+
+[tool.setuptools.package-data]
+cool_frames = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "benchmarks"]
+# Put the repo root on sys.path so the in-repo, wheel-excluded ``torch_additions``
+# package (parked torch extras) is importable in tests.
+pythonpath = ["."]
+python_classes = ["Test*", "Prop*", "Bench*"]
+python_functions = ["test_*"]
+markers = [
+    "requires_impl: mark test as requiring the cool-frames package",
+    "requires_ref:  mark test as requiring reference .mat files",
+    "slow: computationally heavy test (skip with -m 'not slow')",
+]
+
+# ---------------------------------------------------------------------------
+# setuptools-scm – version from git tags
+# ---------------------------------------------------------------------------
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+fallback_version = "0.1.0"
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["cool_frames"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff – linter & formatter
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+src = ["cool_frames", "tests"]
+# WIP Colab tutorial notebooks (cross-cell refs / placeholder helpers) are not
+# linted as library code.
+extend-exclude = ["examples/colab"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long – handled by formatter
+    "E741",   # ambiguous variable name – l, O, I are standard in DSP/math
+    "B905",   # zip strict – not always appropriate in numerics
+    "SIM108", # ternary – reduces readability in math code
+    "RUF001", # ambiguous unicode in strings – math symbols
+    "RUF002", # ambiguous unicode in docstrings – en-dashes are intentional
+    "RUF003", # ambiguous unicode in comments – math symbols
+    "RUF046", # unnecessary int() – explicit casts aid readability in numerics
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cool_frames"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011", "SIM300"]  # allow assert True, yoda comparisons in tests
+
+# ---------------------------------------------------------------------------
+# Mypy – type checking
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest-benchmark
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options.benchmark]
+# Baselines stored here so they can be committed and compared across branches
+storage = "benchmarks/.benchmarks"
+# Minimum 3 rounds so warmup noise doesn't dominate short functions
+min_rounds = 3
+# Disable gc between rounds (more stable; matches how library code is called)
+disable_gc = true
