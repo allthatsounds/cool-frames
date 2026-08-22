@@ -202,7 +202,7 @@ class TestConstphaseMagnitudeInvariantImpl:
             f = _make_signal(Ls, seed=13 + trial)
             c = filterbank(f, g, a)
             s = [np.abs(np.asarray(cm)) for cm in c]
-            c_out = filterbankconstphase(s, a, fc, fs=fs)
+            c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
             for m in range(M):
                 mag_out = np.abs(np.asarray(c_out[m])).ravel()
                 mag_in  = s[m].ravel()
@@ -231,7 +231,7 @@ class TestConstphaseMagnitudeInvariantImpl:
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
         tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a, L)
-        c_out = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()
@@ -256,7 +256,7 @@ class TestConstphaseMagnitudeInvariantImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert len(c_out) == M, \
             f"constphase: output must have M={M} cells, got {len(c_out)}"
         for m in range(M):

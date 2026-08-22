@@ -26,7 +26,10 @@ def filterbankconstphase(
     tol: float = 1e-6,
     tgrad: list | None = None,
     fgrad: list | None = None,
-) -> tuple[list[torch.Tensor], torch.Tensor]:
+    sqtfr: np.ndarray | None = None,
+    fs: float | None = None,
+    rng: object | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Phase reconstruction using heap-based PGHI (wraps NumPy).
 
     This delegates to the NumPy heap-based implementation, so it is
@@ -98,20 +101,19 @@ def filterbankconstphase(
         tol=tol,
         tgrad=tgrad_np,
         fgrad=fgrad_np,
+        sqtfr=sqtfr,
+        fs=fs,
+        rng=rng,
     )
 
-    # The numpy function returns (c_list, mask) or just c_list
-    if isinstance(result, tuple):
-        c_np, mask_np = result
-    else:
-        c_np = result
-        mask_np = np.ones(1)
+    c_np, mask_np = result
 
-    c_torch = [torch.tensor(cm, dtype=cdtype, device=device) for cm in c_np]
-    mask_torch = (
-        torch.tensor(mask_np, device=device)
-        if isinstance(mask_np, np.ndarray)
-        else torch.tensor([1])
-    )
+    c_torch = [torch.as_tensor(cm, dtype=cdtype, device=device) for cm in c_np]
+    # Per-channel boolean masks, matching the coefficient structure exactly —
+    # the same shape the NumPy backend returns.  This used to collapse to a
+    # single tensor (and to `torch.tensor([1])` on the branch where NumPy
+    # returned a bare list), so the two backends disagreed about the *shape* of
+    # the second return value as well as whether there was one.
+    mask_torch = [torch.as_tensor(np.asarray(mm), device=device) for mm in mask_np]
 
     return c_torch, mask_torch

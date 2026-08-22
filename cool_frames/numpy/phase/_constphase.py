@@ -332,6 +332,17 @@ def filterbankconstphase(
     Returns
     -------
     c_new    : list of M complex arrays with reconstructed phase
+    usedmask : list of M boolean arrays, True where the phase was integrated
+               rather than drawn at random because the coefficient sat below
+               ``tol`` of the peak magnitude
+
+    .. versionchanged:: 0.1.1
+       Returns a 2-tuple.  It previously returned the coefficient list alone,
+       while the torch backend already returned ``(c, usedmask)`` and this
+       function's own annotation already said ``-> tuple`` (silenced with a
+       ``# type: ignore``).  Unpack it::
+
+           c, usedmask = filterbankconstphase(...)
 
     Examples
     --------
@@ -340,9 +351,11 @@ def filterbankconstphase(
     >>> from cool_frames.numpy.phase import filterbankconstphase
     >>> x = np.random.randn(8000)
     >>> g, a, fc, L, _info = audfilters(8000, len(x))
-    >>> c_recon = filterbankconstphase(x, g, a, L, fc)
+    >>> c_recon, usedmask = filterbankconstphase(x, g, a, L, fc)
     >>> len(c_recon) == len(g)
     True
+    >>> usedmask[0].dtype
+    dtype('bool')
 
     References
     ----------
@@ -551,14 +564,23 @@ def filterbankconstphase(
     generator = rng if isinstance(rng, np.random.Generator) else np.random.default_rng(rng)
     phase_flat[low_idx] = generator.uniform(0, 2 * np.pi, size=len(low_idx))
 
-    # Re-split into per-channel arrays
+    # Re-split into per-channel arrays.
+    #
+    # ``usedmask`` marks the coefficients whose phase was *integrated* rather
+    # than filled in at random because they sat below the threshold.  It used to
+    # be accumulated here and then dropped on the floor; it is genuinely useful
+    # (it tells you which part of the answer means anything) and LTFAT returns
+    # it too, so it is returned rather than discarded.
     c_new = []
+    usedmask = []
     offset = 0
     for m in range(M):
         nm = N[m]
         phi = phase_flat[offset : offset + nm]
         a_m = abss_list[m].ravel()
-        c_new.append((a_m * np.exp(1j * phi)).reshape(np.asarray(c[m]).shape))
+        shape = np.asarray(c[m]).shape
+        c_new.append((a_m * np.exp(1j * phi)).reshape(shape))
+        usedmask.append((a_m > absthr).reshape(shape))
         offset += nm
 
-    return c_new  # type: ignore[return-value]
+    return c_new, usedmask

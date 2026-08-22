@@ -139,7 +139,7 @@ def test_pghi_from_magnitude_beats_zero_phase(erb, name):
 
     baseline = _consistency(erb, s, [u.astype(complex) for u in s])
     res = filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS)
-    got = _consistency(erb, s, res[0] if isinstance(res, tuple) else res)
+    got = _consistency(erb, s, res[0])
 
     assert got < baseline, (
         f"PGHI from magnitude ({got:.4f}) is no better than zero phase "
@@ -176,10 +176,10 @@ def test_pghi_magnitude_path_approaches_the_true_gradient_path_on_a_chirp(erb):
     s = _analyse(erb, x)
 
     from_signal = _consistency(
-        erb, s, filterbankconstphase(x, erb["g"], erb["a"], L=erb["L"], fc=erb["fc"])
+        erb, s, filterbankconstphase(x, erb["g"], erb["a"], L=erb["L"], fc=erb["fc"])[0]
     )
     res = filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS)
-    from_mag = _consistency(erb, s, res[0] if isinstance(res, tuple) else res)
+    from_mag = _consistency(erb, s, res[0])
 
     assert from_mag < 2.0 * from_signal + 1e-3, (
         f"magnitude-only PGHI ({from_mag:.4f}) is far worse than the same "
@@ -254,7 +254,7 @@ def test_constphase_infers_fs_from_hz_fc_but_says_so(erb):
     s = _analyse(erb, x)
 
     def _first(res):
-        return res[0] if isinstance(res, tuple) else res
+        return res[0]
 
     # Seeded, so the below-threshold random phase does not mask the
     # comparison — see test_constphase_uses_a_local_generator below.
@@ -561,7 +561,7 @@ def test_explicit_gradients_must_be_passed_by_keyword_and_are_honoured(erb):
     tgrad, fgrad, _s, _c = filterbankphasegrad(x, erb["g"], erb["a"], erb["L"])
 
     def _first(res):
-        return res[0] if isinstance(res, tuple) else res
+        return res[0]
 
     estimated = _first(filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS))
     explicit = _first(
@@ -602,7 +602,7 @@ def test_constphase_is_reproducible_and_leaves_the_global_rng_alone(erb):
 
     def _run(**kw):
         res = filterbankconstphase(s, erb["a_int"], erb["fc"], sqtfr=erb["sqtfr"], fs=FS, **kw)
-        return res[0] if isinstance(res, tuple) else res
+        return res[0]
 
     # Reproducible when seeded.
     a, b = _run(rng=0), _run(rng=0)

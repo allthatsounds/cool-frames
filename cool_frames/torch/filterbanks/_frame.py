@@ -112,11 +112,19 @@ def filterbankbounds(
     a,
     L: int,
     real: bool = True,
-) -> tuple[float, float]:
+    return_kappa: bool = False,
+):
     """Compute the frame bounds *(A, B)* of a filterbank.
 
     Delegates to the NumPy implementation.  ``real`` defaults to ``True``
     (single-sided real-audio frames), matching the numpy backend.
+
+    Parameters
+    ----------
+    return_kappa : if True, return ``(A, B, kappa)`` with ``kappa = B / A``,
+        matching the NumPy backend.  This was NumPy-only, so the condition
+        number — the single most useful thing about a pair of frame bounds —
+        had to be recomputed by hand on the torch side.
 
     Examples
     --------
@@ -125,9 +133,16 @@ def filterbankbounds(
     >>> A, B = filterbankbounds(g, a, L)
     >>> A > 0 and B > A  # A ≤ I ≤ B for frame property
     True
+    >>> A, B, kappa = filterbankbounds(g, a, L, return_kappa=True)
+    >>> abs(kappa - B / A) < 1e-9
+    True
     """
     g_np = _torch_filters_to_numpy(g, L)
-    A, B = _np_filterbankbounds(g_np, a, L, real=real)
+    result = _np_filterbankbounds(g_np, a, L, real=real, return_kappa=return_kappa)
+    if return_kappa:
+        A, B, kappa = result
+        return float(A), float(B), float(kappa)
+    A, B = result
     return float(A), float(B)
 
 

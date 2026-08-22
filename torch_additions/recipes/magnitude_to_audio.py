@@ -128,8 +128,7 @@ def reconstruct(
         )
         sqtfr = np.sqrt(np.asarray(compute_tfr_from_filters(g, L), dtype=float))
 
-        res = filterbankconstphase(s_np, a_int, fc_use, sqtfr=sqtfr, fs=fs_use)
-        c_np = res[0] if isinstance(res, tuple) else res
+        c_np, _usedmask = filterbankconstphase(s_np, a_int, fc_use, sqtfr=sqtfr, fs=fs_use)
 
         dev = s_mag[0].device if len(s_mag) > 0 else torch.device("cpu")
         c = [torch.as_tensor(np.asarray(cm), dtype=torch.complex128).to(dev) for cm in c_np]

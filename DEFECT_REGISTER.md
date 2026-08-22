@@ -7,9 +7,8 @@ being recorded; nothing here is a code-reading guess.
 This file tracks what was fixed in v0.1.1 and what is still open, so the
 remainder does not have to be rediscovered.
 
-Every defect the audit recorded is now fixed. What remains open is a short list
-of **API inconsistencies between the two backends** (below), which are design
-questions rather than wrong answers.
+Every defect the audit recorded is now fixed, as are the backend API
+divergences found afterwards. Nothing is open.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
 not yet fixed.
@@ -279,39 +278,45 @@ and was not filed: the documented `real=False` default reconstructed the
 flagship `audfilters` bank with **23 % error** where the correct mode reaches
 4.5e-16. Found by reading the two signatures next to each other.
 
-## Still open — backend API divergences
+## Closed in the fourth pass — backend API divergences
 
 Found by diffing the two backends' signatures against each other rather than by
-anything failing. None produces a wrong answer; all of them make code that
-works against one backend behave differently against the other. Recorded
-because a fourth instance of exactly this class — the `real=False` default in
-`torch.ifilterbankiter` — *was* a wrong answer (23 % reconstruction error) and
-survived three separate rounds of fixing its siblings by being in a place
-nobody had compared.
+anything failing. That comparison was worth doing on its own account: it turned
+up a **fourth** copy of the `real=False` default defect, in
+`torch.ifilterbankiter`, which had survived three separate rounds of fixing its
+siblings and was still reconstructing the flagship bank with 23 % error.
 
-| Function | Divergence | Why it matters |
+| Function | Was | Now |
 |---|---|---|
-| `filterbankconstphase` | NumPy returns `list[array]`; torch returns `(list[Tensor], Tensor)` | Every caller writes `res[0] if isinstance(res, tuple) else res`. The NumPy annotation says `-> tuple` and is silenced with `# type: ignore[return-value]`, so the type checker cannot help either. |
-| `filterbankconstphase` | `sqtfr`, `fs`, `rng` are NumPy-only | Magnitude-path PGHI and reproducible phase are unreachable from the torch backend. |
-| `filterbankbounds` | `return_kappa` is NumPy-only | The condition number has to be computed by hand on the torch side. |
-| `filterbankscale` | `L` is torch-only | |
+| `filterbankconstphase` | NumPy returned `list[array]`; torch returned `(list[Tensor], Tensor)` | Both return `(coeffs, usedmask)`, with `usedmask` a per-channel boolean list in both backends |
+| `filterbankconstphase` | `sqtfr`, `fs`, `rng` NumPy-only | forwarded by the torch wrapper, so magnitude-path PGHI and reproducible phase work from either backend |
+| `filterbankbounds` | `return_kappa` NumPy-only | added to torch |
+| `torch.ifilterbankiter` | `real=False`, output hardcoded to float64 | `real` derived from the filters; output follows the coefficients' dtype |
+
+The return-type change is **breaking** and is the fifth such change recorded in
+this release. It was chosen over the alternatives because it is the only option
+that makes the NumPy backend agree with three things it already disagreed with:
+the torch backend, LTFAT (which returns `usedmask` too), and its own
+`-> tuple` annotation, which was a lie silenced by a `# type: ignore`. It also
+restores the `usedmask` that was being computed and thrown away — the record of
+which coefficients received integrated phase rather than random fill, i.e. of
+which part of the answer means anything.
 
 **Deliberately *not* aligned**, so nobody "fixes" them:
 
-- `device`/`dtype` on `filterbankdual`, `filterbanktight`, `filterbankscale` are
-  torch-only because only torch has devices to place things on.
+- `device`/`dtype` on `filterbankdual`, `filterbanktight`, `filterbankscale`,
+  and the `L` that `filterbankscale` needs to materialise filters, are
+  torch-only because only torch has devices to place things on and lengths to
+  materialise at.
 - `dtype` on `filterbankresponse`, `filterbankfreqz` and `ifilterbankiter` is
   NumPy-only because the NumPy backend is a float64 reference implementation
   and needs an explicit opt-out, whereas the torch backend already follows its
-  input's dtype. Adding a redundant `dtype=` to torch would be noise.
+  input's dtype. A redundant `dtype=` on torch would be noise.
 
 ## Minor, recorded for completeness
 
-- `filterbankconstphase` used to accumulate a `usedmask` (which coefficients
-  received integrated rather than random phase) and then discard it. The dead
-  accumulation is removed. LTFAT returns this alongside the coefficients and it
-  is genuinely useful; exposing it here would change the return type, which is
-  the divergence above, so it is left for that decision.
+- `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —
+  is now returned, as part of the return-type alignment above.
 
 ## Verified clean
 

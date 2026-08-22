@@ -266,7 +266,7 @@ class TestConstphasePostImpl:
         f = rng.standard_normal(Ls)
         _, _, _, c = filterbankphasegrad(f, g, a, L)
         c_mag = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(c_mag, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(c_mag, a, fc, fs=fs)
         assert len(c_out) == M, \
             f"filterbankconstphase: output must have M={M} channels, got {len(c_out)}"
 
@@ -288,7 +288,7 @@ class TestConstphasePostImpl:
         f = rng.standard_normal(Ls)
         _, _, _, c = filterbankphasegrad(f, g, a, L)
         c_mag = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(c_mag, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(c_mag, a, fc, fs=fs)
         for m in range(min(M, 5)):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = c_mag[m].ravel()
@@ -314,7 +314,7 @@ class TestConstphasePostImpl:
         f = rng.standard_normal(Ls)
         _, _, _, c = filterbankphasegrad(f, g, a, L)
         c_mag = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(c_mag, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(c_mag, a, fc, fs=fs)
         assert np.iscomplexobj(np.asarray(c_out[0])), \
             "filterbankconstphase: output must be complex"
 

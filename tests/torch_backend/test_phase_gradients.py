@@ -134,10 +134,16 @@ class TestFilterbankconstphase:
         from cool_frames.torch.phase import filterbankconstphase as torch_fn
 
         fb = erb_filterbank
-        c_np = np_fn(noise_signal, fb["g"], fb["a"], L=fb["L"])
+        # Both backends now return (coefficients, usedmask) — the divergence
+        # this test's own asymmetric unpacking used to paper over.
+        c_np, mask_np = np_fn(noise_signal, fb["g"], fb["a"], L=fb["L"])
 
         f_t = np_to_torch(noise_signal, dtype=torch.float64)
-        c_t, _mask_t = torch_fn(f_t, fb["g"], fb["a"], L=fb["L"])
+        c_t, mask_t = torch_fn(f_t, fb["g"], fb["a"], L=fb["L"])
+
+        assert len(mask_t) == len(mask_np) == fb["M"], (
+            "the two backends disagree about the shape of the usedmask"
+        )
 
         for m in range(fb["M"]):
             # Magnitudes must match (phase only differs)

@@ -96,9 +96,11 @@ For more control (e.g. tracking convergence or setting tolerance):
    )
    print(niter, relres[-1])   # iterations actually run, final residual
 
-   # PGHI
-   c_pghi = filterbankconstphase(f, g, a, L=L, fc=fc)
+   # PGHI.  Returns (coefficients, usedmask); `usedmask` is True where the
+   # phase was integrated rather than filled in at random below the threshold.
+   c_pghi, usedmask = filterbankconstphase(f, g, a, L=L, fc=fc)
    f_pghi = ifilterbank(c_pghi, gd, a, Ls=Ls, real=True)
+   print(f"{100 * sum(m.mean() for m in usedmask) / len(usedmask):.0f}% integrated")
 
 Choosing an algorithm
 ---------------------

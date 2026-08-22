@@ -187,7 +187,7 @@ class TestFilterbankconstphaseImpl:
         s = [np.abs(np.asarray(cm)) for cm in c]
         _, _, _, _pg_c = filterbankphasegrad(f, g, a, L)
         # tfr can be obtained from audfilters info; fall back to fc as proxy
-        c_out = filterbankconstphase(s, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert isinstance(c_out, (list, tuple)), \
             "filterbankconstphase: output must be a list/tuple"
 
@@ -203,7 +203,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert len(c_out) == M, \
             f"filterbankconstphase: output must have M={M} cells, got {len(c_out)}"
 
@@ -219,7 +219,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()
@@ -240,7 +240,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc, fs=fs)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         for m in range(M):
             assert np.asarray(c_out[m]).shape == s[m].shape, \
                 f"filterbankconstphase: c_out[{m}] shape mismatch"
@@ -265,7 +265,7 @@ class TestFilterbankconstphaseImpl:
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
         tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a, L)
-        c_out = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()

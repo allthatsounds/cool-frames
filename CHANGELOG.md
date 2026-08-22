@@ -9,9 +9,28 @@ defects. `DEFECT_REGISTER.md` records all of them, fixed and still-open, with
 the measurement that established each one.
 
 Several of these are **behavioural changes** — code that ran before will now
-produce different (and correct) numbers — and one is a **breaking API change**.
+produce different (and correct) numbers — and two are **breaking API changes**.
 
 ### Breaking
+
+- **`filterbankconstphase` returns a 2-tuple**: `c, usedmask = filterbankconstphase(...)`.
+
+  NumPy previously returned the coefficient list alone while the torch backend
+  already returned `(coeffs, usedmask)`, so the same code could not drive both.
+  NumPy's own annotation already claimed `-> tuple` and was silenced with a
+  `# type: ignore`, and LTFAT returns the mask too — so of the three ways to
+  resolve the disagreement, this is the only one that does not leave something
+  else wrong.
+
+  `usedmask` is a per-channel boolean array, True where the phase was
+  *integrated* rather than drawn at random because the coefficient sat below
+  `tol` of the peak. It was being computed and discarded since v0.1.0; it tells
+  you which part of the reconstruction carries information.
+
+  Also aligned, non-breaking: the torch `filterbankconstphase` now forwards
+  `sqtfr`, `fs` and `rng`, so magnitude-path PGHI and reproducible phase are
+  reachable from either backend, and `filterbankbounds` takes `return_kappa` on
+  both.
 
 - **`spsi` now takes `fc` in Hz plus a required `fs`**: `spsi(s, a, fc, fs)`.
 
