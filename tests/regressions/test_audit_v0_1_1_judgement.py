@@ -513,16 +513,37 @@ def test_lint_scope_is_pinned_in_pyproject_not_inline_in_ci():
     """
     from pathlib import Path
 
-    import tomllib
-
     root = Path(__file__).resolve().parents[2]
+    pyproject = root / "pyproject.toml"
+    required = ("cool_frames/torch/**/*.py", "torch_additions/**/*.py")
 
-    with open(root / "pyproject.toml", "rb") as fh:
-        cfg = tomllib.load(fh)
-    include = cfg.get("tool", {}).get("ruff", {}).get("include")
-    assert include, "[tool.ruff] include is not set — the lint scope is unpinned"
-    for required in ("cool_frames/torch/**/*.py", "torch_additions/**/*.py"):
-        assert required in include, f"{required} dropped out of the lint scope"
+    # `tomllib` is 3.11+, and this package supports 3.10 — parse properly where
+    # the parser exists and fall back to scanning the section text where it does
+    # not, rather than skipping the check on the oldest supported interpreter.
+    # (Written the other way round first, with a bare `import tomllib`, which
+    # failed CI's 3.10 job and nowhere else.)
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        tomllib = None  # type: ignore[assignment]
+
+    if tomllib is not None:
+        with open(pyproject, "rb") as fh:
+            cfg = tomllib.load(fh)
+        include = cfg.get("tool", {}).get("ruff", {}).get("include")
+        assert include, "[tool.ruff] include is not set — the lint scope is unpinned"
+        for entry in required:
+            assert entry in include, f"{entry} dropped out of the lint scope"
+    else:
+        text = pyproject.read_text()
+        start = text.index("[tool.ruff]")
+        nxt = text.find("\n[", start + 1)
+        section = text[start : nxt if nxt != -1 else len(text)]
+        assert "include = [" in section, (
+            "[tool.ruff] include is not set — the lint scope is unpinned"
+        )
+        for entry in required:
+            assert f'"{entry}"' in section, f"{entry} dropped out of the lint scope"
 
     ci = (root / ".github" / "workflows" / "ci.yml").read_text()
     for line in ci.splitlines():

@@ -354,6 +354,28 @@ and not the *doctest* command, so the step that was actually broken was never
 exercised. Reproducing an environment is only as good as the commands you run
 inside it.
 
+### And a third: `tomllib` on Python 3.10
+
+`test_lint_scope_is_pinned_in_pyproject_not_inline_in_ci` imported `tomllib`
+unconditionally. That is 3.11+, and this package declares
+`requires-python = ">=3.10"` — so the test failed CI's 3.10 job and passed
+everywhere else.
+
+It now parses with `tomllib` where the parser exists and falls back to scanning
+the `[tool.ruff]` section text where it does not, so the check still *runs* on
+3.10 rather than being skipped there. Both paths were verified, including that
+the fallback still fails when an entry is removed from the include list.
+
+**All three CI failures so far have been in test or CI scaffolding I added, not
+in the library changes.** The common cause is that the local gates run one
+interpreter with one dependency set, while CI runs a matrix of four Pythons and
+two dependency sets. Reproducing the *environment* is not enough; you have to
+run the *command* under it, and on the oldest version you support.
+
+The changeset is now checked with `vermin --target=3.10` rather than by
+guesswork: the shipped package comes out 3.9-compatible, and the only flag in
+the tests is the guarded `tomllib` import, which vermin cannot see through.
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —
