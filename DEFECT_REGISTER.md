@@ -376,6 +376,159 @@ The changeset is now checked with `vermin --target=3.10` rather than by
 guesswork: the shipped package comes out 3.9-compatible, and the only flag in
 the tests is the guarded `tomllib` import, which vermin cannot see through.
 
+## Closed in the fifth pass — found by chasing coverage
+
+Codecov read 76 %. Raising it meant executing code no test had executed, and
+two of the three things found were defects rather than gaps. That is the point
+worth keeping: the coverage number was not a hygiene metric, it was a list of
+places where nobody had checked.
+
+### The window-width helper, in its second copy
+
+`pghi_findgamma(window_vector)` returned `Cg = 2.195` for a 256-tap Hann,
+against the precomputed `Cg = 0.25645` for the same window. The table *is* the
+precomputed answer to that search, so the two must agree. Measured factors:
+
+| window   | table `Cg` | numeric `Cg` | factor |
+|----------|-----------:|-------------:|-------:|
+| hann     |    0.25645 |      2.19460 |   8.6x |
+| hamming  |    0.29794 |      2.26669 |   7.6x |
+| blackman |    0.17954 |      1.85417 |  10.3x |
+| bartlett |    0.27561 |      2.02420 |   7.3x |
+| cosine   |    0.41532 |      2.54799 |   6.1x |
+
+`gamma = Cg * gl**2` scales the phase gradients PGHI integrates, so an error of
+this size does not blur the phase estimate, it replaces it — the same failure
+mode as the missing centre-frequency term in `comp_filterbankphasegradfrommag`.
+
+The cause: `_winwidthatheight` scans `g[:gl//2+1]` for the threshold crossing,
+which tracks the *falling* flank only if the window peaks at index 0. Handed
+the centred ordering that `scipy.signal.get_window` — and every other Python
+window source — produces, it runs up the rising flank instead, the crossing
+indices pin near the peak, and the measured width comes out at roughly `gl` for
+any shape.
+
+**This is a defect the audit had already found and fixed.** The same helper
+exists in `cool_frames/numpy/filters/_gabfilters.py`; the second pass fixed it
+there with a `np.roll(g, -argmax)` and wrote
+`test_window_width_measurement_depends_on_window_shape` to hold it. The copy in
+`_findgamma.py` kept the bug, because the two are private, near-identical, and
+nothing compared them. Anything reached through the window *name* was
+unaffected — named windows return the tabulated constant and never enter the
+search — so the failure was invisible to every existing caller.
+
+Fixed by applying the same roll in `_winwidthatheight` and `_findbestgauss`.
+`test_findgamma.py` now asserts the two copies agree on eight window shapes at
+four heights, so the next fix cannot land in one of them.
+
+That makes **five** occurrences of "fixed where it broke, and nowhere else" in
+this audit — four across the two backends, and this one across two modules of
+the same backend.
+
+### What the fix does not fix
+
+With the ordering corrected the numeric search is still 7-45 % above the table
+(hann 0.309 vs 0.256; cosine 0.600 vs 0.415). `_findbestgauss` returns
+`atheight = 0.8` for four of the five tabulated windows — the top of its
+hardcoded `np.arange(0.01, 0.801, 0.001)` — so the minimum sits on the boundary
+and the search has not converged to anything. Bartlett does find an interior
+minimum at 0.285 and is no more accurate for it, so the pinning is not the whole
+story. The module already calls itself a "simplified port".
+
+Left as-is and **pinned in both directions**:
+`test_numeric_search_still_disagrees_with_the_table` asserts the ratio is in
+`[1.0, 1.5)`, so the 6-10x error cannot return *and* a genuine improvement fails
+the test rather than passing silently. Closing this properly needs reference
+values from `findbestgauss.m`, which is a porting job, not a patch.
+
+### `relres` from the RTISIL family is not a convergence measure
+
+`rtisila`, `gsrtisila` and `lertisila` end with
+`c[m][n] = s[m][n] * exp(1j*phase)` and *then* compute
+`relres = ||abs(c) - s|| / ||s||`. That difference is zero by construction, so
+the number reports whether the last assignment executed, not whether the
+algorithm converged. Measured on a redundancy-2.1 Gabor bank: all three report
+`relres ~ 1e-16` while their actual consistency is -13 dB, and GLA — within one
+decibel of them on the metric that matters — honestly reports 0.249. Selecting a
+method by `relres` reads the RTISIL family as fifteen orders of magnitude
+better. `niter` is likewise `maxit * n_frames`, so four iterations report as 256.
+
+Not fixed: redefining `relres` changes a public return contract, and the choice
+of what it should measure is yours. Pinned by
+`test_relres_is_not_a_convergence_measure`, which asserts the *current* wrong
+behaviour so that changing it is deliberate and visible.
+
+### `wpghi_findgamma` ignores its `tfr` argument
+
+The signature promises a filterbank-domain variant taking a per-channel
+time-frequency ratio; the body is `return pghi_findgamma(g, **kwargs)` and
+`tfr` is never read. A caller who computes one and passes it in gets the plain
+Gabor answer with no indication. Pinned rather than fixed — making `tfr` mean
+something is a design decision about per-channel gamma, not a typo.
+
+### Why codecov read 76 % when the library measures 85 %
+
+Not a defect in the library, but it was hiding them. Coverage comes from two
+jobs that see different halves:
+
+| report | coverage |
+|--------|---------:|
+| `test-numpy` alone (no torch installed; all of `cool_frames/torch` reads 0 %) | 77.79 % |
+| `test-torch` alone | 71.85 % |
+| **union — the library's actual coverage** | **85.04 %** |
+
+76 % is the numpy job on its own, to within a point: the second report was not
+reaching the merge. Two causes, both fixed:
+
+1. The torch job collected only `tests/torch_backend/`. Every torch case in
+   `tests/regressions/` is guarded with `pytest.importorskip("torch")` — those
+   skip in test-numpy for want of torch and were never *collected* in
+   test-torch, so **every regression protecting a torch fix ran in neither
+   job.** Green locally, absent upstream. Now collected in test-torch.
+2. `codecov-action` defaults to `fail_ci_if_error: false`, so a rejected upload
+   is a warning inside a green job. Both uploads now set it true.
+
+A `codecov.yml` now declares both flags with `carryforward: true` (so a run
+where one job is skipped does not report a 13-point drop), sets the project
+target at 80 % and the patch target at 80 % — the latter being the check that
+would have caught the phase-retrieval family shipping at 7-11 %.
+
+Adding coverage to the doctest steps was measured and *not* done: doctests lift
+the numpy job by 0.76 points and the union by nothing at all, since the torch
+job already reaches those lines.
+
+### The gap that was only a gap
+
+`rtisila`, `gsrtisila`, `lertisila`, `legla`, `decolbfgs` and `spsi` — six
+routines, twelve implementations across the two backends — sat at 7-11 %
+coverage, meaning the module docstring and the imports ran and the algorithms
+did not. All twelve shipped in v0.1.0 and v0.1.1 without a single call from the
+suite. `filterbankconstphase` was in exactly that position when the audit found
+its gradient estimator returning frequency deviations to an integrator that
+consumes absolute frequencies, so this was not a hypothetical risk.
+
+Tested, and they are correct. `test_phase_retrieval_family.py` asserts what
+matters — **consistency**, not `magnitudeerr`, which every routine in this
+family satisfies by construction and on which zero phase scores a perfect
+`-inf dB`. Against a +8.4 dB zero-phase baseline on a redundancy-2.1 bank:
+
+| routine   | 1 iter  | 10 iters |
+|-----------|--------:|---------:|
+| gla       | +0.6 dB | -12.0 dB |
+| legla     | +0.5 dB | -12.0 dB |
+| rtisila   | -7.9 dB | -13.0 dB |
+| gsrtisila | -7.9 dB | -13.0 dB |
+| lertisila | -8.6 dB | -12.1 dB |
+| decolbfgs | -5.1 dB | -10.3 dB |
+
+The two backends agree to 1e-8 relative on all of them except `decolbfgs`,
+whose L-BFGS line search legitimately differs (-10.25 dB vs -10.16 dB).
+
+One observation, not a defect: `gsrtisila` at its default `startphase='zero'`
+is bit-identical to `rtisila`, because `startphase` is the only thing that
+distinguishes them and the default takes no initialisation branch. The
+Gnann-Spiertz variant is only a variant if you ask for one.
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —

@@ -1,0 +1,82 @@
+# Codecov configuration
+# =====================
+#
+# Why this file exists
+# --------------------
+# Coverage in this repo is produced by two CI jobs that see different halves of
+# the library:
+#
+#   * ``test-numpy``  installs ``.[dev]`` *without* torch, so every module under
+#     ``cool_frames/torch/`` is imported by nobody and reports 0 %.  Measured
+#     alone: 77.8 %.
+#   * ``test-torch``  installs torch and runs the torch suites.  Measured alone:
+#     71.9 %.
+#
+# Neither number is the library's coverage.  The union is — 85.0 % — and it is
+# only the union if *both* uploads reach Codecov and are merged.  The project
+# was reading 76 %, which is the numpy job on its own to within a point, so the
+# second upload was not landing.  Two things caused that and both are fixed
+# here and in ci.yml:
+#
+#   1. The torch job collected only ``tests/torch_backend/``.  Every torch case
+#      in ``tests/regressions/`` is guarded with ``pytest.importorskip("torch")``
+#      — those skip in test-numpy for want of torch and were never *collected*
+#      in test-torch, so they ran in neither job and their coverage existed
+#      nowhere.  ci.yml now collects ``tests/regressions/`` in the torch job.
+#   2. ``codecov-action`` defaults to ``fail_ci_if_error: false``: a rejected or
+#      dropped upload is a warning in a green job.  Both uploads now set it
+#      true, so a missing report fails the build instead of quietly halving the
+#      reported number.
+#
+# ``carryforward`` on both flags means a commit that only touches, say, the
+# NumPy job reuses the last known torch measurement rather than treating the
+# whole torch backend as newly uncovered.  Without it, any run where one job is
+# skipped reports a ~13-point drop that has nothing to do with the change.
+
+codecov:
+  require_ci_to_pass: true
+  notify:
+    # Do not post a status until both flags have reported.
+    after_n_builds: 2
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...90"
+
+  status:
+    project:
+      default:
+        # Measured union at the time of writing: 85.04 %.  The threshold allows
+        # ordinary churn; a real regression still trips it.
+        target: 80%
+        threshold: 1%
+        if_ci_failed: error
+    patch:
+      default:
+        # New code should arrive with tests.  This is the check that would have
+        # caught the phase-retrieval family shipping at 7-11 % coverage.
+        target: 80%
+        threshold: 5%
+
+flags:
+  numpy:
+    paths:
+      - cool_frames/
+    carryforward: true
+  torch:
+    paths:
+      - cool_frames/
+    carryforward: true
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+
+ignore:
+  - "tests/"
+  - "benchmarks/"
+  - "examples/"
+  - "docs/"
+  - "torch_additions/"   # parked torch extras; excluded from the wheel too

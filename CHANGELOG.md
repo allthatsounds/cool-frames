@@ -370,6 +370,66 @@ but its `/8000` is a digital-frequency normalisation rather than a sampling
 rate, so the tones were always below Nyquist. The code is unchanged and the
 comment now says so.
 
+### Found by chasing the coverage number
+
+Codecov read 76 %. Executing the code no test had executed turned up two more
+defects, which is the useful thing to say about the metric: it was not hygiene,
+it was a list of places nobody had checked.
+
+- **`pghi_findgamma` returned a window constant 6-10x too large for a numeric
+  window.** A 256-tap Hann gave `Cg = 2.195` against the tabulated 0.25645 for
+  the same window — and the table *is* the precomputed answer to that search.
+  Since `gamma = Cg * gl**2` scales the phase gradients PGHI integrates, this
+  did not blur the phase estimate, it replaced it.
+
+  The cause is the fifth occurrence in this audit of one defect fixed in one of
+  two copies. `_winwidthatheight` finds the threshold crossing by scanning
+  `g[:gl//2+1]`, which only tracks the falling flank if the window peaks at
+  index 0; handed the centred ordering `scipy.signal.get_window` produces, it
+  runs up the rising flank and measures roughly `gl` for any shape. The same
+  helper in `cool_frames/numpy/filters/_gabfilters.py` had this fixed in the
+  second pass; the copy under `numpy/phase/` kept it, because the two are
+  private, near-identical and nothing compared them. Windows passed by *name*
+  were never affected — they return the tabulated constant and never enter the
+  search — so no existing caller could see it.
+
+  Fixed, and `test_findgamma.py` now holds the two copies to each other across
+  eight window shapes at four heights.
+
+  Still open, and pinned in both directions: with the ordering corrected the
+  search is 7-45 % above the table, because `_findbestgauss` returns the top of
+  its own hardcoded search range for four of the five tabulated windows. The
+  test asserts the ratio stays in `[1.0, 1.5)`, so neither a regression to the
+  6-10x error nor a genuine improvement can pass silently.
+
+- **Every regression test protecting a torch fix ran in neither CI job.** The
+  torch cases in `tests/regressions/` are guarded with
+  `pytest.importorskip("torch")`, so they skip in the numpy job for want of
+  torch — and the torch job collected only `tests/torch_backend/`. Green
+  locally, absent upstream, and their coverage reached codecov from nowhere.
+  Together with `codecov-action`'s default of `fail_ci_if_error: false`, which
+  turns a dropped upload into a warning inside a green job, that is why the
+  project read 76 % — the numpy job alone, to within a point — while the union
+  of the two jobs measures **85.04 %**. A `codecov.yml` now declares both flags
+  with carryforward and an 80 % target on project and patch.
+
+- **The iterative phase-retrieval family had no test coverage at all.**
+  `rtisila`, `gsrtisila`, `lertisila`, `legla`, `decolbfgs` and `spsi` — twelve
+  implementations across the two backends — sat at 7-11 %, meaning imports ran
+  and algorithms did not. All twelve are correct; `test_phase_retrieval_family.py`
+  now exercises them, asserting **consistency** rather than `magnitudeerr`,
+  which every routine in this family satisfies by construction and on which zero
+  phase scores a perfect `-inf dB`.
+
+- Two reporting defects found there, **pinned rather than fixed**, because both
+  are changes to a public return contract and the call is yours:
+  `relres` from the RTISIL family is computed after the magnitude projection and
+  is therefore ~1e-16 unconditionally — reported alongside an actual consistency
+  of -13 dB, while GLA honestly reports 0.249 for the same quality — and
+  `wpghi_findgamma` accepts a `tfr` argument it never reads. See
+  `DEFECT_REGISTER.md`.
+
+
 ## 0.1.0
 
 First public release.

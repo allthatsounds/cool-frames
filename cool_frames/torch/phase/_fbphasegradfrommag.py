@@ -328,11 +328,38 @@ def comp_filterbankphasegradfrommag(
             if numNeighBelow > 0:
                 tempValBelow /= numNeighBelow
 
-            temp[n] = (tempValAbove + aboveNom) / aboveDenom + (
-                tempValBelow + belowNom
-            ) / belowDenom
+            # Each side is a one-sided difference quotient estimating the same
+            # frequency-derivative of the log-magnitude.  Interior channels have
+            # both; edge channels have only one.  Average the available sides and
+            # restore the interior's two-sided scaling, so channel 0 and channel
+            # M-1 sit on the same scale as everything between them.  Kept
+            # deliberately identical to the NumPy implementation — see
+            # ``cool_frames/numpy/phase/_fbphasegradfrommag.py``.
+            sides = []
+            if m < M - 1:
+                sides.append((tempValAbove + aboveNom) / aboveDenom)
+            if m > 0:
+                sides.append((tempValBelow + belowNom) / belowDenom)
+            if sides:
+                acc = sides[0]
+                for extra in sides[1:]:
+                    acc = acc + extra
+                temp[n] = 2.0 * acc / len(sides)
+            else:
+                temp[n] = 0.0
 
-        tgrad[chanStart : chanStart + Nm] = temp / denom
+        # ``fc`` is a *normalised* centre frequency in [0, 2] (2 == fs).  The
+        # difference quotient above estimates the *deviation* of the
+        # instantaneous frequency from the channel's centre frequency, while the
+        # heap integrator consumes the absolute value.  Omitting this term left
+        # tgrad off by the centre frequency itself.
+        #
+        # This backend kept the defect for a whole release after the NumPy one
+        # was fixed, because nothing internal calls it — the torch
+        # ``filterbankconstphase`` delegates to NumPy — so no test went red.  On
+        # a 660 Hz tone at fs = 4000 it returned -0.0509 where the truth is
+        # 0.3300.  The parity test now pins the two backends together.
+        tgrad[chanStart : chanStart + Nm] = temp / denom + fc_t[m]
         chanStart += Nm
 
     # ----- Scale fgrad by tfr² / (2π) * N(m) -----
