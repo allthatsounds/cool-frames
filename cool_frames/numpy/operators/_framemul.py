@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import warnings
 
-import numpy as np
 from scipy.sparse.linalg import LinearOperator, eigsh
 
-from ..filterbanks._core import filterbank, ifilterbank
+import numpy as np
 
+from ..filterbanks._core import filterbank, ifilterbank
 
 # ---------------------------------------------------------------------------
 # framemul — forward multiplier
@@ -50,9 +50,17 @@ def framemul(f: np.ndarray,
                                       g_s, a, L).
 
     On a *tight* analysis frame (with its self-dual synthesis) the multiplier's
-    eigenvalues equal the symbol ``sigma`` itself, so the frame adds no colour
-    of its own --- the edit you hear is exactly the edit applied to the
-    coefficients (cf. :func:`framemuleigs`).
+    eigenvalues lie in the convex hull of the symbol values, and equal ``sigma``
+    exactly when ``sigma`` is constant (cf. :func:`framemuleigs`).
+
+    .. note::
+       Earlier documentation claimed the eigenvalues *equal* ``sigma`` on any
+       tight frame.  They cannot: there are Lambda symbol values and only L
+       eigenvalues.  Measured on a tight ERB frame with a symbol drawn from
+       [0.5, 1.5], the spectrum spans [0.666, 1.325] against a symbol spanning
+       [0.524, 1.478] — contracted, as the convex-hull statement predicts.  A
+       0/1 channel mask on the same frame is not a projection either
+       (``||M^2 - M||/||M|| = 0.074``).
 
     Parameters
     ----------
@@ -78,7 +86,16 @@ def framemul(f: np.ndarray,
     Returns
     -------
     result : ndarray, shape (L,)
-        M_sigma f.
+        ``M_sigma f`` — real when ``real=True``, complex when ``real=False``.
+
+        .. versionchanged:: 0.1.1
+           ``real=False`` now returns the complex result.  The real part used
+           to be taken unconditionally, which discarded half of a genuine
+           two-sided reconstruction and made the operator only R-linear.  That
+           in turn broke :func:`framemulappr`, whose ``real=False`` branch
+           models a C-linear generator: on an operator built as an exact
+           multiplier — so a zero-error symbol provably exists — it returned a
+           symbol 44.5 % off in Hilbert-Schmidt norm.
 
     See Also
     --------
@@ -86,11 +103,15 @@ def framemul(f: np.ndarray,
     framemulinv : inverse (PCG)
     MATH_REFERENCE.md §15a
     """
-    f = np.asarray(f, dtype=float)
+    f = np.asarray(f) if np.iscomplexobj(f) else np.asarray(f, dtype=float)
     c = filterbank(f, g_analysis, a, L)
     c_masked = [c[m] * sigma[m] for m in range(len(c))]
     result = ifilterbank(c_masked, g_synthesis, a, L, real=real)
-    return np.real(result)
+    # Take the real part only in real (single-sided) mode, where the
+    # 2*real(ifft) fold has already produced a real signal and any residual
+    # imaginary part is rounding.  In complex mode the imaginary part is
+    # signal; see the note in the Returns section.
+    return np.real(result) if real else np.asarray(result)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +214,10 @@ def framemulinv(f: np.ndarray,
         return x, {'relres': 0.0, 'iter': 0, 'converged': True}
 
     converged = False
+    # Bound up front: `maxit=0` (or a first-iteration break) otherwise left `k`
+    # undefined and raised UnboundLocalError from the return statement.
+    k = -1
+    relres = np.sqrt(rsold) / rhs_norm
     for k in range(maxit):
         Ap = _apply_normal(p)
         pAp = np.dot(p, Ap)
@@ -467,24 +492,58 @@ def framemuleigs(g_analysis: list[dict],
     def _apply_mul(x):
         return framemul(x, g_analysis, g_synthesis, a, sigma, L, real=real)
 
+    # A frame multiplier is self-adjoint only when the analysis and synthesis
+    # frames coincide *and* the symbol is real.  Both code paths below assume
+    # it: the direct one symmetrised `mat` outright, the iterative one used
+    # `eigsh`.  Until v0.1.1 neither checked, so an asymmetric multiplier
+    # silently returned the eigenvalues of `(M + M^T)/2` — 10 % off the leading
+    # eigenvalue on a complex symbol, with a genuinely complex eigenvalue
+    # reported as a real number of the wrong sign.
+    _sigma_is_real = all(not np.iscomplexobj(np.asarray(s)) for s in sigma)
+    _same_frames = g_analysis is g_synthesis or all(
+        np.array_equal(np.asarray(ga.get("H", ga.get("h"))),
+                       np.asarray(gs.get("H", gs.get("h"))))
+        for ga, gs in zip(g_analysis, g_synthesis)
+    )
+    _self_adjoint = _sigma_is_real and _same_frames
+
     if L <= CROSSOVER:
-        # Direct: build full matrix and use eig
-        mat = np.zeros((L, L))
+        # Direct: build the full matrix.
+        mat = np.zeros((L, L), dtype=complex if not _self_adjoint else float)
         for k in range(L):
             ek = np.zeros(L)
             ek[k] = 1.0
             mat[:, k] = _apply_mul(ek)
 
-        # Symmetrise (should be symmetric for real symbol + same frames)
-        mat = 0.5 * (mat + mat.T)  # type: ignore[assignment]
-        eigvals = np.linalg.eigvalsh(mat)
-        # Sort by descending magnitude
+        if _self_adjoint:
+            # Symmetrise away the rounding asymmetry only.
+            asym = np.max(np.abs(mat - mat.T)) / max(np.max(np.abs(mat)), 1e-30)
+            if asym > 1e-8:
+                warnings.warn(
+                    f"framemuleigs: the multiplier is not symmetric "
+                    f"(||M - M^T||/||M|| = {asym:.3g}) despite a real symbol and "
+                    f"matching frames; falling back to a general eigensolver.",
+                    stacklevel=2,
+                )
+                eigvals = np.linalg.eigvals(mat)
+            else:
+                mat = 0.5 * (mat + mat.T)
+                eigvals = np.linalg.eigvalsh(mat)
+        else:
+            # Genuinely non-self-adjoint: use the general solver and return
+            # complex eigenvalues rather than fabricating real ones.
+            eigvals = np.linalg.eigvals(mat)
+
         idx = np.argsort(-np.abs(eigvals))
         return eigvals[idx[:K]]
     else:
-        # Iterative: use Arnoldi via scipy
-        op = LinearOperator((L, L), matvec=_apply_mul, dtype=float)
-        # eigsh requires symmetric operator — true for real sigma + same frames
-        eigvals, _ = eigsh(op, k=K, which='LM', tol=1e-9, maxiter=200)
+        if _self_adjoint:
+            op = LinearOperator((L, L), matvec=_apply_mul, dtype=float)
+            eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200)
+        else:
+            from scipy.sparse.linalg import eigs
+
+            op = LinearOperator((L, L), matvec=_apply_mul, dtype=complex)
+            eigvals, _ = eigs(op, k=K, which="LM", tol=1e-9, maxiter=200)
         idx = np.argsort(-np.abs(eigvals))
         return eigvals[idx]  # type: ignore[no-any-return]

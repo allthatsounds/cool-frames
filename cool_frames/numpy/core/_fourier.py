@@ -78,7 +78,10 @@ def middlepad(
     else:
         raise ValueError(f"centering must be 'wp' or 'hp', got {centering!r}")
 
-    return out[:, 0] if squeeze else out
+    # Bound explicitly: numpy's __getitem__ is typed as returning Any, which
+    # would otherwise leak out of this function's declared return type.
+    result: np.ndarray = out[:, 0] if squeeze else out
+    return result
 
 
 def _middlepad_wp(

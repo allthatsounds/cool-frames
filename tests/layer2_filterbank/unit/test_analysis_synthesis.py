@@ -46,8 +46,10 @@ class TestFilterbankStructImpl:
 
     def test_returns_list(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -167,6 +169,19 @@ class TestIfilterbankiterImpl:
     """TestAnalysisSynthesis: iterative reconstruction convergence."""
 
     def test_convergence(self, needs_impl):
+        """The iterative inverse converges, and says so honestly.
+
+        Two things changed in v0.1.1 that this test now depends on:
+
+        * ``real=True`` is passed explicitly.  ``audfilters`` builds a
+          single-sided (real-audio) frame, and ``ifilterbankiter``'s default is
+          ``real=False`` — the mismatch the function itself warns about.  The
+          test used to take the default and reconstruct the wrong thing.
+        * ``relres`` is now measured on the signal actually returned rather
+          than on the complex CG iterate, so it can no longer report a
+          converged 3e-07 for a reconstruction whose true residual is 0.22.
+          That is what made the old, mis-configured call appear to pass.
+        """
         from cool_frames.filterbanks import filterbank, ifilterbankiter  # type: ignore
         from cool_frames.filters import audfilters  # type: ignore
         Ls, fs = 1024, 8000
@@ -174,10 +189,13 @@ class TestIfilterbankiterImpl:
         rng = np.random.default_rng(7)
         x = rng.standard_normal(Ls)
         c = filterbank(x, g, a)
-        result = ifilterbankiter(c, g, a)
-        # ifilterbankiter may return (xr, relres) or (xr, relres, iter)
-        relres = result[1] if isinstance(result, (list, tuple)) else 0.0
+        xr, relres, _niter = ifilterbankiter(c, g, a, real=True)
         assert relres < 0.1, f"ifilterbankiter did not converge: relres={relres:.2e}"
+
+        # And the reported residual describes the returned signal.
+        xr = np.real(np.asarray(xr)).ravel()[:Ls]
+        rel_err = np.linalg.norm(xr - x) / np.linalg.norm(x)
+        assert rel_err < 0.1, f"reported relres={relres:.2e} but true error is {rel_err:.2e}"
 
 
 # ---------------------------------------------------------------------------
@@ -189,16 +207,20 @@ class TestFilterbanklengthImpl:
     """TestAnalysisSynthesis: filterbanklength properties."""
 
     def test_geq_ls(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
         assert L >= Ls, f"filterbanklength={L} < Ls={Ls}"
 
     def test_idempotent(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L1 = filterbanklength(Ls, a)
@@ -206,8 +228,10 @@ class TestFilterbanklengthImpl:
         assert L2 == L1, f"filterbanklength not idempotent: {L1} → {L2}"
 
     def test_is_integer(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -248,8 +272,10 @@ class TestAudfiltersImpl:
         assert len(g) > 0, "audfilters must return at least one filter"
 
     def test_length_valid(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls = 1024
         g, a, fc, _, _info = audfilters(8000, Ls)
         L = filterbanklength(Ls, a)

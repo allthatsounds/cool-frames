@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from .._dtypes import complex_dtype
 from ..core._core import (
     _normalise_a,
     comp_filterbank_fft,
@@ -36,6 +37,7 @@ def _prepare_filters(
     a_norm: np.ndarray,
     L: int,
     device: torch.device,
+    cdtype: torch.dtype = torch.complex128,
 ) -> tuple[list[dict], list[int], list[int], list[int]]:
     """Materialise filter dicts and classify into td / fft / fftbl groups.
 
@@ -83,17 +85,20 @@ def _prepare_filters(
             if callable(h):
                 h_arr = h(L)
                 if isinstance(h_arr, np.ndarray) or not isinstance(h_arr, torch.Tensor):
-                    h_arr = torch.tensor(h_arr, dtype=torch.complex128, device=device)
+                    h_arr = torch.tensor(h_arr, dtype=cdtype, device=device)
                 gm["h"] = h_arr
             elif not isinstance(h, torch.Tensor):
                 gm["h"] = torch.tensor(
-                    np.asarray(h, dtype=np.complex128), dtype=torch.complex128, device=device
+                    np.asarray(h, dtype=np.complex128), dtype=cdtype, device=device
                 )
 
             # Ensure offset is materialized if callable
             offset = gm.get("offset")
             if callable(offset):
                 gm["offset"] = int(offset(L))
+
+            if isinstance(gm["h"], torch.Tensor) and gm["h"].dtype != cdtype:
+                gm["h"] = gm["h"].to(cdtype)
 
             m_td.append(m)
             g_ready[m] = gm  # type: ignore[assignment]
@@ -104,7 +109,7 @@ def _prepare_filters(
         if callable(H):
             H_arr = H(L)
             if isinstance(H_arr, np.ndarray):
-                H_arr = torch.tensor(H_arr, dtype=torch.complex128, device=device)
+                H_arr = torch.tensor(H_arr, dtype=cdtype, device=device)
             gm["H"] = H_arr
 
         # Materialise callable foff
@@ -115,16 +120,21 @@ def _prepare_filters(
         # Ensure H is a tensor
         H = gm.get("H")
         if H is not None and not isinstance(H, torch.Tensor):
-            gm["H"] = torch.tensor(
-                np.asarray(H, dtype=np.complex128), dtype=torch.complex128, device=device
-            )
+            gm["H"] = torch.tensor(np.asarray(H, dtype=np.complex128), dtype=cdtype, device=device)
 
         H = gm.get("H")
+        if isinstance(H, torch.Tensor) and H.dtype != cdtype:
+            gm["H"] = H.to(cdtype)
+            H = gm["H"]
         if H is None:
             raise ValueError(
                 f"Filter {m}: must have either 'h' (impulse response) or 'H' (frequency response)"
             )
-        elif len(H) == L:
+        elif len(H) == L and int(a_norm[m, 1]) == 1:
+            # Full-length *and* integer-hop.  NumPy applies both conditions;
+            # torch tested only the length, so a fractional-hop full-length
+            # channel went down the uniform kernel and raised
+            # "RuntimeError: shape [...] is invalid for input of size ...".
             m_fft.append(m)
         else:
             m_fftbl.append(m)
@@ -175,12 +185,10 @@ def filterbank(
     >>> from cool_frames.torch.filters import audfilters
     >>> # Create a real signal
     >>> x = torch.randn(8000)
-    >>> # Load auditory filters at 16 kHz (M=28 channels)
-    >>> g = audfilters(16000)
-    >>> # Analyze with hop size 64
-    >>> c = filterbank(x, g, a=64)
+    >>> g, a, fc, L, _info = audfilters(16000, 8000)
+    >>> c = filterbank(x, g, a, L=L)   # the bank's own hop sizes
     >>> len(c)
-    28
+    35
     >>> c[0].shape[0] > 0
     True
     """
@@ -202,8 +210,11 @@ def filterbank(
     else:
         f_pad = f[:L]
 
-    # Prepare filters and classify
-    g_ready, m_td, m_fft, m_fftbl = _prepare_filters(g, a_norm, L, device)
+    # Prepare filters and classify.  The *signal* decides the working dtype:
+    # filter dicts come from the NumPy side and are always float64, so letting
+    # them drive the choice would upcast every call back to double precision.
+    cdtype = complex_dtype(f_pad)
+    g_ready, m_td, m_fft, m_fftbl = _prepare_filters(g, a_norm, L, device, cdtype)
 
     c: list[torch.Tensor | None] = [None] * M
 
@@ -212,7 +223,13 @@ def filterbank(
         g_td_list = [g_ready[m]["h"] for m in m_td]
         offset_list = np.array([g_ready[m].get("offset", 0) for m in m_td], dtype=int)
         a_td = a_norm[m_td, :]
-        c_td = comp_filterbank_td(f_pad, g_td_list, a_td, offset_list)
+        # `conv1d` refuses mixed real/complex operands, and the filters are held
+        # in the complex working dtype.  Promote the signal rather than
+        # demoting the filters — a filter may legitimately be complex.  Until
+        # v0.1.1 this raised "expected scalar type Double but found
+        # ComplexDouble" for every real signal, i.e. FIR filters were unusable.
+        f_td = f_pad if torch.is_complex(f_pad) else f_pad.to(cdtype)
+        c_td = comp_filterbank_td(f_td, g_td_list, a_td, offset_list)
         for k, m in enumerate(m_td):
             c[m] = c_td[k]  # type: ignore[assignment]
 
@@ -251,7 +268,7 @@ def filterbank(
         for k in zero_k:
             m = m_fftbl[k]
             Nm = max(1, round(L / (a_norm[m, 0] / a_norm[m, 1])))
-            c[m] = torch.zeros(Nm, W, dtype=torch.complex128, device=device)  # type: ignore[assignment]
+            c[m] = torch.zeros(Nm, W, dtype=cdtype, device=device)  # type: ignore[assignment]
 
     # Squeeze mono
     if mono:
@@ -260,17 +277,27 @@ def filterbank(
             for cm in c
         ]  # type: ignore[union-attr]
 
+    # Every channel has been filled by one of the three paths above; narrow the
+    # Optional away rather than suppressing it, so a genuine None would surface
+    # here instead of at some later use.
+    c_out: list[torch.Tensor] = []
+    for m, cm in enumerate(c):
+        if cm is None:  # pragma: no cover - defensive
+            raise RuntimeError(f"filterbank: channel {m} was not computed")
+        c_out.append(cm)
+
     if stack:
-        lengths = {cm.shape[0] for cm in c}  # type: ignore[union-attr]
+        lengths = {cm.shape[0] for cm in c_out}
         if len(lengths) != 1:
             raise ValueError(
                 "filterbank(..., stack=True) needs a uniform filterbank "
                 "(all channels the same length); got channel lengths "
                 f"{sorted(lengths)}. Pass a scalar hop `a`, or leave stack=False."
             )
-        return torch.stack(c, dim=1)  # (N, M) or (N, M, W)  # type: ignore[arg-type]
+        # (N, M) or (N, M, W)
+        return torch.stack(c_out, dim=1)
 
-    return c  # type: ignore[return-value]
+    return c_out
 
 
 # ---------------------------------------------------------------------------
@@ -336,10 +363,20 @@ def ifilterbank(
     c2d = [cm.unsqueeze(1) if cm.dim() == 1 else cm for cm in c]
     W = c2d[0].shape[1]
 
-    # Prepare filters
-    g_ready, m_td, m_fft, m_fftbl = _prepare_filters(g, a_norm, L, device)
+    # Prepare filters.  The coefficients decide the working dtype, for the same
+    # reason as in `filterbank` above.
+    cdtype = complex_dtype(c2d[0])
+    g_ready, m_td, m_fft, m_fftbl = _prepare_filters(g, a_norm, L, device, cdtype)
 
-    # Time-domain (FIR) synthesis path
+    # Time-domain (FIR) synthesis path.
+    #
+    # Its contribution is accumulated and added to the frequency-domain result
+    # at the end.  Before v0.1.1 this branch *returned immediately*, so a mixed
+    # bank silently discarded every band-limited and full-length channel — and
+    # skipped the real-mode fold as well.  Zeroing the band-limited
+    # coefficients of such a bank left the output unchanged, at 125 % error
+    # against the NumPy backend.
+    out_td = None
     if m_td:
         g_td_list = [g_ready[m]["h"] for m in m_td]
         offset_list = np.array([g_ready[m].get("offset", 0) for m in m_td], dtype=int)
@@ -350,11 +387,12 @@ def ifilterbank(
         )
         if out_td.dim() == 1:
             out_td = out_td.unsqueeze(1)
-        if W == 1:
-            out_td = out_td.squeeze(1)
-        return out_td
 
-    F = torch.zeros(L, W, dtype=c2d[0].dtype, device=device)
+        if not (m_fft or m_fftbl):
+            # Pure-FIR bank: nothing to combine with.
+            return out_td.squeeze(1) if W == 1 else out_td
+
+    F = torch.zeros(L, W, dtype=cdtype, device=device)
 
     # Full-length FFT synthesis
     if m_fft:
@@ -385,39 +423,58 @@ def ifilterbank(
                 F_bl = F_bl.unsqueeze(1)
             F = F + F_bl
 
-    # Detect an obvious analysis/synthesis convention mismatch (cheap, on F).
-    # A single-sided (real-audio) frame has energy only on the positive-frequency
-    # half; a two-sided (complex) frame fills both halves. Warn when ``real`` does
-    # not match the apparent frame -- the mismatch reconstructs silently wrong.
-    if L >= 8:
-        half = L // 2
-        F_chk = F.detach()
-        f_pos = float(torch.linalg.vector_norm(F_chk[1:half]))
-        f_neg = float(torch.linalg.vector_norm(F_chk[half + 1 :]))
-        # single-sided (real-audio) frames carry little negative-half energy
-        # (empirically f_neg/f_pos ~ 0.1); two-sided (complex) frames carry
-        # comparable energy on both halves (~1.0). Thresholds 0.3 / 0.7 separate
-        # them with a wide margin, so the warning fires only on a clear mismatch.
-        if real and f_neg > 0.7 * f_pos:
-            warnings.warn(
-                "ifilterbank(real=True) but the synthesis filters appear two-sided "
-                "(comparable negative-frequency energy); folding will double-count. "
-                "Pass real=False for complex/two-sided frames.",
-                stacklevel=2,
-            )
-        elif (not real) and f_pos > 0.0 and f_neg < 0.3 * f_pos:
-            warnings.warn(
-                "ifilterbank(real=False) but the synthesis filters appear single-sided "
-                "(little negative-frequency energy); this will not reconstruct a real "
-                "signal. Pass real=True (the default) for real-audio frames.",
-                stacklevel=2,
-            )
+    # Detect an analysis/synthesis convention mismatch, measured on the
+    # synthesis *filters* rather than on F — see the NumPy implementation's
+    # `_negative_frequency_ratio` for the measurements that motivated the
+    # change.  The old spectrum-based test missed the flagship `audfilters`
+    # bank, letting a 46 % reconstruction error pass in silence.
+    half = L // 2
+    pos = neg = 0.0
+    two_sided = False
+    for gm in g_ready:
+        H = gm.get("H")
+        if H is None or H.numel() == 0:
+            two_sided = True  # a time-domain (FIR) filter is real, hence two-sided
+            break
+        foff = int(gm.get("foff", 0) or 0)
+        idx = (foff + np.arange(H.numel())) % L
+        mag2 = (torch.abs(H.detach()) ** 2).cpu().numpy()
+        pos += float(np.sum(mag2[(idx >= 1) & (idx < half)]))
+        neg += float(np.sum(mag2[idx > half]))
+    ratio = 1.0 if two_sided else neg / max(pos, 1e-30)
+
+    if real and ratio > 0.3:
+        warnings.warn(
+            "ifilterbank(real=True) but the synthesis filters appear two-sided "
+            f"(negative/positive frequency energy {ratio:.2f}); folding will "
+            "double-count. Pass real=False for complex/two-sided frames.",
+            stacklevel=2,
+        )
+    elif (not real) and ratio < 0.3:
+        warnings.warn(
+            "ifilterbank(real=False) but the synthesis filters appear single-sided "
+            f"(negative/positive frequency energy {ratio:.2f}); this will not "
+            "reconstruct a real signal. Pass real=True (the default) for "
+            "real-audio frames.",
+            stacklevel=2,
+        )
 
     # Inverse FFT
     if real:
         out = 2.0 * torch.fft.ifft(F, dim=0).real
     else:
         out = torch.fft.ifft(F, dim=0)
+
+    # Add the time-domain channels' contribution (see the note above).
+    if out_td is not None:
+        n = min(out.shape[0], out_td.shape[0])
+        td = out_td[:n]
+        if not torch.is_complex(out) and torch.is_complex(td):
+            td = td.real
+        elif torch.is_complex(out) and not torch.is_complex(td):
+            td = td.to(out.dtype)
+        out = out.clone()
+        out[:n] = out[:n] + td
 
     # Trim to Ls
     if Ls is not None and Ls <= L:

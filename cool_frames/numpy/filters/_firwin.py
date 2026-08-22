@@ -73,11 +73,11 @@ def firwin(name: str, M: int, norm: str = "inf", *,
     >>> w = firwin('hann', 512)
     >>> w.shape
     (512,)
-    >>> w[0]
+    >>> float(w[0])
     1.0
     >>> w = firwin('blackman', 256, norm='energy')
-    >>> np.sqrt(np.sum(w**2))
-    256.0
+    >>> round(float(np.sqrt(np.sum(w**2))), 12)  # 'energy' means unit L2
+    1.0
     """
     name = name.lower().strip()
     x = _x(M)
@@ -237,7 +237,7 @@ def firwin_taper(name1: str, name2: str, ratio: float,
 
     Examples
     --------
-    >>> from cool_frames.numpy.filters import firwin_taper
+    >>> from cool_frames.numpy.filters._firwin import firwin_taper
     >>> w = firwin_taper('hann', 'taper', 0.2, 512)
     >>> w.shape
     (512,)
@@ -262,10 +262,11 @@ def _apply_norm(g: np.ndarray, norm: str, M: int) -> np.ndarray:
     g : np.ndarray
         Window vector.
     norm : str
-        Normalization type: 'inf'/'peak' (unit peak), 'energy'/'2' (scaled by sqrt(M)),
-        or '1'/'area' (scaled by M).
+        ``'inf'``/``'peak'`` — unit peak; ``'energy'``/``'2'`` — unit L2 norm;
+        ``'1'``/``'area'`` — unit L1 norm; ``'null'``/``'none'`` — unchanged.
     M : int
-        Window length (for context, though g.shape[0] could be used).
+        Window length.  Accepted for signature stability and no longer read —
+        the norms are computed from ``g`` itself.
 
     Returns
     -------
@@ -276,14 +277,32 @@ def _apply_norm(g: np.ndarray, norm: str, M: int) -> np.ndarray:
     ------
     ValueError
         If norm is not recognized.
+
+    Notes
+    -----
+    ``'energy'``/``'2'`` used to *multiply by* ``sqrt(M)`` and ``'1'``/``'area'``
+    to multiply by ``M`` — neither of which normalises anything.  A "unit
+    energy" Hann window of length 512 came back with an L2 norm of 313.5.
+
+    That contradicted every other definition in the package —
+    ``core._norm.normalize_window``, the public ``setnorm``, and
+    ``_warpedfilters._setnorm`` all divide by the norm — and LTFAT, where
+    ``'2'``/``'energy'`` means unit L2.  ``firwin``'s own default is ``'inf'``,
+    which was always correct, so the damage was confined to callers who asked
+    for energy or area explicitly: ``gabfilters`` is the one in-tree caller
+    that does, via ``_gabwin``.
     """
-    norm = norm.lower()
+    norm = norm.lower().strip()
+    if norm in ("null", "none", ""):
+        return g
     if norm in ("energy", "2"):
-        return g * np.sqrt(M)  # type: ignore[no-any-return]
+        n = float(np.linalg.norm(g))
+        return g / n if n > 0 else g
     elif norm in ("1", "area"):
-        return g * float(M)
+        s = float(np.sum(np.abs(g)))
+        return g / s if s > 0 else g
     elif norm in ("inf", "peak"):
-        mx = np.max(np.abs(g))
+        mx = float(np.max(np.abs(g)))
         return g / mx if mx > 0 else g
     else:
         raise ValueError(f"firwin: unknown norm {norm!r}")
@@ -320,7 +339,7 @@ def firwin_eval(name: str, x: np.ndarray) -> np.ndarray:
     >>> g = firwin_eval('hann', x)
     >>> g.shape
     (100,)
-    >>> g[0]
+    >>> float(g[0])
     1.0
     """
     name = name.lower().strip()

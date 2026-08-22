@@ -25,6 +25,7 @@ companion document.)
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import torch
 
@@ -199,9 +200,15 @@ def biquadfilter(
             frac_r = r_ii.clamp(1e-12, 1 - 1e-12)
             rho_ii = torch.log(frac_r) - torch.log(1.0 - frac_r)
 
-        def _make_H(r_v, th_v, sc, nm):
+        def _make_H(
+            r_v: torch.Tensor,
+            th_v: torch.Tensor,
+            sc: float | torch.Tensor,
+            nm: str,
+        ) -> Callable[[int], torch.Tensor]:
             def H(L: int) -> torch.Tensor:
-                return comp_biquad(r_v, th_v, L, nm, device=device, dtype=dtype) * sc
+                resp: torch.Tensor = comp_biquad(r_v, th_v, L, nm, device=device, dtype=dtype)
+                return resp * sc
 
             return H
 

@@ -53,8 +53,13 @@ core analysis/synthesis functions and :func:`cool_frames.sigproc.thresh`:
    from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank
    from cool_frames.sigproc import thresh
 
-   # noisy_signal: 1D float64 array, fs: sample rate
-   fs, Ls = 16_000, len(noisy_signal)
+   # noisy_signal: 1D float64 array, fs: sample rate.  Stand-in below so the
+   # example runs as written; substitute your own recording.
+   fs = 16_000
+   _t = np.arange(fs) / fs
+   noisy_signal = np.sin(2 * np.pi * 440 * _t) + 0.1 * np.random.default_rng(0).standard_normal(fs)
+
+   Ls = len(noisy_signal)
    g, a, fc, L, info = audfilters(fs, Ls)
    gd = filterbankdual(g, a, L)
 
@@ -93,15 +98,16 @@ in full:
 
    from cool_frames.numpy.filters import audfilters
    from cool_frames.numpy.filterbanks import (
-       filterbank, ifilterbank, filterbankrealtight,
+       filterbank, ifilterbank, filterbanktight,
    )
 
    g, a, fc, L, info = audfilters(fs, len(noisy_signal))
-   c = filterbank(noisy_signal, g, a)
+   c = filterbank(noisy_signal, g, a, L=L)
 
    # --- your thresholding logic here ---
+   tau = 0.05
    c_clean = [np.where(np.abs(ci) > tau, ci, 0) for ci in c]
    # ------------------------------------
 
-   gd = filterbankrealtight(g, a, L)
-   denoised = ifilterbank(c_clean, gd, a, len(noisy_signal))
+   gd = filterbanktight(g, a, L)
+   denoised = ifilterbank(c_clean, gd, a, Ls=len(noisy_signal), real=True)

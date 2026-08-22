@@ -27,8 +27,10 @@ class TestShiftCovarianceImpl:
 
     def test_shift_covariance(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -62,8 +64,10 @@ class TestShiftCovarianceRandomImpl:
 
     def test_shift_covariance_random(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -90,8 +94,10 @@ class TestShiftCovarianceAllBandsImpl:
 
     def test_all_bands_multiple_shifts(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

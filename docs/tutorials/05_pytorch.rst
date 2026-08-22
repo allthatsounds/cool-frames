@@ -37,7 +37,7 @@ Basic usage
    x = torch.randn(Ls, dtype=torch.float64, requires_grad=True)
 
    # Analysis
-   c = lfb_t.filterbanks.filterbank(x, g, a, L=L, real=True)
+   c = lfb_t.filterbanks.filterbank(x, g, a, L=L)
 
    # Synthesis
    x_rec = lfb_t.filterbanks.ifilterbank(c, gd, a, Ls=Ls, real=True)
@@ -68,7 +68,7 @@ objectives are straightforward:
    import torch
    import numpy as np
 
-   c = lfb_t.filterbanks.filterbank(x, g, a, L=L, real=True)
+   c = lfb_t.filterbanks.filterbank(x, g, a, L=L)
 
    # Penalise energy in channels above 4 kHz
    high_mask = torch.tensor(fc > 4000, dtype=torch.float64)
@@ -92,7 +92,7 @@ The differentiable filterbank supports gradient-based phase retrieval
 
    for _ in range(200):
        opt.zero_grad()
-       c_est = lfb_t.filterbanks.filterbank(x_est, g, a, L=L, real=True)
+       c_est = lfb_t.filterbanks.filterbank(x_est, g, a, L=L)
        loss  = sum(
            (ci.abs() - s_ref).pow(2).mean()
            for ci, s_ref in zip(c_est, s_mag)
@@ -116,19 +116,17 @@ Move filters and signal to CUDA with the standard PyTorch API:
 
    # g and gd are lists of NumPy arrays; the filterbank
    # automatically moves operations to the same device as x.
-   c_gpu = lfb_t.filterbanks.filterbank(x_gpu, g, a, L=L, real=True)
+   c_gpu = lfb_t.filterbanks.filterbank(x_gpu, g, a, L=L)
 
 Signal-processing utilities
 ----------------------------
 
-:mod:`cool_frames.torch.sigproc` provides differentiable
-signal processing helpers:
+:mod:`cool_frames.torch.sigproc` provides ``thresh``, a differentiable
+coefficient-thresholding helper with hard, soft and Wiener modes:
 
 .. code-block:: python
 
-   from cool_frames.torch.sigproc import (
-       rms_normalise,   # normalise signal to target RMS
-       apply_gain_db,   # apply gain in dB
-       soft_threshold,  # differentiable soft thresholding
-       compress,        # dynamic range compression
-   )
+   import torch
+   from cool_frames.torch.sigproc import thresh
+
+   c_dn, n_kept = thresh(torch.randn(64, dtype=torch.float64), 0.5, mode='soft')

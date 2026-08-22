@@ -73,8 +73,20 @@ def comp_warpedfoff(fc: float, bw: float, fs: float, L: int,
         fc = -fc
         fcscale = freqtoscale(fc)
         # MATLAB: foff = -floor(scaletofreq(fcscale+.5*bw)/fs*L)+1
-        # Convert to 0-based: subtract 1
-        foff = -math.floor(scaletofreq(fcscale + 0.5 * bw) / fs * L)
+        #
+        # The ``+1`` here is NOT a 1-based indexing artifact, and stripping it
+        # as one (which is what this line used to do) put every mirrored channel
+        # exactly one bin low.  It is part of the mirror arithmetic: the
+        # response is reversed with ``H[::-1]``, which maps element i to
+        # element (n-1-i), and that n-1 is what the +1 compensates for.
+        #
+        # Measured on a log-warped complex bank: with the +1 dropped, a
+        # negative-fc channel and its positive twin differ by 0.18 (median,
+        # relative L2, after mirroring) and a shift search finds a uniform
+        # -1 bin offset on all 32 pairs; with it restored the two agree to
+        # 0.0 exactly.  The positive branch's ``+1`` genuinely is 1-based and
+        # is correctly dropped below.
+        foff = -math.floor(scaletofreq(fcscale + 0.5 * bw) / fs * L) + 1
     else:
         fcscale = freqtoscale(fc)
         # MATLAB: foff = floor(scaletofreq(fcscale-.5*bw)/fs*L)+1
@@ -137,7 +149,17 @@ def comp_warpedfreqresponse(winname: str, fc: float, bw: float,
     pos_lo = comp_warpedfoff(fc if not fc_was_negative else -fc, bw, fs, L,
                              freqtoscale, scaletofreq, do_symmetric)
 
-    # Upper extent
+    # Upper extent.
+    #
+    # Note for anyone tempted to "fix" the mirrored branch to use -A (the
+    # mirror of the lower edge) so the width comes out as B - A: don't.  On that
+    # branch the underlying response was built at +|fc|, so its energy sits at
+    # bins [A, B]; ``pos_lo`` is -B, and the subsequent ``np.roll(H, -pos_lo)``
+    # shifts that energy to [A + B, 2B].  The deliberately wide 2B window is
+    # what captures it before ``H[::-1]`` brings it back to [0, B - A] for
+    # placement at foff = -B.  Narrowing the window to B - A truncates the
+    # energy away entirely (measured: mirror-symmetry error goes from 0.10 to
+    # 1.00, i.e. the filter becomes empty).
     pos_hi = math.floor(scaletofreq(fcscale + 0.5 * bw) / fs * L)
     if pos_hi > L / 2:
         pos_hi = math.floor(scaletofreq(fcscale + 0.5 * bw - nyquest2) / fs * L)
@@ -161,6 +183,21 @@ def comp_warpedfreqresponse(winname: str, fc: float, bw: float,
 
     if fc_was_negative and do_symmetric:
         H = H[::-1].copy()
+        # The window taken above is deliberately wide (about 2B rather than the
+        # filter's own B - A), because that width is what the roll-and-reverse
+        # arithmetic needs in order to land the response on the right bins.  It
+        # is not the filter's support: everything past the first B - A bins is
+        # the aliased ``win_hi`` term, which the positive twin's narrower window
+        # discards and which this branch was keeping.
+        #
+        # Measured on a log-warped complex bank, channel fc = -2321.6 came out
+        # with 3334 nonzero bins and 4.5x the energy of its +2321.6 twin — the
+        # twin's 1291 bins were all present and correct, with a spurious
+        # 2043-bin tail attached.  Trim to the twin's width.
+        lo_edge = math.floor(scaletofreq(fcscale - 0.5 * bw) / fs * L)
+        width = int(modcent(pos_hi - lo_edge, L))
+        if 0 < width < H.size:
+            H = H[:width].copy()
 
     return H
 
@@ -175,7 +212,8 @@ def warpedblfilter(winname: str, fsupp: float, fc: float, *,
                    scaletofreq=None,
                    norm: str = "energy",
                    delay: int = 0,
-                   scal: float = 1.0) -> dict:
+                   scal: float = 1.0,
+                   do_symmetric: bool = False) -> dict:
     """Construct a warped band-limited filter descriptor.
 
     Parameters
@@ -198,6 +236,16 @@ def warpedblfilter(winname: str, fsupp: float, fc: float, *,
         Delay in samples.
     scal : float
         Additional scaling factor.
+    do_symmetric : bool
+        Whether the warping is symmetric about DC, i.e. whether ``freqtoscale``
+        diverges at 0 (as a log-like scale does) so that negative centre
+        frequencies must be obtained by mirroring the positive ones rather than
+        by evaluating the warp below zero.
+
+        ``comp_warpedfreqresponse`` and ``comp_warpedfoff`` have always taken
+        this flag; ``warpedblfilter`` did not accept it and so could not pass it
+        on, which left every negative-frequency channel of a
+        ``freqrange='complex'`` bank evaluating a warp outside its domain.
 
     Returns
     -------
@@ -210,13 +258,15 @@ def warpedblfilter(winname: str, fsupp: float, fc: float, *,
         h = comp_warpedfreqresponse(
             winname, fc, fsupp, fs, L,
             freqtoscale, scaletofreq,
-            norm=norm
+            norm=norm,
+            do_symmetric=do_symmetric,
         )
         return h * scal
 
     def foff(L: int) -> int:
         return comp_warpedfoff(fc, fsupp, fs, L,
-                               freqtoscale, scaletofreq)
+                               freqtoscale, scaletofreq,
+                               do_symmetric)
 
     return {
         "H": H,

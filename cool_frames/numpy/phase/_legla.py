@@ -1,25 +1,33 @@
 """
-numpy/phaseret/_legla.py
-=========================
+numpy/phase/_legla.py
+=====================
 Le Roux's Griffin-Lim Algorithm (LEGLA) for filterbanks.
 
-Port of ``phaseret/gabor/legla.m``.
+Where GLA projects onto the range of the analysis operator by synthesising and
+re-analysing, LEGLA applies the same projection as a *convolution* with a
+precomputed kernel, truncated at a relative threshold.  See
+``_leglakernel.py`` for the kernel construction and its validation; the short
+version is::
 
-LEGLA improves upon GLA by using a truncated projection kernel for the
-phase update instead of a full analysis-synthesis cycle.  In the
-filterbank setting the projection kernel is:
+    (P c)_m[n] = sum_{m'} sum_{n'} k_{m,m'}[(n a_m - n' a_m') mod L] c_{m'}[n']
+    k_{m,m'}   = ifft( conj(G_m) * Gd_{m'} )
 
-    kern = filterbank(ifilterbank(delta, gd, a), g, a)
+Discarding kernel entries below ``relthr`` times the peak drops whole channel
+pairs — filters in different parts of the spectrum barely interact — and gives
+a cheaper, genuinely different projection operator.
 
-where delta is a unit impulse in one channel.  The kernel is then
-truncated for efficiency.
-
-This implementation supports:
-  - ``'trunc'``    : standard truncated kernel
-  - ``'modtrunc'`` : modified (kernel centre set to zero)
-  - ``'stepwise'`` : update all phases after full projection
-  - ``'onthefly'`` : update phase immediately per coefficient
+Supported:
+  - ``'trunc'``    : truncate the kernel at ``relthr``
+  - ``'modtrunc'`` : additionally zero the self-term ``k_{m,m}[0]``, so a
+                      coefficient does not contribute to its own update
+  - ``'legla'``    : plain iteration
   - ``'flegla'``   : fast variant with momentum
+
+Setting ``relthr=0`` keeps the entire kernel, which is mathematically identical
+to GLA's full projection — the property the kernel is tested against.
+
+Before v0.1.1 this module ignored ``relthr`` and ``variant`` entirely and ran a
+full projection, making ``legla`` a bit-identical alias for ``gla``.
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ def legla(
     method: Literal["legla", "flegla"] = "legla",
     alpha: float = 0.99,
     startphase: Literal["input", "zero", "rand"] = "zero",
+    seed: int | None = None,
     variant: Literal["trunc", "modtrunc"] = "trunc",
     relthr: float = 1e-3,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, int]:
@@ -54,21 +63,39 @@ def legla(
     and frame operator theory [legla-perraudin]_.
 
     The LEGLA update replaces the full analysis-synthesis cycle with a
-    truncated twisted convolution using a precomputed projection kernel.
-    For filterbanks with many channels, this reduces computation.
-
-    In practice, the filterbank LEGLA falls back to GLA-style iterations
-    when the kernel is not precomputed efficiently.  This implementation
-    computes the kernel lazily via a single impulse response.
+    truncated convolution against a precomputed projection kernel.
 
     Parameters
     ----------
     s_list : list of M arrays — target magnitudes
     g : list of M filter dicts
     a : hop sizes
-    L, Ls, real, maxit, tol, method, alpha, startphase : same as :func:`gla`
-    variant : ``'trunc'`` or ``'modtrunc'``
-    relthr : relative threshold for kernel truncation
+    L, Ls, real, maxit, tol, method, alpha, startphase, seed : same as :func:`gla`
+    variant : ``'trunc'`` (truncate at ``relthr``) or ``'modtrunc'``
+        (additionally zero the self-term ``k_{m,m}[0]``, so a coefficient makes
+        no contribution to its own update).
+    relthr : float
+        Relative threshold for kernel truncation: entries below
+        ``relthr * max|k|`` are discarded.  ``0.0`` keeps the whole kernel and
+        reproduces GLA's exact projection; the default ``1e-3`` typically
+        retains a fifth of the channel pairs.  Larger values are cheaper per
+        iteration and change the operator more.
+
+    Notes
+    -----
+    LEGLA trades a one-off cost for a cheaper iteration: the kernel takes
+    O(M^2) FFTs to build, after which each projection is a sparse matrix
+    product instead of two full FFT passes per channel.  It therefore wins only
+    once ``maxit`` is large enough to amortise the setup.  Measured on a
+    23-channel ERB bank at ``Ls=512``::
+
+        maxit=10    gla 0.07 s    legla(relthr=1e-2) 0.22 s
+        maxit=100   gla 0.66 s    legla(relthr=1e-2) 0.29 s
+
+    For a handful of iterations, use :func:`gla`.
+
+    With fractional hop sizes there is no integer lag grid, so the convolution
+    form does not apply and this falls back to the exact projection.
 
     Returns
     -------
@@ -102,7 +129,7 @@ def legla(
     if startphase == "zero":
         c = [s.copy().astype(complex) for s in s_abs]
     elif startphase == "rand":
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         c = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
     else:
         c = [np.asarray(s, dtype=complex).ravel().copy() for s in s_list]
@@ -112,17 +139,39 @@ def legla(
     if norm_s == 0:
         norm_s = 1.0  # type: ignore[assignment]
 
-    # The LEGLA update uses analysis-synthesis projection.
-    # For filterbanks, we implement it as a standard GLA iteration
-    # but with the projection applied as a single step.
-    # (The kernel truncation optimisation is primarily beneficial
-    # for large Gabor systems; for filterbanks the analysis-synthesis
-    # is already efficient.)
+    # The LEGLA update replaces the full synthesise-and-reanalyse projection
+    # with a *truncated* one: the projection operator is a convolution whose
+    # kernel is built once (see _leglakernel.py) and thresholded at `relthr`.
+    #
+    # `relthr=0` keeps the whole kernel and is mathematically identical to the
+    # full projection; larger values discard channel pairs and lags that
+    # contribute little, giving a cheaper — and genuinely different — operator.
+    hops = np.round(a_norm[:, 0] / a_norm[:, 1]).astype(int)
+    use_kernel = relthr >= 0 and np.allclose(a_norm[:, 0] / a_norm[:, 1], hops)
 
-    def project(c_in):
-        """Full projection: synthesise then re-analyse."""
-        f = ifilterbank(c_in, gd, a_norm, Ls=L, real=real)
-        return filterbank(np.real(f) if real else f, g, a_norm, L=L)
+    if use_kernel:
+        from ._leglakernel import LeglaKernel
+
+        kernel = LeglaKernel(
+            g,
+            gd,
+            hops,
+            N,
+            L,
+            real=real,
+            relthr=relthr,
+            zero_self_term=(variant == "modtrunc"),
+        )
+
+        def project(c_in):
+            return kernel.project(c_in)
+
+    else:
+        # Fractional hop sizes have no integer lag grid, so the convolution
+        # form does not apply; fall back to the exact projection.
+        def project(c_in):
+            f = ifilterbank(c_in, gd, a_norm, Ls=L, real=real)
+            return filterbank(np.real(f) if real else f, g, a_norm, L=L)
 
     relres_list = []
 
@@ -136,16 +185,11 @@ def legla(
             res = float(np.linalg.norm(c_proj_abs - s_flat) / norm_s)
             relres_list.append(res)
 
-            # Phase update with magnitude constraint
+            # Phase update with magnitude constraint.  `variant` is applied
+            # when the kernel is built, not here — the old branch computed
+            # angle(c + (proj - c)) == angle(proj), i.e. nothing.
             for m in range(M):
-                cp = np.asarray(c_proj[m]).ravel()
-                if variant == "modtrunc":
-                    # Modified: subtract the identity component
-                    cp = cp - c[m]
-                    cp_phase = np.angle(np.asarray(c[m]).ravel() + cp)
-                else:
-                    cp_phase = np.angle(cp)
-                c[m] = s_abs[m] * np.exp(1j * cp_phase)
+                c[m] = s_abs[m] * np.exp(1j * np.angle(np.asarray(c_proj[m]).ravel()))
 
             if res < tol:
                 break
@@ -159,21 +203,19 @@ def legla(
             res = float(np.linalg.norm(c_proj_abs - s_flat) / norm_s)
             relres_list.append(res)
 
-            tnew = []
-            for m in range(M):
-                cp = np.asarray(c_proj[m]).ravel()
-                if variant == "modtrunc":
-                    cp = cp - c[m]
-                    cp_phase = np.angle(np.asarray(c[m]).ravel() + cp)
-                else:
-                    cp_phase = np.angle(cp)
-                tnew.append(s_abs[m] * np.exp(1j * cp_phase))
+            tnew = [
+                s_abs[m] * np.exp(1j * np.angle(np.asarray(c_proj[m]).ravel())) for m in range(M)
+            ]
 
             c = [tnew[m] + alpha * (tnew[m] - told[m]) for m in range(M)]
             told = tnew
 
             if res < tol:
                 break
+
+        # See the note in _gla.py: the momentum step leaves the constraint set,
+        # so project the extrapolated point back before returning.
+        c = [s_abs[m] * np.exp(1j * np.angle(c[m])) for m in range(M)]
 
     f = ifilterbank(c, gd, a_norm, Ls=Ls or L, real=real)
     if real:

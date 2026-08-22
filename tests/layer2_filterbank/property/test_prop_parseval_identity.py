@@ -21,8 +21,10 @@ import numpy as np
 
 def _tight_and_bound(fs=8000, Ls=1024):
     from cool_frames.filterbanks import filterbankbounds, filterbanktight  # type: ignore
-    from cool_frames.filters import audfilters  # type: ignore
-    from cool_frames.filters import filterbanklength  # type: ignore
+    from cool_frames.filters import (
+        audfilters,  # type: ignore
+        filterbanklength,  # type: ignore
+    )
     g, a, fc, _, _info = audfilters(fs, Ls)
     L  = filterbanklength(Ls, a)
     gt = filterbanktight(g, a, L)

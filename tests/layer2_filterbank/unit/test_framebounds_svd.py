@@ -1,9 +1,11 @@
 """Tests for the general (SVD/eigen) frame bounds, filterbankbounds_svd."""
 from __future__ import annotations
-import numpy as np
+
 import pytest
-from cool_frames.numpy.filters import audfilters, cqtfilters
+
+import numpy as np
 from cool_frames.numpy.filterbanks import filterbankbounds_svd, filterbanktight
+from cool_frames.numpy.filters import audfilters, cqtfilters
 
 
 @pytest.mark.parametrize("bank", [

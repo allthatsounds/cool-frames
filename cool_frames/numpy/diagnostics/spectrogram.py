@@ -10,10 +10,9 @@ Example:
 from __future__ import annotations
 
 import numpy as np
-
-from cool_frames.numpy.filters import audfilters, cqtfilters
 from cool_frames.numpy.filterbanks import filterbank
-from cool_frames.numpy.phase import filterbankphasegrad, filterbankreassign
+from cool_frames.numpy.filters import audfilters, cqtfilters
+from cool_frames.numpy.phase import filterbankphasegrad
 
 
 def filterbank_spectrogram(
@@ -63,14 +62,19 @@ def filterbank_spectrogram(
         mag_db = 20 * np.log10(mag + 1e-10)
         mag_db_list.append(mag_db)
 
-    # Pad shorter channels to match longest
+    # Pad shorter channels to match the longest.  The pad value is the display
+    # floor, not 0.0 dB: channels are decimated by different hops, so most of
+    # the image is padding, and padding at magnitude 1.0 let `peak_db` be set by
+    # the padding rather than the signal for any quiet input.
+    peak_db = float(max(np.max(m) for m in mag_db_list))
+    floor_db = peak_db - db_range
+
     max_len = max(len(m) for m in mag_db_list)
-    mag_db_stacked = np.zeros((len(c), max_len))
+    mag_db_stacked = np.full((len(c), max_len), floor_db, dtype=float)
     for i, m in enumerate(mag_db_list):
         mag_db_stacked[i, :len(m)] = m
 
-    peak_db = np.max(mag_db_stacked)
-    mag_db_clipped = np.maximum(mag_db_stacked, peak_db - db_range)
+    mag_db_clipped = np.maximum(mag_db_stacked, floor_db)
 
     return {
         'coeff_db': mag_db_clipped,
@@ -85,7 +89,8 @@ def filterbank_spectrogram(
 def reassigned_spectrogram(
     f: np.ndarray,
     fs: float,
-    scale: str = 'erb'
+    scale: str = 'erb',
+    db_range: float = 60,
 ) -> dict:
     """Compute spectrogram with phase gradient information.
 
@@ -119,41 +124,53 @@ def reassigned_spectrogram(
         g, a, fc, L, _info = audfilters(fs, len(f))
 
     # Analyse
-    c = filterbank(f, g, a)  # list of arrays
+    c = filterbank(f, g, a, L=L)  # list of arrays
 
-    # Compute phase gradients
-    try:
-        tgrad, fgrad = filterbankphasegrad(c, a, fc)  # type: ignore[arg-type]
-    except Exception:
-        # If phase gradient computation fails, use zero gradients
-        tgrad = [np.zeros_like(c_ch) for c_ch in c]
-        fgrad = [np.zeros_like(c_ch) for c_ch in c]
+    # Compute phase gradients.
+    #
+    # Until v0.1.1 this called `filterbankphasegrad(c, a, fc)` — coefficients
+    # as the signal, hop sizes as the filters, centre frequencies as the hops —
+    # and unpacked the 4-tuple return into two names.  It could never succeed,
+    # and a bare `except Exception` turned the failure into zeros, so both
+    # documented outputs were identically zero for every input.
+    #
+    # The real signature is
+    #     filterbankphasegrad(f, g, a, L) -> (tgrad, fgrad, s, c)
+    # with `tgrad` the normalised instantaneous frequency and `fgrad` the group
+    # delay in samples — the opposite of how the two were mapped below.
+    tgrad, fgrad, _s, _c = filterbankphasegrad(f, g, a, L)
 
-    # Convert to dB and stack
-    mag_db_list = []
-    for c_ch in c:
-        mag = np.abs(c_ch)
-        mag_db = 20 * np.log10(mag + 1e-10)
-        mag_db_list.append(mag_db)
+    # Convert to dB
+    mag_db_list = [20 * np.log10(np.abs(c_ch) + 1e-10) for c_ch in c]
 
-    # Pad shorter channels
+    # Stack, padding the shorter (more heavily decimated) channels.
+    #
+    # The pad value has to be the display floor, not 0.0: channels are
+    # decimated by different hops, so on a typical ERB bank ~88 % of the image
+    # is padding.  Padding at 0.0 dB (magnitude 1.0) meant `peak_db` could be
+    # the *padding* rather than the signal — for a quiet input the whole 60 dB
+    # window was anchored ~30 dB too high and most real coefficients fell below
+    # the floor.
+    peak_db = float(max(np.max(m) for m in mag_db_list))
+    floor_db = peak_db - db_range
+
     max_len = max(len(m) for m in mag_db_list)
-    mag_db_stacked = np.zeros((len(c), max_len))
+    mag_db_stacked = np.full((len(c), max_len), floor_db, dtype=float)
     for i, m in enumerate(mag_db_list):
         mag_db_stacked[i, :len(m)] = m
 
-    peak_db = np.max(mag_db_stacked)
-    mag_db_clipped = np.maximum(mag_db_stacked, peak_db - 60)
+    mag_db_clipped = np.maximum(mag_db_stacked, floor_db)
 
-    # Average phase gradient data across time for per-channel summary
-    fgrad_summary = np.array([np.mean(fg) if len(fg) > 0 else 0 for fg in fgrad])
-    tgrad_summary = np.array([np.mean(tg) if len(tg) > 0 else 0 for tg in tgrad])
+    # Average phase-gradient data across time for a per-channel summary.
+    # `tgrad` is instantaneous frequency (normalised), `fgrad` group delay.
+    tgrad_summary = np.array([np.mean(tg) if len(tg) > 0 else 0.0 for tg in tgrad])
+    fgrad_summary = np.array([np.mean(fg) if len(fg) > 0 else 0.0 for fg in fgrad])
 
     return {
         'coeff_db': mag_db_clipped,
         'fc': fc,
         'a': a,
         'fs': fs,
-        'instfreq_deviation': fgrad_summary * fs / (2 * np.pi),
-        'groupdelay_shift': tgrad_summary,
+        'instfreq_deviation': tgrad_summary * fs / (2 * np.pi),
+        'groupdelay_shift': fgrad_summary,
     }

@@ -38,6 +38,7 @@ def gla(
     method: Literal["gla", "fgla"] = "gla",
     alpha: float = 0.99,
     startphase: Literal["input", "zero", "rand"] = "zero",
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray, np.ndarray, int]:
     """Griffin-Lim Algorithm for filterbanks.
 
@@ -59,6 +60,10 @@ def gla(
     method : ``'gla'`` or ``'fgla'`` (fast Griffin-Lim)
     alpha : acceleration parameter for fGLA
     startphase : ``'input'``, ``'zero'``, or ``'rand'``
+    seed : int, optional
+        Seed for ``startphase='rand'``.  ``None`` (the default) draws from
+        fresh entropy, so repeated calls differ; pass an integer to make a
+        random start reproducible.
 
     Returns
     -------
@@ -74,7 +79,9 @@ def gla(
     >>> from cool_frames.numpy.phase import gla
     >>> # Generate some target magnitudes
     >>> g, a, fc, L, _info = audfilters(8000, 8000)
-    >>> s_list = [np.random.rand(512) for _ in g]
+    >>> from cool_frames.numpy.filterbanks import filterbank
+    >>> x = np.random.default_rng(0).standard_normal(8000)
+    >>> s_list = [np.abs(cm) for cm in filterbank(x, g, a, L=L)]
     >>> c, f, relres, niter = gla(s_list, g, a, L=L, maxit=10)
     >>> len(c) == len(g)  # same number of channels
     True
@@ -110,7 +117,7 @@ def gla(
     if startphase == "zero":
         c = [s.copy().astype(complex) for s in s_abs]
     elif startphase == "rand":
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         c = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
     else:  # 'input'
         c = [np.asarray(s, dtype=complex).ravel().copy() for s in s_list]
@@ -168,6 +175,15 @@ def gla(
 
             if res < tol:
                 break
+
+        # The momentum step leaves the constraint set, so the extrapolated
+        # point has |c| != s.  Project it back before returning: every other
+        # member of the family guarantees |c_out| == s, and callers rely on it.
+        # Re-projecting the extrapolate (rather than returning the last
+        # projected iterate `told`) keeps the phase progress the momentum
+        # bought, and measures at least as good on consistency at every
+        # iteration count.
+        c = [s_abs[m] * np.exp(1j * np.angle(c[m])) for m in range(M)]
 
     else:
         raise ValueError(f"Unknown method '{method}', expected 'gla' or 'fgla'")

@@ -100,7 +100,7 @@ def filterbankresponse(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> resp = filterbankresponse(g, a, L)
     >>> resp.shape
-    torch.Size([8000])
+    torch.Size([10368])
     """
     g_np = _torch_filters_to_numpy(g, L)
     resp_np = _np_filterbankresponse(g_np, a, L, real=real)
@@ -112,11 +112,19 @@ def filterbankbounds(
     a,
     L: int,
     real: bool = True,
-) -> tuple[float, float]:
+    return_kappa: bool = False,
+):
     """Compute the frame bounds *(A, B)* of a filterbank.
 
     Delegates to the NumPy implementation.  ``real`` defaults to ``True``
     (single-sided real-audio frames), matching the numpy backend.
+
+    Parameters
+    ----------
+    return_kappa : if True, return ``(A, B, kappa)`` with ``kappa = B / A``,
+        matching the NumPy backend.  This was NumPy-only, so the condition
+        number — the single most useful thing about a pair of frame bounds —
+        had to be recomputed by hand on the torch side.
 
     Examples
     --------
@@ -125,9 +133,16 @@ def filterbankbounds(
     >>> A, B = filterbankbounds(g, a, L)
     >>> A > 0 and B > A  # A ≤ I ≤ B for frame property
     True
+    >>> A, B, kappa = filterbankbounds(g, a, L, return_kappa=True)
+    >>> abs(kappa - B / A) < 1e-9
+    True
     """
     g_np = _torch_filters_to_numpy(g, L)
-    A, B = _np_filterbankbounds(g_np, a, L, real=real)
+    result = _np_filterbankbounds(g_np, a, L, real=real, return_kappa=return_kappa)
+    if return_kappa:
+        A, B, kappa = result
+        return float(A), float(B), float(kappa)
+    A, B = result
     return float(A), float(B)
 
 
@@ -146,7 +161,7 @@ def filterbankfreqz(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> H = filterbankfreqz(g, a, L)
     >>> H.shape
-    torch.Size([32, 8000])
+    torch.Size([10368, 35])
     """
     g_np = _torch_filters_to_numpy(g, L)
     H_np = _np_filterbankfreqz(g_np, a, L)
@@ -179,7 +194,7 @@ def filterbankdual(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> g_dual = filterbankdual(g, a, L)
     >>> len(g_dual)
-    32
+    35
     """
     return _frame_solver(_np_filterbankdual, g, a, L, real=real, device=device, dtype=dtype)
 
@@ -205,7 +220,7 @@ def filterbanktight(
     >>> g, a, _, L, _ = audfilters(16000, 8000)
     >>> g_tight = filterbanktight(g, a, L)
     >>> len(g_tight)
-    32
+    35
     """
     return _frame_solver(_np_filterbanktight, g, a, L, real=real, device=device, dtype=dtype)
 
@@ -239,7 +254,7 @@ def filterbankscale(
     >>> scales = [0.5] * len(g)
     >>> g_scaled = filterbankscale(g, scales, L=L)
     >>> len(g_scaled)
-    32
+    35
     """
     if device is None:
         device = _infer_device(g)
@@ -271,15 +286,24 @@ def ifilterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
 ) -> tuple[torch.Tensor, float, int]:
     """Iterative filterbank synthesis via conjugate gradients.
 
     Delegates to the NumPy implementation and converts back to torch.
 
+    Parameters
+    ----------
+    real : if True, use real-filterbank synthesis.  Defaults to ``None``,
+        meaning derive it from the filters — see the NumPy ``ifilterbankiter``.
+        The old ``False`` default reconstructed the flagship ``audfilters`` bank
+        with 23 % error where the correct mode reaches 4.4e-16.  This is the
+        same defect as ``filterbankiter``'s and the NumPy twin's, and it
+        outlived both of those fixes by being in a fourth place nobody looked.
+
     Returns
     -------
-    xr     : reconstructed signal tensor
+    xr     : reconstructed signal tensor, in the coefficients' own real dtype
     relres : relative residual
     niter  : number of iterations used
 
@@ -287,8 +311,9 @@ def ifilterbankiter(
     --------
     >>> from cool_frames.torch.filters import audfilters
     >>> g, a, _, L, _ = audfilters(16000, 8000)
-    >>> c = [torch.randn(32) for _ in range(len(g))]
-    >>> xr, relres, niter = ifilterbankiter(c, g, a, Ls=8000)  # doctest: +SKIP
+    >>> from cool_frames.torch.filterbanks import filterbank
+    >>> c = filterbank(torch.randn(8000), g, a, L=L)
+    >>> xr, relres, niter = ifilterbankiter(c, g, a, Ls=8000)
     >>> xr.shape
     torch.Size([8000])
     """
@@ -305,7 +330,18 @@ def ifilterbankiter(
     result = _np_ifilterbankiter(c_np, g_np, a, Ls=Ls, tol=tol, maxit=maxit, alg=alg, real=real)
     xr_np, relres, niter = result[0], result[1], result[2]
 
-    xr = torch.tensor(xr_np, dtype=torch.float64, device=device)
+    # Follow the coefficients' precision rather than forcing float64: the torch
+    # backend is dtype-polymorphic everywhere else, and silently widening a
+    # float32 pipeline here is the thing that polymorphism exists to avoid.
+    out_dtype = torch.float64
+    for cm in c:
+        if isinstance(cm, torch.Tensor):
+            out_dtype = (
+                torch.float32 if cm.dtype in (torch.complex64, torch.float32) else torch.float64
+            )
+            break
+
+    xr = torch.as_tensor(xr_np, dtype=out_dtype, device=device)
     return xr, relres, niter
 
 
@@ -322,7 +358,7 @@ def filterbankiter(
     tol: float = 1e-6,
     maxit: int = 100,
     alg: str = "cg",
-    real: bool = False,
+    real: bool | None = None,
 ) -> tuple[list[torch.Tensor], float, int]:
     """Iterative filterbank analysis via Conjugate Gradient.
 
@@ -342,7 +378,13 @@ def filterbankiter(
     tol   : relative residual tolerance
     maxit : maximum CG iterations
     alg   : ``'cg'`` or ``'pcg'``
-    real  : if True, use real-filterbank synthesis
+    real  : if True, use real-filterbank synthesis.  Defaults to ``None``,
+            meaning derive it from the filters — see the NumPy
+            ``filterbankiter`` for why: the old ``False`` default diverged on
+            the package's flagship single-sided bank (100 iterations to a
+            relative residual of 58) and disagreed with every sibling in the
+            family.  Kept in parity with the NumPy backend deliberately; a
+            default that differs between backends is its own bug.
 
     Returns
     -------
@@ -365,6 +407,11 @@ def filterbankiter(
     if L is None:
         L = _filterbanklength(Ls, a_norm)
 
+    if real is None:
+        from ...numpy.filterbanks._core import filterbank_is_real as _is_real
+
+        real = bool(_is_real(g, a_norm, int(L)))
+
     # Zero-pad
     if Ls < L:
         f_pad = torch.nn.functional.pad(f, (0, 0, 0, L - Ls))
@@ -378,8 +425,14 @@ def filterbankiter(
         return c_out, 0.0, 0
 
     # Frame operator: A x = ifft( synth( ana( ifft(X) ) ) )
+    #
+    # The operator acts on the full length-L vector.  Until v0.1.1 this sliced
+    # `x_vec[:Ls]` and let `filterbank` re-pad, which makes the map a
+    # projection rather than F*F: with Ls < L the iteration diverged (relres
+    # 399.7 after 60 iterations, against NumPy's 8.5e-11 in 17).  With Ls == L
+    # the slice was a no-op, which is why it went unnoticed.
     def _apply_frame_op(x_vec: torch.Tensor) -> torch.Tensor:
-        x_sig = x_vec[:Ls] if Ls <= L else x_vec
+        x_sig = x_vec
         if mono:
             c_tmp = _filterbank(x_sig.real, g, a, L)
         else:

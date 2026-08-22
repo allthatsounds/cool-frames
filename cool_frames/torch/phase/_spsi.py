@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import torch
 
+from .._dtypes import resolve
+
 
 def spsi(
     s_list: list[torch.Tensor],
     a: torch.Tensor | list | tuple,
     fc: torch.Tensor | list | tuple,
+    fs: float,
     *,
     startphase: torch.Tensor | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
@@ -36,7 +39,11 @@ def spsi(
     s_list : list of M tensors, each (N_m,)
         Magnitude coefficients per channel.
     a : (M,) tensor or array-like — hop sizes per channel
-    fc : (M,) tensor or array-like — normalised centre frequencies
+    fc : (M,) tensor or array-like — centre frequencies **in Hz**, exactly as
+        returned by ``audfilters`` and the other filterbank constructors.
+    fs : float — sampling rate in Hz.  Pass ``fs=1.0`` if ``fc`` is already
+        normalised (cycles per sample).  See the NumPy implementation's notes
+        for why this argument exists.
     startphase : (M,) tensor, optional
         Initial phase per channel. If None, starts at zero.
 
@@ -54,11 +61,24 @@ def spsi(
     """
     # Determine device and dtype from inputs
     device = s_list[0].device if isinstance(s_list[0], torch.Tensor) else torch.device("cpu")
-    dtype = torch.float64
+    # The caller's dtype wins; see cool_frames/torch/_dtypes.py.
+    dtype, cdtype = resolve(*(s_list if isinstance(s_list, list) else [s_list]))
 
     # Convert inputs to tensors and normalize
     a = torch.as_tensor(a, dtype=torch.int32, device=device).reshape(-1)
     fc = torch.as_tensor(fc, dtype=dtype, device=device).reshape(-1)
+
+    fs = float(fs)
+    if not (fs > 0) or fs != fs or fs == float("inf"):
+        raise ValueError(f"spsi: fs must be a positive sampling rate, got {fs!r}")
+    if fc.numel() and float(torch.max(torch.abs(fc))) > 0.5 * fs * (1.0 + 1e-9):
+        raise ValueError(
+            f"spsi: max|fc| = {float(torch.max(torch.abs(fc))):.4g} exceeds the Nyquist "
+            f"frequency fs/2 = {0.5 * fs:.4g}. `fc` is expected in Hz and `fs` in Hz; if "
+            f"`fc` is already normalised (cycles per sample), pass fs=1.0."
+        )
+    fc = fc / fs
+
     M = len(a)
 
     # Get frame counts per channel
@@ -230,6 +250,6 @@ def spsi(
     c_list = []
     for m in range(M):
         s_abs = torch.abs(s_list[m].to(dtype=dtype, device=device))
-        c_list.append(s_abs * torch.exp(1j * phase_out[m].to(dtype=torch.complex128)))
+        c_list.append(s_abs * torch.exp(1j * phase_out[m].to(dtype=cdtype)))
 
     return c_list, phase_out

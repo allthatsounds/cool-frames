@@ -42,6 +42,7 @@ import numpy as np
 from ..filterbanks._core import filterbank
 from ..filterbanks._utils import normalise_a
 from ..filters._design import filterbanklength
+from ..filters._hval import eval_H as _eval_H
 from ._phasegrad import comp_phasegradfilters
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ def comp_phasederivfilters_2nd(
 
             # cd2: second derivative in time = multiply by (-j2πk/L)²
             def _make_cd2(H_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 k = np.arange(n_h)
                 fmul = (-1j * 2 * np.pi * k / L_) ** 2
@@ -109,7 +110,7 @@ def comp_phasederivfilters_2nd(
 
             # ch2: second frequency-weight = multiply by (jn)²  = -n²
             def _make_ch2(H_c, fo_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
                 k_abs = (np.arange(fo_v, fo_v + n_h) % L_).astype(float)
@@ -146,7 +147,7 @@ def comp_phasederivfilters_2nd(
             # hdg[n] = (n/L) · dg[n]  where dg = IFFT(H · (-j2πk/L))
             # So: chd_filter = FFT(n/L · IFFT(H · (-j2πk/L)))
             def _make_chd(H_c, fo_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
 
@@ -327,10 +328,16 @@ def filterbankphasederiv(
 
     Examples
     --------
-    >>> from cool_frames.phase import filterbankphasederiv
-    >>> result, c = filterbankphasederiv(signal, g, a, derivs=['tt', 'tf'])
-    >>> chirp_rate = result['tt']  # list of M arrays
-    >>> mixed_deriv = result['tf']
+    >>> import numpy as np
+    >>> from cool_frames.numpy.filters import audfilters
+    >>> from cool_frames.numpy.phase import filterbankphasederiv
+    >>> g, a, fc, L, _info = audfilters(8000, 2048)
+    >>> signal = np.random.default_rng(0).standard_normal(2048)
+    >>> result, c = filterbankphasederiv(signal, g, a, L=L, derivs=['tt', 'tf'])
+    >>> sorted(result)
+    ['tf', 'tt']
+    >>> len(result['tt']) == len(g)
+    True
     """
     f = np.asarray(f)
     M = len(g)

@@ -95,8 +95,10 @@ class TestUfilterbankAudfiltersImpl:
 
     def test_audfilters_uniform_channels(self, needs_impl):
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a_full, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a_full)

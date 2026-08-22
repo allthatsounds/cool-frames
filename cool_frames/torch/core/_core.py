@@ -267,7 +267,7 @@ def comp_filterbank_fftbl(
     >>> foff = np.array([0, 64, 128])
     >>> a = np.array([16, 16, 16])
     >>> realonly = np.array([0, 0, 0])
-    >>> c = comp_filterbank_fftbl(F, G, foff, a, realonly)  # doctest: +SKIP
+    >>> c = comp_filterbank_fftbl(F, G, foff, a, realonly)
     >>> len(c)
     3
     """
@@ -362,7 +362,7 @@ def comp_ifilterbank_fftbl(
     >>> foff = np.array([0, 64, 128])
     >>> a = np.array([16, 16, 16])
     >>> realonly = np.array([0, 0, 0])
-    >>> F = comp_ifilterbank_fftbl(c, G, foff, a, realonly, L=512)  # doctest: +SKIP
+    >>> F = comp_ifilterbank_fftbl(c, G, foff, a, realonly, L=512)
     >>> F.shape
     torch.Size([512])
     """
@@ -514,11 +514,13 @@ def comp_filterbank_td(
             conv_out = torch.nn.functional.conv1d(sig_input, h_w, padding=0)
             # Output: (1, 1, L + 2*(fLen-1) - fLen + 1) = (1, 1, L + fLen - 2)
 
-            # Extract the L samples starting at index 0 (periodic handling)
-            # Unlike the numpy code which explicitly centers using offset,
-            # the periodic extension already ensures correct alignment
-            conv_mid = conv_out[0, 0, :L]  # (L,)
-            out_list.append(conv_mid)
+            # Keep the whole 'valid' convolution — length L + fLen - 2 — and
+            # let the `skip`/`Lreq` slice below pick the samples, exactly as
+            # the NumPy kernel does.  Truncating to L here (the pre-v0.1.1
+            # behaviour) discarded the tail, so any filter with a non-zero
+            # offset returned too few coefficients: `firfilter('hann', 9)`
+            # (offset -5) gave 59 samples at a=1 where NumPy gives 64.
+            out_list.append(conv_out[0, 0, :])
 
         # Stack channels
         conv_all = torch.stack(out_list, dim=1)  # (L, W)
@@ -604,9 +606,17 @@ def comp_ifilterbank_td(
         am = int(a[m, 0])
         cm.shape[0]
 
-        # Extend coefficients with zero-padding (not periodic) before upsampling
-        # Pad by (fLen - 1) on both sides
-        cext = torch.nn.functional.pad(cm, (0, 0, fLen - 1, fLen - 1), mode="constant", value=0)
+        # Extend coefficients *periodically* before upsampling, matching the
+        # NumPy kernel's ext='per' default.  Zero-padding (the pre-v0.1.1
+        # behaviour) is a different boundary condition and put the two backends
+        # 31.5 % apart on identical input.
+        cext = torch.cat(
+            [
+                _periodic_extend_1d(cm[:, w], fLen - 1, fLen - 1).unsqueeze(1)
+                for w in range(cm.shape[1])
+            ],
+            dim=1,
+        )
         # cext shape: (Nm + 2*(fLen-1), W)
 
         # Upsample by am: insert am-1 zeros between samples

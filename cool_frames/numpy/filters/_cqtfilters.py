@@ -231,8 +231,8 @@ def cqtfilters(
     >>> from cool_frames.numpy.filters import cqtfilters
     >>> g, a, fc, L, _info = cqtfilters(8000, 1024, fmin=100, fmax=4000, bins=12)
     >>> len(g)  # DC + CQT + Nyquist
-    14
-    >>> fc[0], fc[-1]  # DC and Nyquist frequencies
+    66
+    >>> float(fc[0]), float(fc[-1])  # DC and Nyquist frequencies
     (0.0, 4000.0)
     >>> a.shape[0] == len(g)
     True
@@ -539,22 +539,3 @@ def _regsampling_hops(
     return a
 
 
-def _apply_taper_to_edge_filters(
-    g: list, fsupp: np.ndarray, fc: np.ndarray,
-    fs: float, scal: np.ndarray,
-    min_win: int, norm: str,
-    M: int, M2: int,
-) -> None:
-    """Replace DC / Nyquist filter with a tapered variant if needed."""
-    pairs = [(0, 1), (M2 - 1, M2 - 2)]
-    for edge_idx, neigh_idx in pairs:
-        Mk      = fsupp[edge_idx]
-        Mk_next = fsupp[neigh_idx]
-        if Mk > Mk_next and Mk_next > 0:
-            ratio = float(Mk_next / Mk)
-            g[edge_idx] = _make_direct_filter(
-                fc[edge_idx], Mk, fs,
-                scal=float(scal[edge_idx]),
-                min_win=min_win, norm=norm,
-                taper_ratio=ratio,
-            )

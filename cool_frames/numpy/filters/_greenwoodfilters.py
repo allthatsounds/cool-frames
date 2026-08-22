@@ -156,7 +156,7 @@ def greenwoodfilters(
     >>> from cool_frames.numpy.filters import greenwoodfilters
     >>> # Human cochlea defaults
     >>> g, a, fc, L, _info = greenwoodfilters(16000, 32000)
-    >>> fc[0], fc[-1]
+    >>> float(fc[0]), float(fc[-1])
     (0.0, 8000.0)
     >>> # Elephant cochlea
     >>> g, a, fc, L, _info = greenwoodfilters(16000, 32000,

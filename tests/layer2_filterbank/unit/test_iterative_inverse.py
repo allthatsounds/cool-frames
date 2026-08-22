@@ -13,8 +13,9 @@ through to a warm-started CG when it is not exact.
 """
 from __future__ import annotations
 
-import numpy as np
 import pytest
+
+import numpy as np
 
 
 def _rel(xr, x):
@@ -27,8 +28,8 @@ class TestIterativeInverseImpl:
 
     def test_painless_fast_path_is_exact(self, needs_impl):
         """A painless auditory bank reconstructs in one step (fast path)."""
-        from cool_frames.filters import audfilters, filterbanklength
         from cool_frames.filterbanks import filterbank, ifilterbankiter
+        from cool_frames.filters import audfilters
         fs, Ls = 16_000, 2048
         g, a, fc, L, _info = audfilters(fs, Ls)
         x = np.random.default_rng(0).standard_normal(Ls)
@@ -40,8 +41,8 @@ class TestIterativeInverseImpl:
 
     def test_nonpainless_gabor_reconstructs_via_cg(self, needs_impl):
         """A non-painless Gabor frame must reconstruct via CG, not silently fail."""
-        from cool_frames.filters import gabfilters
         from cool_frames.filterbanks import filterbank, ifilterbankiter
+        from cool_frames.filters import gabfilters
         Ls = 2048
         # a=64 with M=128 -> filter freq support (128) > L/a (32): non-painless.
         g, a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
@@ -54,8 +55,8 @@ class TestIterativeInverseImpl:
 
     def test_reported_relres_matches_reality(self, needs_impl):
         """relres must reflect the actual analysis residual (no false convergence)."""
-        from cool_frames.filters import gabfilters
         from cool_frames.filterbanks import filterbank, ifilterbankiter
+        from cool_frames.filters import gabfilters
         Ls = 2048
         g, a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
         x = np.random.default_rng(2).standard_normal(Ls)

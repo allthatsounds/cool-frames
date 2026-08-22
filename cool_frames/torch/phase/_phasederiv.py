@@ -36,6 +36,7 @@ import torch
 
 from ...numpy.filterbanks._utils import normalise_a
 from ...numpy.filters._design import filterbanklength
+from ...numpy.filters._hval import eval_H as _eval_H
 from ...numpy.phase._phasegrad import comp_phasegradfilters
 from ..filterbanks._core import filterbank
 
@@ -92,7 +93,7 @@ def comp_phasederivfilters_2nd(
 
             # cd2: second derivative in time = multiply by (-j2πk/L)²
             def _make_cd2(H_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 k = np.arange(n_h)
                 fmul = (-1j * 2 * np.pi * k / L_) ** 2
@@ -104,7 +105,7 @@ def comp_phasederivfilters_2nd(
 
             # ch2: second frequency-weight = multiply by (jn)²  = -n²
             def _make_ch2(H_c, fo_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
                 k_abs = (np.arange(fo_v, fo_v + n_h) % L_).astype(float)
@@ -118,7 +119,7 @@ def comp_phasederivfilters_2nd(
 
             # chd: cross = (n/L) · dg/(2π) in freq domain
             def _make_chd(H_c, fo_c, L_=L):
-                H_vals = np.asarray(H_c(L_), dtype=complex)
+                H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
 
@@ -299,8 +300,10 @@ def filterbankphasederiv(
     --------
     >>> import torch
     >>> from cool_frames.torch.phase import filterbankphasederiv
+    >>> from cool_frames.torch.filters import audfilters
+    >>> g, a, fc, L, _ = audfilters(16000, 4096)
     >>> signal = torch.randn(4096)
-    >>> result, c = filterbankphasederiv(signal, g, a, derivs=['tt', 'tf'])
+    >>> result, c = filterbankphasederiv(signal, g, a, L=L, derivs=['tt', 'tf'])
     >>> chirp_rate = result['tt']  # list of M tensors
     >>> mixed_deriv = result['tf']
     """

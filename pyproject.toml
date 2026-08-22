@@ -127,6 +127,30 @@ exclude_lines = [
 target-version = "py310"
 line-length = 99
 src = ["cool_frames", "tests"]
+
+# The linted surface is declared HERE and nowhere else, so that a bare
+# `ruff check` / `ruff format --check` covers exactly what CI covers — no more
+# and no less.  CI invokes ruff with no path arguments and inherits this list.
+#
+# Why this is pinned rather than passed on the command line: the path set used
+# to live inline in two separate .github/workflows/ci.yml steps, so there was
+# no single place that said what "in scope" meant.  Running `ruff check --fix`
+# from the repo root then reformatted ~14 files nobody had agreed to touch,
+# mixing cosmetic import shuffles into a behavioural patch.  With `include`
+# set, the default invocation is the correct one and widening the scope has to
+# be a deliberate edit to this file.
+include = [
+    "cool_frames/numpy/core/**/*.py",
+    "cool_frames/numpy/phase/**/*.py",
+    "cool_frames/torch/**/*.py",
+    "torch_additions/**/*.py",
+    "tests/torch_backend/**/*.py",
+    "tests/test_hypothesis_properties.py",
+    "tests/regressions/**/*.py",
+    "benchmarks/**/*.py",
+    "examples/**/*.py",
+]
+
 # WIP Colab tutorial notebooks (cross-cell refs / placeholder helpers) are not
 # linted as library code.
 extend-exclude = ["examples/colab"]

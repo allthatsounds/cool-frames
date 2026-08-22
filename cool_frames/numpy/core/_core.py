@@ -189,7 +189,20 @@ def comp_filterbank_fftbl(
     G        : list of M short frequency-response arrays
     foff     : (M,) integer array – frequency offset of each G[m]
     a        : (M,) or (M, 2) integer array
-    realonly : (M,) integer/bool array – 1 if filter is real-valued
+    realonly : (M,) integer/bool array – 1 if filter is real-valued.
+
+        **Accepted and deliberately not consumed**, like ``filterbankfreqz``'s
+        ``a``.  See the note at the end of this function: the MATLAB original's
+        ``realonly`` averaging is omitted on purpose, because without its
+        (broken) synthesis counterpart it discards the imaginary part and costs
+        ~6 dB round-trip SDR where keeping the coefficients complex gives ~300.
+        The parameter is kept so the signature matches the MATLAB port and the
+        torch twin, and so a future correct implementation has somewhere to go.
+
+        The designers do not agree on the flag — ``cqtfilters`` emits 1,
+        everything else 0 — which is harmless precisely because nothing acts on
+        it.  ``magresp`` used to be the one exception; it now measures the
+        filter's negative-frequency energy instead.
 
     Returns
     -------
@@ -290,7 +303,6 @@ def comp_ifilterbank_fftbl(
     # Infer L from max frequency offset + filter length if not provided
     if L is None:
         L = max(foff[m] + len(G[m]) for m in range(M))
-    a[:, 0] / a[:, 1]
 
     N = np.array([c[m].shape[0] if c[m].ndim > 1 else len(c[m]) for m in range(M)])
 

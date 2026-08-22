@@ -58,9 +58,16 @@ class TestIterativeMatchesDualImpl:
     def test_matches_direct_dual(self, needs_impl):
         if not _has_iter(None):
             pytest.skip("ifilterbankiter not available")
-        from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank, ifilterbankiter  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbank,
+            filterbankdual,
+            ifilterbank,
+            ifilterbankiter,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -114,9 +121,15 @@ class TestIterativeTightFrameImpl:
     def test_tight_frame_pcg(self, needs_impl):
         if not _has_iter(None):
             pytest.skip("ifilterbankiter not available")
-        from cool_frames.filterbanks import filterbank, filterbanktight, ifilterbankiter  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbank,
+            filterbanktight,
+            ifilterbankiter,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

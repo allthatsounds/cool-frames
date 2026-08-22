@@ -111,13 +111,35 @@ class TestDgtLengthInvariant:
 class TestPrototypeSharing:
 
     def test_all_filters_share_h(self):
+        """Every channel is the same prototype, up to the edge scaling.
+
+        In real (single-sided) mode the DC channel — and the Nyquist channel
+        when M is even — carry a 1/sqrt(2) factor, because the 2*real(ifft)
+        fold in `ifilterbank(real=True)` would otherwise double-count the two
+        channels that have no conjugate partner.  Every other designer in the
+        package applies it; `gabfilters` gained it in v0.1.1, which took the
+        bank from kappa = 1.667 to kappa = 1.0.
+
+        So the invariant is that the *interior* channels are bit-identical and
+        the edges match after undoing that factor.
+        """
         rng = np.random.default_rng(48)
         for _ in range(_N_TRIALS):
             Ls, a, M = _random_params(rng)
             gout, *_ = gabfilters(16000, Ls, window='hann', a=a, M=M)
-            H0 = gout[0]['H']
-            for g in gout[1:]:
+            if len(gout) < 3:
+                continue
+
+            # Compare against an unscaled interior channel.
+            H0 = gout[1]['H']
+            for g in gout[1:-1]:
                 np.testing.assert_array_equal(g['H'], H0)
+
+            np.testing.assert_allclose(
+                gout[0]['H'] * math.sqrt(2.0), H0, rtol=1e-12, atol=1e-12)
+            if M % 2 == 0:
+                np.testing.assert_allclose(
+                    gout[-1]['H'] * math.sqrt(2.0), H0, rtol=1e-12, atol=1e-12)
 
 
 # ---------------------------------------------------------------------------

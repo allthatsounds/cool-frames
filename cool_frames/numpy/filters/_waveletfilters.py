@@ -17,8 +17,8 @@ import numpy as np
 
 from ..core._core import filterbanklength, floor23
 from ._edge_filters import (
-    build_complement_lowpass,
     build_complement_highpass,
+    build_complement_lowpass,
     edge_params_from_geometry,
 )
 from ._freqwavelet import freqwavelet
@@ -509,7 +509,7 @@ def waveletfilters(
                 # always <= cap, preserving the painless inequality a_m <= cap.
                 caps = np.array([max(1, floor23(int(c))) for c in caps], dtype=int)
                 a_capped = np.minimum(a, caps)
-                if np.array_equal(a_capped, a) and L == filterbanklength(Ls, a_capped):
+                if np.array_equal(a_capped, a) and filterbanklength(Ls, a_capped) == L:
                     a = a_capped
                     break
                 a = a_capped
@@ -613,8 +613,9 @@ def waveletfilters(
         else:
             org_red = np.sum(2.0 / a_old)
 
-        a_new = np.floor(a.astype(float) * org_red / redtar).astype(int)
-        scal_arr = np.full(M2, org_red / redtar)
+        # Clamp at 1: `np.floor` of an aggressive ratio produced a = 0, and
+        # `filterbank` then raised "negative dimensions are not allowed".
+        a_new = np.maximum(1, np.floor(a.astype(float) * org_red / redtar).astype(int))
 
         if callable(delay):
             delayvec = np.array([delay(kk, float(np.asarray(a_new[kk]).ravel()[0]))
@@ -626,9 +627,12 @@ def waveletfilters(
                     delayvec = np.concatenate([delayvec, np.flipud(delayvec)])
 
         if sampling != "uniform":
-            N_old = np.ceil(L / a_old).astype(int)
+            # `N_new`, not `N_old`.  Until v0.1.1 this re-encoded the *original*
+            # hops in fractional form, so `redtar` had no effect at all on any
+            # non-uniform sampling mode: redtar=0.5 and redtar=50 produced
+            # bit-identical filters and identical redundancy.
             N_new = np.ceil(L / a_new.ravel().astype(float)).astype(int)
-            a_new = np.column_stack([np.full(len(N_new), L, dtype=int), N_old])  # type: ignore[assignment]
+            a_new = np.column_stack([np.full(len(N_new), L, dtype=int), N_new])  # type: ignore[assignment]
         else:
             L = filterbanklength(L, a_new)
 
@@ -738,9 +742,16 @@ def waveletfilters(
         else:
             a_new = np.concatenate([a_new, _a_hp.ravel()])
 
-    # Apply delays to lowpass filters
-    for kk in range(lp_num):
+    # Apply delays.  The loop used to stop at `lp_num`, which excludes the
+    # complement highpass appended above — so `delay=5` produced descriptor
+    # delays [5, 5, 5, 5, 5, 5, 5, 0] and that last channel was left
+    # un-delayed relative to the rest of the bank.
+    for kk in range(min(len(gout), len(delayvec))):
         gout[kk]["delay"] = int(delayvec[kk])
+    for kk in range(len(delayvec), len(gout)):
+        # Channels appended after `delayvec` was built (the complement
+        # highpass) take the same delay as the rest of the bank.
+        gout[kk]["delay"] = int(delayvec[-1]) if len(delayvec) else 0
 
     info["startindex"] = lp_num
     fc = (fs / 2) * info["fc"]

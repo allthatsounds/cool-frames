@@ -42,8 +42,10 @@ import numpy as np
 
 def _build_audfilterbank(Ls: int = 1024, fs: int = 8000):
     """Return (g, a, L) for a standard audfilters filterbank."""
-    from cool_frames.filters import audfilters  # type: ignore
-    from cool_frames.filters import filterbanklength  # type: ignore
+    from cool_frames.filters import (
+        audfilters,  # type: ignore
+        filterbanklength,  # type: ignore
+    )
     g, a, fc, _, _info = audfilters(fs, Ls)
     L = filterbanklength(Ls, a)
     return g, a, L

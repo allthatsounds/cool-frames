@@ -184,10 +184,10 @@ def audfilters(fs: float, Ls: int, *,
     >>> from cool_frames.numpy.filters import audfilters
     >>> g, a, fc, L, _info = audfilters(16000, 32000)
     >>> len(g)  # DC + inner + Nyquist
-    34
+    35
     >>> a.shape[0] == len(g)
     True
-    >>> fc[0], fc[-1]  # DC and Nyquist
+    >>> float(fc[0]), float(fc[-1])  # DC and Nyquist
     (0.0, 8000.0)
 
     References
@@ -456,103 +456,3 @@ def _zero_filter(fs: float) -> dict:
     }
 
 
-def _build_lowpass(g_list, a, fc, fs, scal, spacing, scale, min_win, norm, _L_design=None):
-    """Build a complement low-pass filter to cover 0 Hz.
-
-    Frequency-domain construction::
-
-        C_lp[k] = P0_full[k] · sqrt( max(S) − S_inner[k] ) · scal
-
-    where ``P0_full`` is the full-length DFT of the DC-centred Hann-taper
-    prototype, and ``S_inner`` is the inner-channel real filterbank response.
-    The returned ``H`` callable outputs the DFT values at the prototype's
-    support bins (exactly what ``filter_freqresp`` expects for the 'H' key).
-    """
-    from ..filterbanks._frame import filterbankresponse
-    from ._filters import filter_freqresp as _ffr
-
-    a_inner = a[1:-1] if a.ndim == 1 else a[1:-1, :]
-    g_inner = g_list[1:-1]
-    fc_in1  = float(fc[1])
-
-    # ── Prototype parameters (MATLAB: fps = fc+3·spacing, fpe = fc+4·spacing)
-    fps      = float(audtofreq(freqtoaud(fc_in1, scale) + 3.0 * spacing, scale))
-    fpe      = float(audtofreq(freqtoaud(fc_in1, scale) + 4.0 * spacing, scale))
-    fsupp_lp = 2.0 * fpe
-    ratio_lp = max(0.0, 2.0 * (fpe - fps) / fsupp_lp)  # taper plateau fraction
-
-    # Prototype at DC (realonly=0 → no halving in filter_freqresp)
-    P0 = _make_direct_filter(0.0, fsupp_lp, fs, scal=1.0, norm="inf",
-                             taper_ratio=ratio_lp, min_win=min_win)
-
-    def H(L: int) -> np.ndarray:
-        # Full-length DFT of prototype (L,)
-        P0_full, _ = _ffr(P0, L)
-        S     = filterbankresponse(g_inner, a_inner, L, real=True)
-        S_max = float(np.max(S))
-        Hinv  = np.sqrt(np.maximum(S_max - S, 0.0))
-        C_full = P0_full * Hinv  # (L,) frequency-domain complement response
-        # Extract prototype support (consistent with _make_direct_filter)
-        Lw     = len(P0["H"](L))
-        foff_v = int(P0["foff"](L))
-        idx    = np.mod(np.arange(foff_v, foff_v + Lw), L)
-        return C_full[idx] * scal  # type: ignore[no-any-return]
-
-    def foff(L: int) -> int:
-        return int(P0["foff"](L))
-
-    return {"H": H, "foff": foff, "realonly": 0, "delay": 0, "fs": fs}
-
-
-def _build_highpass(g_list, a, fc, fs, scal, spacing, scale, min_win, norm, _L_design=None):
-    """Build a complement high-pass filter to cover fs/2.
-
-    Frequency-domain construction::
-
-        C_hp[k] = PK_nyq_full[k] · sqrt( max(S) − S_inner[k] ) · scal
-
-    where ``PK_nyq_full`` is the Nyquist-centred prototype, obtained by
-    rolling the DC-centred prototype by ``L//2`` in frequency.  This
-    avoids the ``realonly`` halving that would arise if the prototype were
-    placed at Nyquist via ``_make_direct_filter`` with ``fc = fs/2``.
-    """
-    from ..filterbanks._frame import filterbankresponse
-    from ._filters import filter_freqresp as _ffr
-
-    a_inner = a[1:-1] if a.ndim == 1 else a[1:-1, :]
-    g_inner = g_list[1:-1]
-    fc_inK  = float(fc[-2])
-    nf      = fs / 2.0
-
-    # ── Prototype parameters (MATLAB: fps = fc−3·spacing, fpe = fc−4·spacing)
-    fps      = float(audtofreq(freqtoaud(fc_inK, scale) - 3.0 * spacing, scale))
-    fpe      = float(audtofreq(freqtoaud(fc_inK, scale) - 4.0 * spacing, scale))
-    fsupp_hp = 2.0 * (nf - fpe)
-    ratio_hp = max(0.0, 2.0 * (fps - fpe) / fsupp_hp)  # taper plateau fraction
-
-    # Build prototype at DC (realonly=0); roll to Nyquist inside H(L)
-    PK_dc = _make_direct_filter(0.0, fsupp_hp, fs, scal=1.0, norm="inf",
-                                taper_ratio=ratio_hp, min_win=min_win)
-
-    def H(L: int) -> np.ndarray:
-        # DC-centred prototype as full-length DFT
-        PK_dc_full, _ = _ffr(PK_dc, L)
-        # Roll by L//2 → Nyquist-centred prototype (no realonly halving)
-        PK_nyq_full = np.roll(PK_dc_full, L // 2)
-        S     = filterbankresponse(g_inner, a_inner, L, real=True)
-        S_max = float(np.max(S))
-        Hinv  = np.sqrt(np.maximum(S_max - S, 0.0))
-        C_full = PK_nyq_full * Hinv  # (L,) frequency-domain complement response
-        # Extract prototype support shifted to Nyquist
-        Lw      = len(PK_dc["H"](L))
-        foff_dc = int(PK_dc["foff"](L))  # negative: -(Lw//2)
-        foff_hp = L // 2 + foff_dc       # = L//2 - Lw//2
-        idx     = np.mod(np.arange(foff_hp, foff_hp + Lw), L)
-        return C_full[idx] * scal  # type: ignore[no-any-return]
-
-    def foff(L: int) -> int:
-        Lw      = len(PK_dc["H"](L))
-        foff_dc = int(PK_dc["foff"](L))
-        return L // 2 + foff_dc  # = L//2 - Lw//2
-
-    return {"H": H, "foff": foff, "realonly": 0, "delay": 0, "fs": fs}

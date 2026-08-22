@@ -18,7 +18,6 @@ import numpy as np
 
 from ..core._core import setnorm
 
-
 # ---------------------------------------------------------------------------
 # freqwin – frequency-domain window (Gauss / Roex / Butterworth / Gammatone)
 # ---------------------------------------------------------------------------
@@ -81,7 +80,15 @@ def freqwin(name, L: int, bw: float, *,
 
     elif name == "butterworth":
         n = order if order is not None else 4
-        H = 1.0 / np.sqrt(1.0 + (H / (bw / step / 2.0)) ** (2 * n))  # type: ignore[assignment]
+        # `bw` means the width at `bwrelheight` for every other window in this
+        # function.  The textbook Butterworth form 1/sqrt(1 + (f/fc)^2n) puts
+        # its half-power point at fc, i.e. |H| = 1/sqrt(2) there, not
+        # `bwrelheight` — so until v0.1.1 a butterworth window came out 14 %
+        # wider than requested while gauss/roex/gammatone were accurate to
+        # 0.4 %.  Rescale the cutoff so the response really does reach
+        # `bwrelheight` at bw/2.
+        cutoff = (bw / step / 2.0) / (bwrelheight ** (-2.0) - 1.0) ** (1.0 / (2 * n))
+        H = 1.0 / np.sqrt(1.0 + (H / cutoff) ** (2 * n))  # type: ignore[assignment]
 
     elif name == "roex":
         n = order if order is not None else 4

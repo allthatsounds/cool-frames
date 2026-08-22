@@ -25,8 +25,10 @@ class TestResponseWithinBoundsImpl:
 
     def test_response_within_frame_bounds(self, needs_impl):
         from cool_frames.filterbanks import filterbankbounds, filterbankresponse  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -45,8 +47,10 @@ class TestResponseTotalVsIndividualImpl:
 
     def test_total_equals_column_sum(self, needs_impl):
         from cool_frames.filterbanks import filterbankfreqz, filterbankresponse  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.numpy.filterbanks._utils import normalise_a  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -70,8 +74,10 @@ class TestTightResponseConstantImpl:
 
     def test_tight_response_constant(self, needs_impl):
         from cool_frames.filterbanks import filterbankresponse, filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -94,8 +100,10 @@ class TestResponseNonNegativeImpl:
 
     def test_non_negative(self, needs_impl):
         from cool_frames.filterbanks import filterbankresponse  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -109,9 +117,15 @@ class TestResponseBoundMonotoneImpl:
     """PropFilterbankResponseConsistency: tightening narrows the response range."""
 
     def test_tightening_narrows_range(self, needs_impl):
-        from cool_frames.filterbanks import filterbankbounds, filterbankresponse, filterbanktight  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbankbounds,
+            filterbankresponse,
+            filterbanktight,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

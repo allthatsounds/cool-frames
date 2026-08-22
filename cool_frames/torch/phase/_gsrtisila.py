@@ -27,6 +27,7 @@ from typing import Literal
 import numpy as np
 import torch
 
+from .._dtypes import resolve
 from ..filterbanks._core import filterbank, ifilterbank
 from ..filterbanks._frame import filterbankdual
 
@@ -77,7 +78,8 @@ def gsrtisila(
     """
     # Determine device and dtype from inputs
     device = s_list[0].device if isinstance(s_list[0], torch.Tensor) else torch.device("cpu")
-    dtype = torch.float64
+    # The caller's dtype wins; see cool_frames/torch/_dtypes.py.
+    dtype, cdtype = resolve(*(s_list if isinstance(s_list, list) else [s_list]))
 
     M = len(g)
     s_abs = [torch.abs(s.to(dtype=dtype, device=device)).flatten() for s in s_list]
@@ -99,9 +101,9 @@ def gsrtisila(
 
     # Initialise coefficients
     if startphase == "input":
-        c = [s.to(dtype=torch.complex128, device=device).flatten().clone() for s in s_list]
+        c = [s.to(dtype=cdtype, device=device).flatten().clone() for s in s_list]
     else:
-        c = [s.clone().to(dtype=torch.complex128) for s in s_abs]
+        c = [s.clone().to(dtype=cdtype) for s in s_abs]
 
     a_int = a_norm[:, 0].astype(int)
 
@@ -126,23 +128,26 @@ def gsrtisila(
     n_groups: int = len(time_groups)
 
     # SPSI pre-initialization
+    # Normalised centre frequencies, recovered from the filters themselves.
+    # (Before v0.1.1 both branches below used `m / M`, a linear ramp reaching
+    # ~0.96 cycles/sample — nearly twice Nyquist — irrespective of the actual
+    # filter layout.)
+    if startphase in ("spsi", "unwrap"):
+        from ...numpy.phase._centerfreq import filter_center_frequencies
+
+        fc_norm = filter_center_frequencies(g, L)
+
     if startphase == "spsi":
         from ._spsi import spsi
 
-        fc = np.zeros(M)
-        for m in range(M):
-            g_m = g[m]
-            if "fc" in g_m:
-                fc[m] = g_m["fc"]
-            else:
-                fc[m] = m / M
         # Convert s_abs to numpy for spsi (which returns numpy arrays)
         s_abs_np = [s.cpu().numpy() for s in s_abs]
-        c_spsi, _ = spsi(s_abs_np, a_int, fc)  # type: ignore[arg-type]
+        # fs=1.0: fc_norm is already in cycles per sample.
+        c_spsi, _ = spsi(s_abs_np, a_int, fc_norm, 1.0)  # type: ignore[arg-type]
         # Convert back to torch
         c = [
             torch.from_numpy(np.asarray(ci, dtype=np.complex128))
-            .to(device=device, dtype=torch.complex128)
+            .to(device=device, dtype=cdtype)
             .flatten()
             for ci in c_spsi
         ]
@@ -150,7 +155,7 @@ def gsrtisila(
     # Phase accumulator for unwrap mode
     if startphase == "unwrap":
         omega = torch.tensor(
-            [2.0 * np.pi * a_int[m] * (m / M) for m in range(M)], dtype=dtype, device=device
+            [2.0 * np.pi * a_int[m] * fc_norm[m] for m in range(M)], dtype=dtype, device=device
         )
 
     # Process each time group with look-ahead

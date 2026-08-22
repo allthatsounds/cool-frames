@@ -199,7 +199,10 @@ def comp_filterbankphasegradfrommag(
     a : (M,) hop sizes per channel
     M : number of channels
     sqtfr : (M,) sqrt of time-frequency ratios
-    fc : (M,) normalised centre frequencies
+    fc : (M,) centre frequencies, normalised to [0, 2] with 2 == fs (i.e.
+         ``fc_Hz / fs * 2``).  This is the same convention used by
+         ``heap_pghi`` and returned by ``filterbankphasegrad``; passing Hz or
+         ``fc/fs`` here silently rescales the estimated gradient.
     NEIGH : (6, Nsum) neighbour indices (0-based, -1 = no neighbour)
     posInfo : (2, Nsum) position info [channel; time_position]
     gderivweight : weight for tfr-difference correction (default 0.5)
@@ -207,8 +210,11 @@ def comp_filterbankphasegradfrommag(
 
     Returns
     -------
-    tgrad : (Nsum,) time-direction phase gradient
-    fgrad : (Nsum,) frequency-direction phase gradient
+    tgrad : (Nsum,) absolute normalised instantaneous frequency, in the same
+            units as ``fc`` (i.e. the channel centre frequency plus the
+            magnitude-derived deviation).  Directly interchangeable with the
+            ``tgrad`` returned by ``filterbankphasegrad``.
+    fgrad : (Nsum,) frequency-direction phase gradient (group delay)
     logs  : (Nsum,) log-magnitude
     """
     abss = np.asarray(abss, dtype=float).ravel()
@@ -292,11 +298,30 @@ def comp_filterbankphasegradfrommag(
             if numNeighBelow > 0:
                 tempValBelow /= numNeighBelow
 
-            temp[n] = (tempValAbove + aboveNom) / aboveDenom + (
-                tempValBelow + belowNom
-            ) / belowDenom
+            # Each side is a one-sided difference quotient estimating the same
+            # frequency-derivative of the log-magnitude.  Interior channels have
+            # both; edge channels have only one.  Average the available sides
+            # and restore the interior's two-sided scaling, so that channel 0
+            # and channel M-1 are on the same scale as everything between them.
+            # (Previously the two sides were summed with the missing side's
+            # denominator defaulting to 1.0, which left the edge channels a
+            # factor of two short and divided by the wrong spacing.)
+            sides = []
+            if m < M - 1:
+                sides.append((tempValAbove + aboveNom) / aboveDenom)
+            if m > 0:
+                sides.append((tempValBelow + belowNom) / belowDenom)
+            temp[n] = 2.0 * float(np.mean(sides)) if sides else 0.0
 
-        tgrad[chanStart : chanStart + Nm] = temp / denom
+        # ``fc`` is a *normalised* centre frequency in [0, 2] (2 == fs), the
+        # same convention the heap integrator and ``filterbankphasegrad`` use.
+        # What the difference quotient above estimates is the *deviation* of
+        # the instantaneous frequency from the channel's centre frequency; the
+        # integrator consumes the absolute instantaneous frequency.  Omitting
+        # this term left tgrad off by the centre frequency itself — an error an
+        # order of magnitude larger than the deviation it was carrying, which
+        # is why PGHI-from-magnitude measured no better than zero phase.
+        tgrad[chanStart : chanStart + Nm] = temp / denom + fc[m]
         chanStart += Nm
 
     # ----- Scale fgrad by tfr² / (2π) * N(m) -----

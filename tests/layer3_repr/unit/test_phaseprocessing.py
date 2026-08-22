@@ -40,8 +40,10 @@ class TestFilterbankphasegradImpl:
 
     def test_output_count_M(self, needs_impl):
         """All four outputs must be returned and each have M cells."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -58,8 +60,10 @@ class TestFilterbankphasegradImpl:
     def test_cell_sizes_match_filterbank(self, needs_impl):
         """tgrad, fgrad, s must have the same shape as filterbank(f, g, a)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -79,8 +83,10 @@ class TestFilterbankphasegradImpl:
 
     def test_gradient_is_real(self, needs_impl):
         """Phase gradients are real-valued (they are phase derivatives)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -97,8 +103,10 @@ class TestFilterbankphasegradImpl:
 
     def test_spectrogram_nonnegative(self, needs_impl):
         """The spectrogram s = |c|^2 must be non-negative."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -115,8 +123,10 @@ class TestFilterbankphasegradImpl:
     def test_coefficients_match_filterbank(self, needs_impl):
         """The returned c must agree with filterbank(f, g, a)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -160,8 +170,10 @@ class TestFilterbankconstphaseImpl:
     def test_returns_list(self, needs_impl):
         """Output must be a list (cell array in MATLAB)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import (  # type: ignore
             filterbankconstphase,
             filterbankphasegrad,
@@ -175,7 +187,7 @@ class TestFilterbankconstphaseImpl:
         s = [np.abs(np.asarray(cm)) for cm in c]
         _, _, _, _pg_c = filterbankphasegrad(f, g, a, L)
         # tfr can be obtained from audfilters info; fall back to fc as proxy
-        c_out = filterbankconstphase(s, a, fc)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert isinstance(c_out, (list, tuple)), \
             "filterbankconstphase: output must be a list/tuple"
 
@@ -191,7 +203,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert len(c_out) == M, \
             f"filterbankconstphase: output must have M={M} cells, got {len(c_out)}"
 
@@ -207,7 +219,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()
@@ -228,7 +240,7 @@ class TestFilterbankconstphaseImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         for m in range(M):
             assert np.asarray(c_out[m]).shape == s[m].shape, \
                 f"filterbankconstphase: c_out[{m}] shape mismatch"
@@ -236,8 +248,10 @@ class TestFilterbankconstphaseImpl:
     def test_with_explicit_gradient(self, needs_impl):
         """Passing {tgrad, fgrad} instead of tfr must preserve magnitude."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import (  # type: ignore
             filterbankconstphase,
             filterbankphasegrad,
@@ -251,7 +265,7 @@ class TestFilterbankconstphaseImpl:
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
         tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a, L)
-        c_out = filterbankconstphase(s, a, fc, [tgrad, fgrad])
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()
@@ -272,7 +286,7 @@ class TestFilterbankconstphaseImpl:
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
         try:
-            filterbankconstphase(s, a, fc)
+            filterbankconstphase(s, a, fc, fs=fs)
         except Exception as exc:
             pytest.fail(f"filterbankconstphase raised unexpectedly: {exc}")
 
@@ -287,8 +301,10 @@ class TestFilterbankreassignImpl:
 
     def test_output_is_list(self, needs_impl):
         """sr output must be a list (cell array)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -302,8 +318,10 @@ class TestFilterbankreassignImpl:
 
     def test_output_length_M(self, needs_impl):
         """sr must have M cells."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -318,8 +336,10 @@ class TestFilterbankreassignImpl:
 
     def test_cell_sizes_preserved(self, needs_impl):
         """The reassigned spectrogram must be the same size as the input."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -335,8 +355,10 @@ class TestFilterbankreassignImpl:
 
     def test_three_output_form(self, needs_impl):
         """Three-output form [sr, repos, Lc] must run; sum(Lc) == len(repos)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -359,8 +381,10 @@ class TestFilterbankreassignImpl:
 
     def test_accepts_filter_cell(self, needs_impl):
         """filterbankreassign must accept the filter cell g as 5th argument."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -377,8 +401,10 @@ class TestFilterbankreassignImpl:
 
     def test_energy_approximately_conserved(self, needs_impl):
         """Total reassigned energy must be positive and change < 150 %."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -412,8 +438,10 @@ class TestFilterbanksynchrosqueezeImpl:
     def _setup(self):
         """Build ERB filterbank with a_ones=ones(M) for synchrosqueeze."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)

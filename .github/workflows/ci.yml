@@ -31,10 +31,10 @@ jobs:
         run: pip install "ruff==0.16.4" "mypy==1.20.2"
 
       - name: Ruff check
-        run: ruff check cool_frames/numpy/core/ cool_frames/numpy/phase/ cool_frames/torch/ torch_additions/ tests/torch_backend/ tests/test_hypothesis_properties.py benchmarks/ examples/
+        run: ruff check .
 
       - name: Ruff format check
-        run: ruff format --check cool_frames/numpy/core/ cool_frames/numpy/phase/ cool_frames/torch/ torch_additions/ tests/torch_backend/ tests/test_hypothesis_properties.py benchmarks/ examples/
+        run: ruff format --check .
 
       # Mypy over the torch backend + core numpy math (plugingen removed in the
       # 2026-06 consolidation).
@@ -77,6 +77,24 @@ jobs:
             --cov=cool_frames \
             --cov-report=xml:coverage-numpy-${{ matrix.python-version }}.xml \
             --junitxml=results-numpy-${{ matrix.python-version }}.xml
+
+      # Doctests are part of the public documentation and were not covered by
+      # any job: `testpaths` limits pytest to tests/ and benchmarks/, so 33 of
+      # them had rotted, four with substantive factual errors (`cqtfilters`
+      # documented as returning 14 channels against an actual 66) and ten that
+      # could never have run at all (`audfilters(16000)` with the length
+      # argument missing, examples referring to undefined names). A doc example
+      # that is not executed is not documentation, it is a claim.
+      #
+      # `cool_frames/torch` is excluded HERE and covered in the test-torch job
+      # instead: this job installs `.[dev]` without torch, and
+      # `--doctest-modules` imports every module it walks, so all 30 torch
+      # modules fail to collect rather than being skipped.
+      - name: Run doctests
+        run: |
+          pytest --doctest-modules cool_frames/ \
+            --ignore=cool_frames/torch \
+            --tb=short -q
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
@@ -162,6 +180,11 @@ jobs:
             --cov-report=xml:coverage-torch-${{ matrix.python-version }}.xml \
             --junitxml=results-torch-${{ matrix.python-version }}.xml
 
+      # The other half of the doctest split: test-numpy runs everything except
+      # cool_frames/torch, which only imports where torch is installed.
+      - name: Run torch doctests
+        run: pytest --doctest-modules cool_frames/torch --tb=short -q
+
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v5
@@ -185,6 +208,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # setuptools-scm needs tags for the version in the docs
 
       - uses: actions/setup-python@v5
         with:
@@ -198,11 +223,33 @@ jobs:
       - name: Build Sphinx HTML
         run: sphinx-build -b html docs/ docs/_build/html
 
-      - name: Upload docs
-        uses: actions/upload-artifact@v4
+      - name: Upload docs as a Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: docs-html
-          path: docs/_build/html/
+          path: docs/_build/html
+
+  # -----------------------------------------------------------------------
+  # Publish the built docs to GitHub Pages (pushes to main only).
+  # Requires Settings -> Pages -> Source: GitHub Actions.
+  # -----------------------------------------------------------------------
+  deploy-docs:
+    name: Deploy docs
+    needs: docs
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
 
   # -----------------------------------------------------------------------
   # Package build check

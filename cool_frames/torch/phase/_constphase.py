@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from ...numpy.phase._constphase import filterbankconstphase as _np_filterbankconstphase
+from .._dtypes import resolve
 from ..filterbanks._frame import _torch_filters_to_numpy
 
 
@@ -25,7 +26,10 @@ def filterbankconstphase(
     tol: float = 1e-6,
     tgrad: list | None = None,
     fgrad: list | None = None,
-) -> tuple[list[torch.Tensor], torch.Tensor]:
+    sqtfr: np.ndarray | None = None,
+    fs: float | None = None,
+    rng: object | None = None,
+) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Phase reconstruction using heap-based PGHI (wraps NumPy).
 
     This delegates to the NumPy heap-based implementation, so it is
@@ -53,19 +57,22 @@ def filterbankconstphase(
     >>> from cool_frames.torch.phase import filterbankconstphase
     >>> from cool_frames.torch.filters import audfilters
     >>> x = torch.randn(8000)
-    >>> g = audfilters(16000)
-    >>> c, mask = filterbankconstphase(x, g, a=64)
+    >>> g, a, fc, L, _ = audfilters(16000, 8000)
+    >>> c, mask = filterbankconstphase(x, g, a, L=L)
     >>> len(c) == len(g)
     True
     >>> c[0].dtype
-    torch.complex128
+    torch.complex64
     """
-    # Convert signal to numpy
+    # Convert signal to numpy.  The caller's dtype decides the output width;
+    # the numpy core always computes in double.
     if isinstance(f, torch.Tensor):
         device = f.device
+        _dtype, cdtype = resolve(f)
         f_np = f.detach().cpu().numpy()
     else:
         device = torch.device("cpu")
+        cdtype = torch.complex128
         f_np = np.asarray(f)
 
     # Convert filters
@@ -94,20 +101,19 @@ def filterbankconstphase(
         tol=tol,
         tgrad=tgrad_np,
         fgrad=fgrad_np,
+        sqtfr=sqtfr,
+        fs=fs,
+        rng=rng,
     )
 
-    # The numpy function returns (c_list, mask) or just c_list
-    if isinstance(result, tuple):
-        c_np, mask_np = result
-    else:
-        c_np = result
-        mask_np = np.ones(1)
+    c_np, mask_np = result
 
-    c_torch = [torch.tensor(cm, dtype=torch.complex128, device=device) for cm in c_np]
-    mask_torch = (
-        torch.tensor(mask_np, device=device)
-        if isinstance(mask_np, np.ndarray)
-        else torch.tensor([1])
-    )
+    c_torch = [torch.as_tensor(cm, dtype=cdtype, device=device) for cm in c_np]
+    # Per-channel boolean masks, matching the coefficient structure exactly —
+    # the same shape the NumPy backend returns.  This used to collapse to a
+    # single tensor (and to `torch.tensor([1])` on the branch where NumPy
+    # returned a bare list), so the two backends disagreed about the *shape* of
+    # the second return value as well as whether there was one.
+    mask_torch = [torch.as_tensor(np.asarray(mm), device=device) for mm in mask_np]
 
     return c_torch, mask_torch

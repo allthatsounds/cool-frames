@@ -225,8 +225,10 @@ exceeds the channel count), so check after designing:
 
 .. code-block:: python
 
+    from cool_frames.filters import audfilters
     from cool_frames.filterbanks import filterbankbounds
 
+    fs, Ls, M = 16_000, 4096, 24
     g, a, fc, L, info = audfilters(fs, Ls, M=M)
     A, B, kappa = filterbankbounds(g, a, L, return_kappa=True)
     assert A > 0            # it is a frame at all

@@ -46,7 +46,6 @@ def _try_import_np_func(name: str):
 
 
 _np_gabfilters = _try_import_np_func("gabfilters")
-_np_hopfilters = _try_import_np_func("hopfilters")
 
 
 # ---------------------------------------------------------------------------
@@ -134,9 +133,9 @@ def audfilters(
     --------
     >>> g, a, fc, L, _ = audfilters(16000, 32000, device='cpu')
     >>> len(g)  # Number of filters
-    32
+    35
     >>> fc.shape
-    (32,)
+    (35,)
     """
     g_np, a, fc, L, info = _np_audfilters(fs, Ls, *args, **kwargs)
     g = numpy_filters_to_torch(g_np, L, device=device, dtype=dtype)
@@ -204,7 +203,11 @@ def warpedfilters(
 
     Examples
     --------
-    >>> g, a, fc, L, _ = warpedfilters(16000, 32000, device='cpu')
+    >>> tiny = np.finfo(float).tiny  # clamped: this example only shows the call
+    >>> f2s = lambda f: np.log(np.maximum(np.asarray(f, dtype=float), tiny))
+    >>> s2f = lambda s: np.exp(np.asarray(s, dtype=float))
+    >>> g, a, fc, L, _ = warpedfilters(
+    ...     f2s, s2f, 16000, 50.0, 8000.0, 4, 8000, device='cpu')
     >>> isinstance(g[0]['H'], torch.Tensor)
     True
     """
@@ -240,11 +243,27 @@ def firwin(
     name: str,
     M: int,
     *args,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float64,
     **kwargs,
 ) -> torch.Tensor:
     """Compute a FIR window, returning a torch.Tensor.
 
-    All arguments are forwarded to the NumPy ``firwin``.
+    All positional arguments are forwarded to the NumPy ``firwin``.
+
+    Parameters
+    ----------
+    device, dtype :
+        Where to place the result and what type to give it.  Every other
+        wrapper in this module took these and ``firwin`` did not, so the one
+        window-building entry point was the one that always returned a CPU
+        float64 tensor — a caller assembling a filterbank on the GPU had to
+        notice and move it by hand, and a float32 pipeline silently widened.
+
+        ``dtype`` defaults to ``torch.float64`` rather than the
+        ``torch.complex128`` used by the filter-designer wrappers, because a
+        FIR window is real by construction; passing a complex dtype is allowed
+        and simply yields a complex tensor with zero imaginary part.
 
     Examples
     --------
@@ -253,31 +272,11 @@ def firwin(
     torch.Size([512])
     >>> w.dtype
     torch.float64
+    >>> firwin('hann', 8, dtype=torch.float32).dtype
+    torch.float32
     """
     w_np = _np_firwin(name, M, *args, **kwargs)
-    return torch.tensor(w_np, dtype=torch.float64)
-
-
-def hopfilters(
-    *args,
-    device: torch.device | str = "cpu",
-    dtype: torch.dtype = torch.complex128,
-    **kwargs,
-):
-    """Design a hop-based filterbank, returning torch-compatible filter dicts.
-
-    Examples
-    --------
-    >>> g, a, fc, L, *extra = hopfilters(4, 4, 16, device='cpu')  # doctest: +SKIP
-    >>> len(g)  # Number of hop filters  # doctest: +SKIP
-    4
-    """
-    if _np_hopfilters is None:
-        raise NotImplementedError("hopfilters not available in numpy backend")
-    result = _np_hopfilters(*args, **kwargs)
-    g_np, a, fc, L, *rest = result
-    g = numpy_filters_to_torch(g_np, L, device=device, dtype=dtype)
-    return (g, a, fc, L, *rest)
+    return torch.as_tensor(w_np, dtype=dtype, device=device)
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +328,7 @@ def filter_freqresp(
     >>> g, _, _, L, _ = audfilters(16000, 32000, device='cpu')
     >>> H, foff = filter_freqresp(g[0], L, device='cpu')
     >>> H.shape
-    torch.Size([32000])
+    torch.Size([41472])
     """
     from ...numpy.filters import filter_freqresp as _np_filter_freqresp
 

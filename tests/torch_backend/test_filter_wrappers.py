@@ -166,18 +166,12 @@ class TestGabfilters:
         assert L > 0
 
 
-class TestHopfilters:
-    """torch.filters.hopfilters produces valid filterbanks."""
-
-    def test_basic_call(self):
-        from cool_frames.torch.filters import hopfilters
-
-        try:
-            g, _a, _fc, _L, _info = hopfilters(8000, 1024, 128)
-        except NotImplementedError:
-            pytest.skip("hopfilters not yet implemented in torch backend")
-
-        assert len(g) > 0
+# ``TestHopfilters`` lived here and did nothing: ``hopfilters`` raised
+# ``NotImplementedError`` unconditionally (there is no NumPy ``hopfilters`` to
+# wrap) and the test caught that and skipped, so it was green for the entire
+# life of a function that could never work.  The name is now removed from the
+# package; the contract is pinned in
+# tests/regressions/test_audit_v0_1_1_open_items.py.
 
 
 class TestWaveletfilters:

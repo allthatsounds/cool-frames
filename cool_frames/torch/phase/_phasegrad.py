@@ -128,12 +128,15 @@ def filterbankphasegrad(
     >>> from cool_frames.torch.phase import filterbankphasegrad
     >>> from cool_frames.torch.filters import audfilters
     >>> x = torch.randn(8000)
-    >>> g = audfilters(16000)
-    >>> tgrad, fgrad, s, c = filterbankphasegrad(x, g, a=64)
+    >>> g, a, fc, L, _ = audfilters(16000, 8000)
+    >>> tgrad, fgrad, s, c = filterbankphasegrad(x, g, a, L=L)
     >>> len(tgrad) == len(g)
     True
-    >>> tgrad[0].dtype == torch.float64
-    True
+    >>> tgrad[0].dtype        # follows the input dtype
+    torch.float32
+    >>> x64 = torch.randn(8000, dtype=torch.float64)
+    >>> filterbankphasegrad(x64, g, a, L=L)[0][0].dtype
+    torch.float64
     """
     M = len(g)
     a_norm = normalise_a(a, M)

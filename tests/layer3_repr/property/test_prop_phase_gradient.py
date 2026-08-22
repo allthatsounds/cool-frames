@@ -66,8 +66,10 @@ class TestPhaseGradDimensionsMatchFilterbankImpl:
     def test_dimensions_match_filterbank(self, needs_impl):
         """tgrad, fgrad, s must have M cells with identical sizes to filterbank(f,g,a)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -94,8 +96,10 @@ class TestPhaseGradSpectrogramEqualsAbsSquaredImpl:
     """
 
     def test_spectrogram_equals_abs_squared(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -125,8 +129,10 @@ class TestPhaseGradIsRealImpl:
 
     def test_real_for_multiple_signals(self, needs_impl):
         """5 real signals: tgrad and fgrad must be real for all channels."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -150,8 +156,10 @@ class TestPhaseGradTotalSpectrogramMatchesCoeffEnergyImpl:
     """
 
     def test_total_spectrogram_matches_coeff_energy(self, needs_impl):
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -181,8 +189,10 @@ class TestConstphaseMagnitudeInvariantImpl:
     def test_magnitude_invariant_multiple_signals(self, needs_impl):
         """20 random signals: magnitude must be preserved (rel_err < 1e-6)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankconstphase  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -192,7 +202,7 @@ class TestConstphaseMagnitudeInvariantImpl:
             f = _make_signal(Ls, seed=13 + trial)
             c = filterbank(f, g, a)
             s = [np.abs(np.asarray(cm)) for cm in c]
-            c_out = filterbankconstphase(s, a, fc)
+            c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
             for m in range(M):
                 mag_out = np.abs(np.asarray(c_out[m])).ravel()
                 mag_in  = s[m].ravel()
@@ -204,8 +214,10 @@ class TestConstphaseMagnitudeInvariantImpl:
     def test_explicit_gradient_preserves_magnitude(self, needs_impl):
         """Passing explicit {tgrad, fgrad} must still preserve magnitude. Property (6)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import (  # type: ignore
             filterbankconstphase,
             filterbankphasegrad,
@@ -219,7 +231,7 @@ class TestConstphaseMagnitudeInvariantImpl:
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
         tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a, L)
-        c_out = filterbankconstphase(s, a, fc, [tgrad, fgrad])
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs, tgrad=tgrad, fgrad=fgrad)
         for m in range(M):
             mag_out = np.abs(np.asarray(c_out[m])).ravel()
             mag_in  = s[m].ravel()
@@ -231,8 +243,10 @@ class TestConstphaseMagnitudeInvariantImpl:
     def test_structure_matches_filterbank_output(self, needs_impl):
         """Output has M elements, each same size as filterbank output. Property (7)."""
         from cool_frames.filterbanks import filterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankconstphase  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -242,7 +256,7 @@ class TestConstphaseMagnitudeInvariantImpl:
         f = rng.standard_normal(Ls)
         c = filterbank(f, g, a)
         s = [np.abs(np.asarray(cm)) for cm in c]
-        c_out = filterbankconstphase(s, a, fc)
+        c_out, _usedmask = filterbankconstphase(s, a, fc, fs=fs)
         assert len(c_out) == M, \
             f"constphase: output must have M={M} cells, got {len(c_out)}"
         for m in range(M):
@@ -263,8 +277,10 @@ class TestReassignCellStructureImpl:
 
     def test_cell_structure_preserved(self, needs_impl):
         """sr must have M cells, each same size as s. Property (8)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -282,8 +298,10 @@ class TestReassignCellStructureImpl:
 
     def test_energy_conserved_across_signals(self, needs_impl):
         """5 signals: total energy change must be < 150 %. Property (9)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -300,8 +318,10 @@ class TestReassignCellStructureImpl:
 
     def test_output_nonnegative(self, needs_impl):
         """sr values must be non-negative. Property (10)."""
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.phase import filterbankphasegrad, filterbankreassign  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)

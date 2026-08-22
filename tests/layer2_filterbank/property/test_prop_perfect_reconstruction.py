@@ -38,8 +38,10 @@ class TestDualFramePRImpl:
 
     def test_dual_pr_100_trials(self, needs_impl):
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -59,9 +61,16 @@ class TestTightFramePRImpl:
     """PropPerfectReconstruction: tight-frame reconstruction, 100 real trials."""
 
     def test_tight_pr_100_trials(self, needs_impl):
-        from cool_frames.filterbanks import filterbank, filterbankbounds, filterbanktight, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbank,
+            filterbankbounds,
+            filterbanktight,
+            ifilterbank,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)
@@ -84,8 +93,10 @@ class TestPRNamedSignalsImpl:
     @pytest.mark.parametrize("sig_name", ["noise", "chirp", "impulse"])
     def test_named_signal(self, needs_impl, sig_name):
         from cool_frames.filterbanks import filterbank, filterbankdual, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L  = filterbanklength(Ls, a)

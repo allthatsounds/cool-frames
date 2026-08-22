@@ -64,7 +64,7 @@ def normalise_a(a, M: int) -> np.ndarray:
     >>> a_norm = normalise_a(32, 8)
     >>> a_norm.shape
     (8, 2)
-    >>> np.all(a_norm[:, 0] == 32)
+    >>> bool(np.all(a_norm[:, 0] == 32))
     True
     """
     a = np.asarray(a)
@@ -151,12 +151,7 @@ def filterbankwin(g: list, a, L: int | None = None):
     # Handle string-based specs: ['dual', g_inner], etc.
     if (isinstance(g, (list, tuple)) and len(g) >= 2
             and isinstance(g[0], str)):
-        from ._frame import (
-            filterbankdual,
-            filterbankdual,
-            filterbanktight,
-            filterbanktight,
-        )
+        from ._frame import filterbankdual, filterbanktight
         kind = g[0].lower()
         g_inner = g[1]
         # Recursively resolve the inner filter bank first
@@ -165,14 +160,19 @@ def filterbankwin(g: list, a, L: int | None = None):
         if L_use is None:
             raise ValueError(
                 f"filterbankwin: L is required for '{kind}' window spec")
+        # `real=` distinguishes the complex (two-sided) construction from the
+        # folded real-audio one.  Until v0.1.1 all four branches called the
+        # same function with the default real=True, so 'dual' was a silent
+        # synonym for 'realdual' and 'tight' for 'realtight' — the complex
+        # variants were unreachable.
         if kind == "dual":
-            g_out = filterbankdual(g_inner, a, L_use)
+            g_out = filterbankdual(g_inner, a, L_use, real=False)
         elif kind == "realdual":
-            g_out = filterbankdual(g_inner, a, L_use)
+            g_out = filterbankdual(g_inner, a, L_use, real=True)
         elif kind == "tight":
-            g_out = filterbanktight(g_inner, a, L_use)
+            g_out = filterbanktight(g_inner, a, L_use, real=False)
         elif kind == "realtight":
-            g_out = filterbanktight(g_inner, a, L_use)
+            g_out = filterbanktight(g_inner, a, L_use, real=True)
         else:
             raise ValueError(
                 f"filterbankwin: unsupported window type '{kind}'")
@@ -470,19 +470,38 @@ def comp_ifilterbank(c: list[np.ndarray],
             F_bl  = comp_ifilterbank_fftbl(c_sub, G_v, fo_v, a_v, ro_v, L)
             F += F_bl
 
-    # Time-domain synthesis (convert back via IFFT, add)
+    # Time-domain synthesis (convert back via IFFT, add).
+    #
+    # Two bugs lived here before v0.1.1:
+    #
+    #  * `skip` (the filter's `offset`) was read and then never used.  The
+    #    analysis leg `comp_filterbank_td` *does* apply it, so synthesis was
+    #    not the adjoint of analysis for any filter with a non-zero offset —
+    #    which is every filter `gammatonefir` produces.  The resulting "frame
+    #    operator" was non-symmetric with negative eigenvalues, and CG on it
+    #    diverged.  The delay is a pure phase factor in the DFT domain.
+    #
+    #  * `np.atleast_2d` turns a 1-D (N,) array into a (1, N) *row*, so
+    #    `cm[:, w]` was a length-1 slice that then broadcast one scalar across
+    #    every bin.  The two frequency-domain branches above reshape to a
+    #    column; this one has to as well.
     if m_td:
+        k_bins = np.arange(L)
         for m in m_td:
-            h     = g_ready[m]["h"]
-            skip  = g_ready[m]["offset"]
-            am    = int(a_norm[m, 0])
-            H_m   = np.fft.fft(postpad(h, L))
-            cm    = np.atleast_2d(c[m]) if c[m].ndim == 1 else c[m]
+            h = g_ready[m]["h"]
+            skip = int(g_ready[m].get("offset", 0) or 0)
+            am = int(a_norm[m, 0])
+            H_m = np.fft.fft(postpad(h, L))
+            # exp(-2j*pi*k*skip/L) is the DFT of a shift by `skip` samples;
+            # conjugated below along with H_m, it undoes the analysis delay.
+            delay_phase = np.exp(-2j * np.pi * k_bins * skip / L)
+            H_m = H_m * delay_phase
+
+            cm = c[m].reshape(-1, 1) if c[m].ndim == 1 else c[m]
+            Nm = cm.shape[0]
             for w in range(W):
-                # Up-sample then multiply
-                Cm_up = np.zeros(L, dtype=complex)
-                Cm_up[:len(c[m])] = np.fft.fft(cm[:, w])
-                Cm_up = np.tile(Cm_up[:len(c[m])], am)[:L]  # type: ignore[assignment]
+                Cm = np.fft.fft(cm[:, w])
+                Cm_up = np.tile(Cm, am)[:L]
                 F[:, w] += Cm_up * H_m.conj()
 
     return F

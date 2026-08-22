@@ -35,6 +35,7 @@ def rtisila(
     maxit: int = 5,
     lookahead: int | None = None,
     startphase: Literal["zero", "rand"] = "zero",
+    seed: int | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray, float, int]:
     """RTISILA for filterbanks.
 
@@ -94,7 +95,7 @@ def rtisila(
 
     # Initialise coefficients
     if startphase == "rand":
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(seed)
         c = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
     else:
         c = [s.copy().astype(complex) for s in s_abs]

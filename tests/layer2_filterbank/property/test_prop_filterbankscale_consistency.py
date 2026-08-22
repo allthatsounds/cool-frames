@@ -26,8 +26,10 @@ class TestScaleMultipliesResponseImpl:
     @pytest.mark.parametrize("s", [0.5, 2.0, float(np.sqrt(2)), 3.0])
     def test_scalar_scale_response(self, needs_impl, s):
         from cool_frames.filterbanks import filterbankresponse, filterbankscale  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -46,9 +48,16 @@ class TestScaleAndInverseScalePRImpl:
 
     @pytest.mark.parametrize("s", [0.5, 2.0, -1.0, 3.0])
     def test_scale_inverse_cancel(self, needs_impl, s):
-        from cool_frames.filterbanks import filterbank, filterbankdual, filterbankscale, ifilterbank  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filterbanks import (  # type: ignore
+            filterbank,
+            filterbankdual,
+            filterbankscale,
+            ifilterbank,
+        )
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)
@@ -71,8 +80,10 @@ class TestPerFilterScaleImpl:
 
     def test_per_filter_scale_individual(self, needs_impl):
         from cool_frames.filterbanks import filterbankfreqz, filterbankscale  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         from cool_frames.numpy.filterbanks._utils import normalise_a  # type: ignore
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
@@ -104,8 +115,10 @@ class TestScaleByOneIdentityImpl:
 
     def test_scale_one_identity(self, needs_impl):
         from cool_frames.filterbanks import filterbankresponse, filterbankscale  # type: ignore
-        from cool_frames.filters import audfilters  # type: ignore
-        from cool_frames.filters import filterbanklength  # type: ignore
+        from cool_frames.filters import (
+            audfilters,  # type: ignore
+            filterbanklength,  # type: ignore
+        )
         Ls, fs = 1024, 8000
         g, a, fc, _, _info = audfilters(fs, Ls)
         L = filterbanklength(Ls, a)

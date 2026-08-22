@@ -40,7 +40,7 @@ def _dgtlength(Ls: int, a: int, M: int) -> int:
 # _gabwin – resolve window specification to a numeric vector
 # ---------------------------------------------------------------------------
 
-def _gabwin(g, a: int, M: int, L: int, norm: str = "energy") -> np.ndarray:
+def _gabwin(g, M: int, norm: str = "energy") -> np.ndarray:
     """Resolve a window specification to a numeric vector of length M.
 
     Handles:
@@ -87,17 +87,36 @@ def _fir2long(g: np.ndarray, L: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def _winwidthatheight(g: np.ndarray, atheight: float) -> float:
-    """Compute the width of a symmetric window at a relative height.
+    """Width of a symmetric window at a relative height.
 
     Port of ``winwidthatheight.m`` (nested in ``comp_tfrfromwin.m``).
-    The window *g* is assumed to be in DFT ordering (peak at index 0);
-    we work with the first half ``g[0 : floor(len(g)/2)+1]``.
+
+    The original assumed DFT ordering — peak at index 0 — and read
+    ``g[0 : gl//2 + 1]``.  That holds for the time-domain prototype
+    ``gabfilters`` passes in, but *not* for the frequency responses the filter
+    designers store, which are peak-centred within their compact support.  For
+    such an array the first sample is already below threshold, so the crossing
+    indices were pinned at 0 and 1 regardless of the window: ``w/gl`` collapsed
+    to 1 and ``compute_tfr_from_filters`` returned the same ``gamma`` for a
+    Hann, a rectangle, a triangle and a three-bin needle (11597.8 for all four,
+    where a Hann should give ~2891).
+
+    Rolling the peak to index 0 first makes the routine correct for both
+    layouts and leaves the DFT-ordered case untouched (its argmax is already 0).
     """
+    g = np.asarray(g)
     gl = len(g)
+    if gl == 0:
+        return 0.0
+
+    peak = int(np.argmax(g))
+    if peak != 0:
+        g = np.roll(g, -peak)
+
     gmax = float(np.max(g))
     fracofmax = gmax * atheight  # threshold value
 
-    # First half of window (DC up to Nyquist)
+    # First half of window (peak up to the far side)
     half = g[: gl // 2 + 1]
 
     # Find where the window crosses the threshold
@@ -267,7 +286,7 @@ def gabfilters(fs: float, Ls: int, *,
     L = _dgtlength(Ls, a, M)
 
     # Resolve window to a numeric vector (length M, energy-normalised)
-    g0 = _gabwin(g, a, M, L, norm=norm)
+    g0 = _gabwin(g, M, norm=norm)
 
     # Centre frequencies: 2*k/M for k = 0, …, M-1  (normalised to [0,2))
     fc_full = 2.0 * np.arange(M) / M
@@ -303,9 +322,14 @@ def gabfilters(fs: float, Ls: int, *,
     # ── Extract compact prototype of length Lg_compact ────────────────
     # The time-domain prototype has M nonzero samples, so its frequency
     # support is concentrated within ~M bins.  Storing only the compact
-    # support (rather than the full L-length FFT) enables the painless
-    # dual condition  (filter support ≤ N = L/a)  and keeps the filter
-    # descriptors consistent with blfilter / waveletfilters output.
+    # support (rather than the full L-length FFT) keeps the filter descriptors
+    # consistent with blfilter / waveletfilters output.
+    #
+    # NOTE: this does *not* establish the painless condition, contrary to what
+    # this comment claimed before v0.1.1.  Painlessness needs support <= N =
+    # L/a, i.e. M <= L/a, which the default lattice (a = M//4) never satisfies:
+    # it needs M**2 <= 4L.  A warning is emitted below when it is violated, in
+    # line with the other designers.
     #
     # We keep Lg_compact = M bins centred on the peak of gnum (which sits
     # at index Lg//2 after the fftshift above).
@@ -315,11 +339,28 @@ def gabfilters(fs: float, Ls: int, *,
     half_hi = Lg_compact - half_lo
     gnum_compact = gnum[center - half_lo : center + half_hi].copy()
 
-    # Build filter descriptors
+    # Build filter descriptors.
+    #
+    # In real (single-sided) mode the DC and Nyquist channels have no
+    # conjugate partner, so `ifilterbank(..., real=True)`'s 2*real(ifft) fold
+    # double-counts them.  Every other designer in the package compensates with
+    # a 1/sqrt(2) on the two edge channels (see `_design.py`, `_cqtfilters.py`,
+    # `_greenwoodfilters.py`, `_waveletfilters.py`, `_warpedfilters_design.py`);
+    # gabfilters did not, which left a 4x-overlap Hann DGT — an exactly tight
+    # frame — reading kappa = 1.667 with a 67 % response spike at DC and
+    # Nyquist.
+    edge_scal = np.ones(M2, dtype=float)
+    if real and M2 > 1:
+        edge_scal[0] /= math.sqrt(2.0)
+        # The top channel is the Nyquist bin only when M is even; for odd M the
+        # single-sided range stops just short of it and needs no correction.
+        if Mfull % 2 == 0:
+            edge_scal[-1] /= math.sqrt(2.0)
+
     gout = []
     for kk in range(M2):
         filt = {
-            "H": gnum_compact.copy(),
+            "H": gnum_compact * edge_scal[kk],
             "foff": int(kk * L / Mfull - half_lo),
             "realonly": 0,
             "delay": 0,
@@ -329,6 +370,22 @@ def gabfilters(fs: float, Ls: int, *,
 
     # Hop sizes: uniform, a for every channel (1-D integer array)
     aout = np.full(M2, a, dtype=int)
+
+    # Painless check.  Every other designer warns when its lattice exceeds the
+    # painless limit; gabfilters used to claim (in a comment) that it always
+    # satisfied it, and warned only when redundancy dropped below 1.
+    _support = len(gnum_compact)
+    _N = L / float(a)
+    if _support > _N:
+        warnings.warn(
+            f"gabfilters: filter support ({_support} bins) exceeds the painless "
+            f"limit N = L/a = {_N:.0f}, so `filterbankdual`/`filterbanktight` "
+            f"return an approximate dual (relative reconstruction error ~1e-4 "
+            f"at the defaults, larger for wider windows). The bank is still a "
+            f"well-conditioned frame — use `ifilterbankiter(c, g, a, L)` for "
+            f"exact reconstruction, or choose a <= L/M for a painless lattice.",
+            stacklevel=2,
+        )
 
     # Time-frequency ratio
     gamma = _comp_tfrfromwin(g0)

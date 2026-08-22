@@ -42,7 +42,6 @@ import sys
 import textwrap
 import time
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -164,7 +163,7 @@ KNOWN_DIFFERENCES: dict[tuple[str, str], str] = {
 
 # ── Engine detection ─────────────────────────────────────────────────────
 
-def detect_engine() -> Optional[str]:
+def detect_engine() -> str | None:
     """Auto-detect MATLAB or Octave.  Returns 'matlab', 'octave', or None."""
     # Try MATLAB first
     matlab_path = shutil.which("matlab")
@@ -243,7 +242,7 @@ def run_matlab_export(engine: str) -> tuple[bool, str]:
 def run_python_export() -> tuple[bool, str]:
     """Run export_python.py and return (success, log_text)."""
     print(f"\n{'='*60}")
-    print(f"  Running Python export")
+    print("  Running Python export")
     print(f"{'='*60}\n")
 
     export_script = CROSSLANG_DIR / "export_python.py"
@@ -609,7 +608,7 @@ def main():
 
     # ── Compare ──────────────────────────────────────────────────────────
     print(f"\n{'='*60}")
-    print(f"  Comparing results")
+    print("  Comparing results")
     print(f"{'='*60}\n")
 
     all_results: dict[str, list[dict]] = {}
@@ -664,7 +663,7 @@ def main():
     (RESULTS_DIR / "crosslang_report.json").write_text(
         json.dumps(json_data, indent=2, default=str)
     )
-    print(f"\nReports saved to:")
+    print("\nReports saved to:")
     print(f"  {RESULTS_DIR / 'crosslang_report.txt'}")
     print(f"  {RESULTS_DIR / 'crosslang_report.json'}")
 
