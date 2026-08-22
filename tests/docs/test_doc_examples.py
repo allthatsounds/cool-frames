@@ -148,6 +148,20 @@ def test_the_number_of_skipped_blocks_does_not_creep():
     )
 
 
+def _module_exists_on_disk(mod_name: str) -> bool:
+    """Does this module exist in the source tree, without importing anything?
+
+    ``importlib`` cannot answer this question in a job where an optional
+    dependency is absent: importing ``cool_frames.torch.filters`` raises
+    ``ImportError`` both when the module does not exist *and* when it exists
+    but torch is not installed, and even ``find_spec`` has to import the parent
+    package to look inside it.  Checking the filesystem separates the two
+    cleanly and costs nothing.
+    """
+    base = _ROOT.joinpath(*mod_name.split("."))
+    return (base / "__init__.py").exists() or base.with_suffix(".py").exists()
+
+
 @pytest.mark.requires_impl
 def test_documented_import_paths_exist():
     """Every ``from cool_frames... import ...`` in the docs resolves.
@@ -155,24 +169,49 @@ def test_documented_import_paths_exist():
     Catches the failure mode where a document imports a name that was never
     exported (``rtpghifb`` once was) — cheaper and clearer than waiting for the
     block that uses it to blow up.
+
+    The module path is checked on disk and the *names* only when the module
+    actually imports.  Both halves matter and they fail differently: a wrong
+    path is always wrong, whereas a name can only be verified where the
+    module's dependencies are installed.  Conflating them made this test fail
+    CI's NumPy-only job for three ``cool_frames.torch.*`` paths that were
+    perfectly correct — torch simply is not installed there — which is a false
+    alarm about the documentation and, worse, would have trained the next
+    person to ignore it.
     """
     import importlib
 
     pattern = re.compile(r"^\s*from\s+(cool_frames[\w.]*)\s+import\s+(.+)$", re.MULTILINE)
-    missing = []
+    missing: list[str] = []
+    unverified: set[str] = set()
     for doc in _DOCS:
         for block in _blocks(doc):
             for mod_name, names in pattern.findall(block):
+                where = doc.relative_to(_ROOT)
+                if not _module_exists_on_disk(mod_name):
+                    missing.append(f"{where}: no module {mod_name}")
+                    continue
                 try:
                     mod = importlib.import_module(mod_name)
                 except ImportError:
-                    missing.append(f"{doc.relative_to(_ROOT)}: no module {mod_name}")
+                    # The path is right; an optional dependency is missing in
+                    # this environment, so the names cannot be checked here.
+                    unverified.add(mod_name)
                     continue
                 for name in (n.strip() for n in names.split(",")):
                     name = name.split(" as ")[0].strip("() \t")
                     if name and not hasattr(mod, name):
-                        missing.append(f"{doc.relative_to(_ROOT)}: {mod_name} has no {name!r}")
+                        missing.append(f"{where}: {mod_name} has no {name!r}")
+
     assert not missing, "documented imports that do not resolve:\n  " + "\n  ".join(missing)
+
+    if unverified:
+        # Reported rather than silent: if this ever lists a module that should
+        # have been importable, the skip is hiding something.
+        print(
+            "\nimport names not verified here (module present, dependency absent): "
+            + ", ".join(sorted(unverified))
+        )
 
 
 def test_every_document_with_prose_examples_is_collected():

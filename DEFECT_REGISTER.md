@@ -313,6 +313,29 @@ which part of the answer means anything.
   and needs an explicit opt-out, whereas the torch backend already follows its
   input's dtype. A redundant `dtype=` on torch would be noise.
 
+## Found by CI, after the local gates were green
+
+**`test_documented_import_paths_exist` failed CI's NumPy-only job** on three
+`cool_frames.torch.*` paths that were perfectly correct. The test treated
+`ImportError` as proof the module did not exist, but in a job where torch is not
+installed the two are indistinguishable — importing `cool_frames.torch.filters`
+raises `ImportError` whether the module is missing or its dependency is.
+
+It now checks the module path on disk (which needs no import and is therefore
+answerable in any environment) and verifies the imported *names* only where the
+module actually loads, reporting what it could not check rather than skipping
+silently. Both halves still fail loudly on a genuinely wrong path.
+
+This one only ever fails in an environment the local gates do not reproduce —
+every developer machine has torch — so it is worth noting how it was confirmed:
+by installing a `sys.meta_path` hook that raises `ModuleNotFoundError` for
+`torch` and running CI's exact command under it. That reproduced the failure,
+and then its absence: 1601 passed, 0 failed, against 1840 with torch present.
+
+A detail worth keeping: the hook must raise `ModuleNotFoundError`, not bare
+`ImportError`. `pytest.importorskip` keys on that distinction, so a blocker
+raising the wrong one produces collection errors CI would never show.
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —
