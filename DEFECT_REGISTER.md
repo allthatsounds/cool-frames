@@ -336,6 +336,24 @@ A detail worth keeping: the hook must raise `ModuleNotFoundError`, not bare
 `ImportError`. `pytest.importorskip` keys on that distinction, so a blocker
 raising the wrong one produces collection errors CI would never show.
 
+### And a second one, self-inflicted
+
+The doctest step added to CI in the third pass was written as
+`pytest --doctest-modules cool_frames/` and placed in the **test-numpy** job,
+which installs `.[dev]` without torch. `--doctest-modules` *imports* every
+module it walks, so all 30 `cool_frames/torch` modules failed to collect —
+30 collection errors, exit code 2, before a single doctest ran.
+
+It is split now: test-numpy runs everything with `--ignore=cool_frames/torch`
+(52 doctests) and test-torch runs `cool_frames/torch` (29). The two halves sum
+to the 81 the combined command collects, so nothing is lost to the split.
+
+Worth being blunt about why this shipped: the previous CI failure was verified
+by simulating the torch-less job, but that simulation ran the *test* command
+and not the *doctest* command, so the step that was actually broken was never
+exercised. Reproducing an environment is only as good as the commands you run
+inside it.
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —

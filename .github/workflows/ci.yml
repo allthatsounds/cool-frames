@@ -85,8 +85,16 @@ jobs:
       # could never have run at all (`audfilters(16000)` with the length
       # argument missing, examples referring to undefined names). A doc example
       # that is not executed is not documentation, it is a claim.
+      #
+      # `cool_frames/torch` is excluded HERE and covered in the test-torch job
+      # instead: this job installs `.[dev]` without torch, and
+      # `--doctest-modules` imports every module it walks, so all 30 torch
+      # modules fail to collect rather than being skipped.
       - name: Run doctests
-        run: pytest --doctest-modules cool_frames/ --tb=short -q
+        run: |
+          pytest --doctest-modules cool_frames/ \
+            --ignore=cool_frames/torch \
+            --tb=short -q
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
@@ -171,6 +179,11 @@ jobs:
             --cov=cool_frames \
             --cov-report=xml:coverage-torch-${{ matrix.python-version }}.xml \
             --junitxml=results-torch-${{ matrix.python-version }}.xml
+
+      # The other half of the doctest split: test-numpy runs everything except
+      # cool_frames/torch, which only imports where torch is installed.
+      - name: Run torch doctests
+        run: pytest --doctest-modules cool_frames/torch --tb=short -q
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
