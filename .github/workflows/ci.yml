@@ -96,8 +96,40 @@ jobs:
             --ignore=cool_frames/torch \
             --tb=short -q
 
+      # Codecov's token has to exist before `fail_ci_if_error: true` is safe.
+      # Without this step a missing secret surfaces as an upload error from
+      # inside the action — a red build whose log does not say what to do about
+      # it.  Checking first turns that into one line naming the fix.
+      #
+      # Skipped for pull requests from forks, which cannot see repository
+      # secrets at all; the upload below is skipped for the same reason, so an
+      # outside contributor gets a green build without coverage rather than a
+      # failure they cannot act on.
+      - name: Check the Codecov token is configured
+        if: matrix.python-version == '3.12' && github.event.pull_request.head.repo.fork != true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [ -z "$CODECOV_TOKEN" ]; then
+            echo "::error title=CODECOV_TOKEN is not set::Coverage cannot be uploaded."
+            echo ""
+            echo "The repository secret CODECOV_TOKEN is missing or empty."
+            echo ""
+            echo "  1. Get the token from https://codecov.io -> cool-frames -> Settings"
+            echo "  2. gh secret set CODECOV_TOKEN --repo allthatsounds/cool-frames"
+            echo ""
+            echo "Coverage comes from two jobs that each see half the library"
+            echo "(the numpy job cannot import torch). Only the union is the"
+            echo "real number, so both uploads have to land -- see codecov.yml."
+            echo ""
+            echo "To stop gating CI on coverage instead, remove this step and"
+            echo "the 'fail_ci_if_error: true' lines from both upload steps."
+            exit 1
+          fi
+          echo "CODECOV_TOKEN is set."
+
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && github.event.pull_request.head.repo.fork != true
         uses: codecov/codecov-action@v5
         with:
           files: coverage-numpy-${{ matrix.python-version }}.xml
@@ -195,8 +227,40 @@ jobs:
       - name: Run torch doctests
         run: pytest --doctest-modules cool_frames/torch --tb=short -q
 
+      # Codecov's token has to exist before `fail_ci_if_error: true` is safe.
+      # Without this step a missing secret surfaces as an upload error from
+      # inside the action — a red build whose log does not say what to do about
+      # it.  Checking first turns that into one line naming the fix.
+      #
+      # Skipped for pull requests from forks, which cannot see repository
+      # secrets at all; the upload below is skipped for the same reason, so an
+      # outside contributor gets a green build without coverage rather than a
+      # failure they cannot act on.
+      - name: Check the Codecov token is configured
+        if: matrix.python-version == '3.12' && github.event.pull_request.head.repo.fork != true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [ -z "$CODECOV_TOKEN" ]; then
+            echo "::error title=CODECOV_TOKEN is not set::Coverage cannot be uploaded."
+            echo ""
+            echo "The repository secret CODECOV_TOKEN is missing or empty."
+            echo ""
+            echo "  1. Get the token from https://codecov.io -> cool-frames -> Settings"
+            echo "  2. gh secret set CODECOV_TOKEN --repo allthatsounds/cool-frames"
+            echo ""
+            echo "Coverage comes from two jobs that each see half the library"
+            echo "(the numpy job cannot import torch). Only the union is the"
+            echo "real number, so both uploads have to land -- see codecov.yml."
+            echo ""
+            echo "To stop gating CI on coverage instead, remove this step and"
+            echo "the 'fail_ci_if_error: true' lines from both upload steps."
+            exit 1
+          fi
+          echo "CODECOV_TOKEN is set."
+
       - name: Upload coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && github.event.pull_request.head.repo.fork != true
         uses: codecov/codecov-action@v5
         with:
           files: coverage-torch-${{ matrix.python-version }}.xml

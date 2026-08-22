@@ -1,0 +1,1423 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 171feae..67e419f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -430,6 +430,57 @@ it was a list of places nobody had checked.
+   `DEFECT_REGISTER.md`.
+ 
+ 
++### Exhaustive backend parity
++
++The two backends are now held to each other across their **entire shared public
++surface** — 50 callables in seven subpackages, driven from one fixture and
++compared, rather than the handful the previous pass covered. Doing it turned up
++four more defects, all in torch code nothing had ever compared against its NumPy
++twin.
++
++- **`spsi`'s phase accumulator ran in float32.** `2.0 * torch.pi * a[m]` with an
++  int32 `a` does not evaluate in the resolved dtype: PyTorch treats the Python
++  float as a weak scalar, so the product promotes to the *default* dtype and is
++  rounded to single precision before meeting the float64 instantaneous
++  frequency. 7.7e-8 rad of error on the first frame, 7.3e-6 by frame 63, in a
++  function whose signature and resolved dtype both say float64. The backends are
++  now bit-identical.
++
++- **`reassigned_spectrogram` had `tgrad` and `fgrad` swapped**, so
++  `instfreq_deviation` reported the group delay and `groupdelay_shift` the
++  instantaneous frequency, off by `fs/2pi` as well. The NumPy copy carries a
++  comment describing this exact defect being fixed *there*. Also in the same
++  function: `L` dropped from two calls, a bare `except Exception -> zeros` around
++  the gradient computation, the dB image padded at 0.0 dB (magnitude 1.0, which
++  then won the peak used to place the display floor), a hardcoded clip level
++  that made `db_range` inert, and no `db_range` parameter at all — the NumPy
++  twin has always had one. Now agreeing to 1.1e-15 on every field.
++
++- **`filterbank_spectrogram`** shared the 0.0-dB padding and the dropped `L`.
++
++- **`framemuleigs` was not reproducible, in either backend.** It falls back to
++  ARPACK for large `L`, and ARPACK starts from a random vector unless given one.
++  Frame multipliers have degenerate spectra whenever `sigma` is constant, and an
++  unseeded Arnoldi iteration resolves a degenerate eigenvalue inconsistently:
++  3.83465916 against 3.84270865 for the same fourth eigenvalue on two runs of
++  identical input. Both backends now use the same deterministic start vector.
++  **This changes returned values** for the iterative path — they were previously
++  drawn from a distribution rather than being a function of the input.
++
++The harness is built not to rot. `test_public_surface_divergence_is_recorded`
++fails if the set of names present in one backend and not the other changes, in
++either direction; `test_every_shared_symbol_has_a_parity_driver` fails if a
++shared symbol has no comparison. Adding a function to one backend and forgetting
++the other now fails that day rather than two releases later — which is how all
++six of this audit's "fixed in one copy of two" defects survived.
++
++Four failures turned out to be the comparator's fault rather than the code's,
++and are documented in `DEFECT_REGISTER.md`: the filter designers agree to 0.0
++channel by channel once evaluated at their own `L`, and `magnitudeerr` was being
++driven with a degenerate argument pair. A parity harness that cries wolf gets
++muted, so these are recorded rather than silently tolerated.
++
++
+ ## 0.1.0
+ 
+ First public release.
+diff --git a/DEFECT_REGISTER.md b/DEFECT_REGISTER.md
+index a173ddd..0613f1c 100644
+--- a/DEFECT_REGISTER.md
++++ b/DEFECT_REGISTER.md
+@@ -529,6 +529,152 @@ is bit-identical to `rtisila`, because `startphase` is the only thing that
+ distinguishes them and the default takes no initialisation branch. The
+ Gnann-Spiertz variant is only a variant if you ask for one.
+ 
++## Closed in the sixth pass — the exhaustive backend-parity harness
++
++The fifth pass ended with a recommendation: hold *every* shared symbol to its
++twin, not a selected few. Doing it produced four more defects in the first
++afternoon, all in torch code that no test had ever compared against its NumPy
++counterpart. That is now six separate occurrences of "fixed where it broke, and
++nowhere else" in one audit, which is a fact about the architecture rather than
++about any individual change: `cool_frames.torch` is not a wrapper. Roughly 2,400
++of its 6,500 lines are independent reimplementations — `core/_core.py` (858),
++`filterbanks/_core.py` (487), `phase/_fbphasegradfrommag.py` (373),
++`phase/_spsi.py` (255), `filters/_biquad.py` (233),
++`diagnostics/spectrogram.py` (181).
++
++`tests/regressions/test_backend_parity_exhaustive.py` enumerates both public
++surfaces — 50 shared callables across seven subpackages, plus 45 NumPy-only and
++11 torch-only — drives all 50 in both backends from one fixture, and compares.
++Forty agreed to machine precision on the first run. The other ten are below.
++
++### `spsi`'s phase accumulator ran in float32
++
++`2.0 * torch.pi * a[m] * instf`, with `a` an int32 tensor, does **not** evaluate
++in the dtype the function resolved. PyTorch treats the Python float `2.0` as a
++*weak* scalar, so `float x int32 tensor` promotes to the **default** dtype —
++float32 — and the product is rounded to single precision before it ever meets
++the float64 `instf`. The accumulator then carries that error forward:
++
++| | phase error vs NumPy |
++|---|---:|
++| frame 0 | 7.7e-8 rad |
++| frame 63 | 7.3e-6 rad |
++
++Nothing in the signature, the resolved `dtype`, or the returned tensors hints at
++it: a caller passing float64 magnitudes gets float64 output that was computed,
++in part, in single precision. Fixed with a separate real-dtype copy of the hop
++sizes for the phase arithmetic (`a` itself has to stay integral — it indexes the
++event schedule). After the fix the two backends are **bit-identical**, 0.0
++relative, down from 8.8e-6 on the coefficients.
++
++This is the one to remember when reading the rest of the torch backend. It is
++invisible to inspection, produces plausible numbers, and the only reason it was
++found is that something compared the two implementations.
++
++### `reassigned_spectrogram` reported group delay as instantaneous frequency
++
++The torch copy had `tgrad` and `fgrad` **swapped** in its return dict:
++
++```python
++"instfreq_deviation": fgrad_summary * fs / (2 * pi),   # this is the group delay
++"groupdelay_shift":   tgrad_summary,                    # this is the inst. frequency
++```
++
++The NumPy copy carries a comment describing this exact defect being found and
++fixed *there* — including that a bare `except Exception -> zeros` had made both
++outputs identically zero for every input for two releases. The torch copy had
++the same `except Exception`, and four further divergences in the same function:
++
++- `L` dropped from both the `filterbank` and the `filterbankphasegrad` call;
++- the dB image padded at **0.0 dB** — magnitude 1.0, which then wins the
++  `peak_db` maximum, so on a quiet input the padding is the loudest thing in the
++  array and the 60 dB window anchors ~30 dB too high (again, exactly the defect
++  the NumPy comment records fixing);
++- the clip level hardcoded to 60, making `db_range` inert;
++- no `db_range` parameter at all, so the two backends could not be driven by the
++  same caller.
++
++All fixed. The two backends now agree to 1.1e-15 across every field, from 6.4
++relative on `coeff_db` and 112 on `instfreq_deviation`.
++
++### `filterbank_spectrogram` shared two of those
++
++The 0.0-dB padding and the dropped `L`. Fixed alongside; now 1.6e-14.
++
++### `framemuleigs` returned a different answer every run — in both backends
++
++For large `L` it falls back to ARPACK (`scipy.sparse.linalg.eigsh`), and ARPACK
++starts from a **random** vector unless given one. Neither backend passed a `v0`.
++Frame multipliers have degenerate spectra whenever `sigma` is constant, which is
++the ordinary case, and a degenerate eigenvalue is exactly what an unseeded
++Arnoldi iteration resolves inconsistently: measured **3.83465916 against
++3.84270865** for the same fourth eigenvalue on two runs of identical input — an
++unconverged iterate on one draw, a converged one on the next, 2e-3 apart.
++
++Not a parity defect (both backends were equally non-reproducible); a
++reproducibility defect, and the kind that matters most for a component others
++build on. Fixed with the same seeded start vector in both.
++
++Worth recording *how* this surfaced, because it says something about the method:
++it appeared as an intermittent failure of the parity test — passing on one run
++and failing on the next — while a *different* fix was being validated. A
++property that only fails when the dice fall badly cannot be guarded by a test
++that happens to exercise it, so `test_framemuleigs_is_reproducible` calls it
++twice and demands bit-identical output.
++
++### The four that were the comparator's fault, not the code's
++
++Recorded because a parity harness that cries wolf gets muted, and each of these
++was a plausible-looking failure with a real relative error attached:
++
++- **The designers** (`audfilters`, `cqtfilters`, `waveletfilters`,
++  `warpedfilters`) reported 2.9e-3 to 9.6e-2. They agree to **0.0** channel by
++  channel. NumPy leaves `H` as a *callable* that regenerates at whatever length
++  it is asked for; torch materialises it. Evaluating an `audfilters` bank at the
++  fixture's L = 512 instead of the designer's own L = 648 compares two different
++  things. The comparator now reads `L` from the designer's own return tuple.
++- **`magnitudeerr` / `magnitudeerrdb`** reported 9.2e13 and `nan` — from a
++  degenerate fixture. Driving them with `(c, |c|)` makes both backends return ~0
++  by construction, and two flavours of zero compare badly in relative terms
++  while proving nothing. The driver now perturbs the magnitudes.
++- **`filterbank_spectrogram`'s filter list** cannot be compared at all: it is
++  returned in a plain dict with no `L`, and torch materialises each filter at
++  its own compact support (11, 17, 19, 21 bins), so no single length exists.
++  The comparator **skips** it rather than guessing, and
++  `test_filter_lists_without_a_known_L_are_skipped_not_guessed` asserts the one
++  thing that makes the skip safe: `coeff_db` *is* the filters applied to a
++  signal, and it is compared to 1e-14.
++
++### Left as a recorded divergence
++
++`decolbfgs` runs an L-BFGS line search, and NumPy's and torch's differ, so the
++two legitimately reach different local minima of the same non-convex problem
++(-10.25 dB vs -10.16 dB consistency). Compared on outcome rather than
++element-wise. Their iteration histories also differ — for `maxit=3` NumPy
++returns four `relres` entries and torch five, diverging from the first iterate
++(0.880 vs 0.915) while both report `niter=3`, so a caller plotting convergence
++gets a different curve per backend. Pinned, not fixed: same class as the RTISIL
++`relres` question, and the same reason.
++
++### Why this harness does not rot
++
++Two enforcement tests, which are the actual point of the file:
++
++- `test_public_surface_divergence_is_recorded` enumerates both backends and
++  fails if the set of names in one and not the other changes — in *either*
++  direction. Add a function to NumPy and forget torch, and it fails that day.
++  Every recorded asymmetry carries a reason in the source.
++- `test_every_shared_symbol_has_a_parity_driver` fails if a shared symbol has no
++  entry in the driver registry. Add a function to both backends and forget to
++  say how to compare them, and it fails.
++
++Without those two the file is a snapshot that decays; with them it is a
++constraint. It earned its keep immediately by catching a stale driver entry for
++`filterbanks::filterbanklength`, a symbol that does not exist.
++
++Each of the four fixes was validated by reverting it in place and confirming the
++harness fails.
++
+ ## Minor, recorded for completeness
+ 
+ - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —
+diff --git a/cool_frames/numpy/operators/_framemul.py b/cool_frames/numpy/operators/_framemul.py
+index 36ed0ed..822d982 100644
+--- a/cool_frames/numpy/operators/_framemul.py
++++ b/cool_frames/numpy/operators/_framemul.py
+@@ -537,13 +537,27 @@ def framemuleigs(g_analysis: list[dict],
+         idx = np.argsort(-np.abs(eigvals))
+         return eigvals[idx[:K]]
+     else:
++        # ARPACK starts from a *random* vector unless given one, so
++        # `framemuleigs` returned a different answer run to run.  On a
++        # multiplier with a degenerate spectrum — which is the normal case,
++        # a constant `sigma` gives repeated eigenvalues — the run-to-run
++        # spread is not rounding: measured 3.83465916 against 3.84270865
++        # for the same 4th eigenvalue, an unconverged iterate on one draw
++        # and a converged one on the next, 2e-3 apart.  A core routine that
++        # other components build on has to give the same answer twice.
++        #
++        # A fixed, seeded start vector makes it reproducible.  It is seeded
++        # rather than `ones` because a constant vector can sit orthogonal to
++        # the wanted eigenspace and stall the iteration.  Both backends use
++        # the same one, so their results are comparable as well as stable.
++        v0 = np.random.default_rng(0).standard_normal(L)
+         if _self_adjoint:
+             op = LinearOperator((L, L), matvec=_apply_mul, dtype=float)
+-            eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200)
++            eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200, v0=v0)
+         else:
+             from scipy.sparse.linalg import eigs
+ 
+             op = LinearOperator((L, L), matvec=_apply_mul, dtype=complex)
+-            eigvals, _ = eigs(op, k=K, which="LM", tol=1e-9, maxiter=200)
++            eigvals, _ = eigs(op, k=K, which="LM", tol=1e-9, maxiter=200, v0=v0)
+         idx = np.argsort(-np.abs(eigvals))
+         return eigvals[idx]  # type: ignore[no-any-return]
+diff --git a/cool_frames/torch/diagnostics/spectrogram.py b/cool_frames/torch/diagnostics/spectrogram.py
+index d3e96ab..90105ab 100644
+--- a/cool_frames/torch/diagnostics/spectrogram.py
++++ b/cool_frames/torch/diagnostics/spectrogram.py
+@@ -10,6 +10,8 @@ Example:
+ 
+ from __future__ import annotations
+ 
++import math
++
+ import torch
+ 
+ from ..filterbanks import filterbank
+@@ -50,12 +52,12 @@ def filterbank_spectrogram(
+ 
+     # Design filterbank
+     if scale == "cqt":
+-        g, a, fc, _L, _info = cqtfilters(fs, len(f), fmin=20, fmax=20000, bins=96)
++        g, a, fc, L, _info = cqtfilters(fs, len(f), fmin=20, fmax=20000, bins=96)
+     else:  # 'erb'
+-        g, a, fc, _L, _info = audfilters(fs, len(f))
++        g, a, fc, L, _info = audfilters(fs, len(f))
+ 
+-    # Analyse
+-    c = filterbank(f, g, a)  # list of tensors
++    # Analyse — `L` was discarded here too; the NumPy copy passes it.
++    c = filterbank(f, g, a, L=L)  # list of tensors
+ 
+     # Convert to dB and stack
+     mag_db_list = []
+@@ -64,14 +66,27 @@ def filterbank_spectrogram(
+         mag_db = 20 * torch.log10(mag + 1e-10)
+         mag_db_list.append(mag_db)
+ 
+-    # Pad shorter channels to match longest
++    # Stack, padding the shorter (more heavily decimated) channels.
++    #
++    # The pad value has to be the display floor, not 0.0 — the third half of a
++    # defect the audit fixed in the NumPy copy and left here.  Channels are
++    # decimated by different hops, so on a typical ERB bank ~88 % of the image
++    # is padding.  Padding at 0.0 dB is padding at *magnitude 1.0*, which then
++    # takes part in the `peak_db` maximum: for a quiet input the padding is the
++    # loudest thing in the array, the 60 dB window anchors ~30 dB too high, and
++    # most real coefficients fall below the floor.  Compute the peak from the
++    # coefficients, then pad at the floor.
++    peak_db = max(float(torch.max(m)) for m in mag_db_list)
++    floor_db = peak_db - db_range
++
+     max_len = max(len(m) for m in mag_db_list)
+-    mag_db_stacked = torch.zeros((len(c), max_len), device=device, dtype=dtype)
++    mag_db_stacked = torch.full((len(c), max_len), floor_db, device=device, dtype=dtype)
+     for i, m in enumerate(mag_db_list):
+         mag_db_stacked[i, : len(m)] = m
+ 
+-    peak_db = torch.max(mag_db_stacked)
+-    mag_db_clipped = torch.maximum(mag_db_stacked, peak_db - db_range)
++    mag_db_clipped = torch.maximum(
++        mag_db_stacked, torch.tensor(floor_db, dtype=dtype, device=device)
++    )
+ 
+     return {
+         "coeff_db": mag_db_clipped,
+@@ -83,7 +98,9 @@ def filterbank_spectrogram(
+     }
+ 
+ 
+-def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> dict:
++def reassigned_spectrogram(
++    f: torch.Tensor, fs: float, scale: str = "erb", db_range: float = 60
++) -> dict:
+     """Compute spectrogram with phase gradient information.
+ 
+     Computes phase gradients which can be used to estimate instantaneous
+@@ -97,6 +114,11 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
+         Sample rate (Hz).
+     scale : {'erb', 'cqt'}, optional
+         Filter design (default 'erb').
++    db_range : float, optional
++        Dynamic range in dB for display (default 60).  This argument was absent
++        from the torch signature while the NumPy one has always had it, so the
++        two could not be driven by the same caller; the clip level here was
++        hardcoded to 60 regardless.
+ 
+     Returns
+     -------
+@@ -114,20 +136,34 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
+ 
+     # Design filterbank
+     if scale == "cqt":
+-        g, a, fc, _L, _info = cqtfilters(fs, len(f), fmin=20, fmax=20000, bins=96)
++        g, a, fc, L, _info = cqtfilters(fs, len(f), fmin=20, fmax=20000, bins=96)
+     else:  # 'erb'
+-        g, a, fc, _L, _info = audfilters(fs, len(f))
+-
+-    # Analyse
+-    c = filterbank(f, g, a)  # list of tensors
+-
+-    # Compute phase gradients
+-    try:
+-        tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a)  # type: ignore[arg-type]
+-    except Exception:
+-        # If phase gradient computation fails, use zero gradients
+-        tgrad = [torch.zeros_like(c_ch) for c_ch in c]
+-        fgrad = [torch.zeros_like(c_ch) for c_ch in c]
++        g, a, fc, L, _info = audfilters(fs, len(f))
++
++    # Analyse.  `L` was being discarded here and left to be re-derived inside
++    # `filterbank`, which is not guaranteed to reproduce the designer's own
++    # value; the NumPy copy passes it.
++    c = filterbank(f, g, a, L=L)  # list of tensors
++
++    # Compute phase gradients.
++    #
++    # This is the torch half of a defect the audit fixed in the NumPy copy and
++    # not here.  `L` was dropped from the call, and — see the return dict below
++    # — `tgrad` and `fgrad` were then mapped to the wrong output names.
++    #
++    # The `except Exception -> zeros` that used to wrap this call is gone.  A
++    # diagnostic that silently substitutes zeros for a failed measurement and
++    # returns them under the measurement's name is worse than one that raises:
++    # in the NumPy copy that fallback is precisely what hid the fact that the
++    # call could never succeed, and both documented outputs were identically
++    # zero for every input for two releases.  If the gradients cannot be
++    # computed, the caller needs to know.
++    #
++    #     filterbankphasegrad(f, g, a, L) -> (tgrad, fgrad, s, c)
++    #
++    # with `tgrad` the normalised instantaneous frequency and `fgrad` the group
++    # delay in samples.
++    tgrad, fgrad, _s, _c = filterbankphasegrad(f, g, a, L)
+ 
+     # Convert to dB and stack
+     mag_db_list = []
+@@ -136,14 +172,20 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
+         mag_db = 20 * torch.log10(mag + 1e-10)
+         mag_db_list.append(mag_db)
+ 
+-    # Pad shorter channels
++    # Stack, padding at the display floor rather than 0.0 dB — see the note in
++    # `filterbank_spectrogram` above.  The clip level was also hardcoded to 60
++    # here, which made the `db_range` argument inert in this function alone.
++    peak_db = max(float(torch.max(m)) for m in mag_db_list)
++    floor_db = peak_db - db_range
++
+     max_len = max(len(m) for m in mag_db_list)
+-    mag_db_stacked = torch.zeros((len(c), max_len), device=device, dtype=dtype)
++    mag_db_stacked = torch.full((len(c), max_len), floor_db, device=device, dtype=dtype)
+     for i, m in enumerate(mag_db_list):
+         mag_db_stacked[i, : len(m)] = m
+ 
+-    peak_db = torch.max(mag_db_stacked)
+-    mag_db_clipped = torch.maximum(mag_db_stacked, peak_db - 60)
++    mag_db_clipped = torch.maximum(
++        mag_db_stacked, torch.tensor(floor_db, dtype=dtype, device=device)
++    )
+ 
+     # Average phase gradient data across time for per-channel summary
+     fgrad_vals = []
+@@ -176,6 +218,11 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
+         "fc": fc,
+         "a": a,
+         "fs": fs,
+-        "instfreq_deviation": fgrad_summary * fs / (2 * 3.14159265358979323846),
+-        "groupdelay_shift": tgrad_summary,
++        # `tgrad` is instantaneous frequency (normalised), `fgrad` group delay —
++        # these two were the wrong way round here, so `instfreq_deviation`
++        # reported the group delay and `groupdelay_shift` reported the
++        # instantaneous frequency, off by a factor of fs/2pi in the bargain.
++        # The NumPy copy was corrected in the v0.1.1 audit; this one was not.
++        "instfreq_deviation": tgrad_summary * fs / (2 * math.pi),
++        "groupdelay_shift": fgrad_summary,
+     }
+diff --git a/cool_frames/torch/operators/_framemul.py b/cool_frames/torch/operators/_framemul.py
+index 26ccd94..5a52856 100644
+--- a/cool_frames/torch/operators/_framemul.py
++++ b/cool_frames/torch/operators/_framemul.py
+@@ -402,8 +402,13 @@ def framemuleigs(
+         from scipy.sparse.linalg import LinearOperator, eigsh
+ 
+         op = LinearOperator((L, L), matvec=_apply_mul, dtype=float)
++        # Same deterministic start vector as the NumPy backend — see the note
++        # there.  Without it ARPACK draws a random one and the eigenvalues of a
++        # degenerate multiplier vary by ~2e-3 between runs, in both backends
++        # independently.
++        v0 = np.random.default_rng(0).standard_normal(L)
+         # eigsh requires symmetric operator — true for real sigma + same frames
+-        eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200)  # type: ignore[no-any-return]
++        eigvals, _ = eigsh(op, k=K, which="LM", tol=1e-9, maxiter=200, v0=v0)  # type: ignore[no-any-return]
+         idx = np.argsort(-np.abs(eigvals))  # type: ignore[assignment]
+         result = torch.as_tensor(eigvals[idx], dtype=_eig_rdtype)  # type: ignore[assignment]
+         if sigma:
+diff --git a/cool_frames/torch/phase/_spsi.py b/cool_frames/torch/phase/_spsi.py
+index 844a209..7a0afac 100644
+--- a/cool_frames/torch/phase/_spsi.py
++++ b/cool_frames/torch/phase/_spsi.py
+@@ -66,6 +66,23 @@ def spsi(
+ 
+     # Convert inputs to tensors and normalize
+     a = torch.as_tensor(a, dtype=torch.int32, device=device).reshape(-1)
++    # A *separate* real-dtype copy of the hop sizes, for the phase arithmetic only.
++    #
++    # `a` has to stay integral: it indexes the event schedule and drives `range()`.
++    # But `2.0 * torch.pi * a[m] * instf` with an int32 `a[m]` does not evaluate in
++    # `dtype`.  PyTorch treats the Python float `2.0` as a *weak* scalar, so
++    # `float * int32 tensor` promotes to the **default dtype** — float32 — and the
++    # product is rounded to single precision *before* it ever meets the float64
++    # `instf`.  The accumulator then carries that error forward: 7.7e-8 rad on the
++    # very first frame, 7.3e-6 by frame 63, against a NumPy backend doing the same
++    # arithmetic in double.  Nothing in the signature or the resolved `dtype` hints
++    # at it, and a caller passing float64 magnitudes gets float64 output that was
++    # computed, in part, in float32.
++    #
++    # Found by the exhaustive backend-parity harness, which compared spsi's two
++    # implementations for the first time.  See
++    # ``test_backend_parity_exhaustive.py``.
++    a_real = a.to(dtype=dtype)
+     fc = torch.as_tensor(fc, dtype=dtype, device=device).reshape(-1)
+ 
+     fs = float(fs)
+@@ -122,7 +139,7 @@ def spsi(
+             for m in active:
+                 n = current_frame[m]
+                 instf = fc[m]
+-                m_phase[m] = m_phase[m] + 2.0 * torch.pi * a[m] * instf
++                m_phase[m] = m_phase[m] + 2.0 * torch.pi * a_real[m] * instf
+                 phase_out[m][n] = m_phase[m]
+             continue
+ 
+@@ -162,7 +179,7 @@ def spsi(
+             # No peaks found — use centre frequency for all
+             for m in active:
+                 n = current_frame[m]
+-                m_phase[m] = m_phase[m] + 2.0 * torch.pi * a[m] * fc[m]
++                m_phase[m] = m_phase[m] + 2.0 * torch.pi * a_real[m] * fc[m]
+                 phase_out[m][n] = m_phase[m]
+             continue
+ 
+@@ -171,7 +188,7 @@ def spsi(
+         peak_phases = []
+         for j, instf, _p in peaks:
+             m_idx = active[j]
+-            peak_phase = m_phase[m_idx] + 2.0 * torch.pi * a[m_idx] * instf
++            peak_phase = m_phase[m_idx] + 2.0 * torch.pi * a_real[m_idx] * instf
+             peak_phases.append(peak_phase)
+ 
+         # Propagate: assign each channel the phase of the nearest peak
+diff --git a/tests/regressions/test_backend_parity_exhaustive.py b/tests/regressions/test_backend_parity_exhaustive.py
+new file mode 100644
+index 0000000..d1664d1
+--- /dev/null
++++ b/tests/regressions/test_backend_parity_exhaustive.py
+@@ -0,0 +1,918 @@
++"""
++test_backend_parity_exhaustive.py
++=================================
++Every public symbol that exists in *both* backends, driven in both and compared.
++
++Why this file exists
++--------------------
++``cool_frames.torch`` is not a wrapper around ``cool_frames.numpy``.  Roughly
++2,400 of its 6,500 lines are independent reimplementations — ``core/_core.py``
++(858 lines), ``filterbanks/_core.py`` (487), ``phase/_fbphasegradfrommag.py``
++(373), ``phase/_spsi.py`` (255), ``filters/_biquad.py`` (233),
++``diagnostics/spectrogram.py`` (181).  Two implementations of the same
++mathematics, maintained by hand, with nothing comparing them.
++
++The consequence is the defining pattern of this audit: **a defect gets fixed
++where it was noticed, and nowhere else.**  Before this file there were five
++recorded instances —
++
++1. ``real=False`` as a default: NumPy ``filterbankiter``, then torch
++   ``filterbankiter``, then NumPy ``ifilterbankiter``, and finally torch
++   ``ifilterbankiter``, which went on reconstructing the flagship bank with
++   23 % error through all three of the other fixes.
++2. The missing centre-frequency term in the phase-gradient estimator: fixed in
++   NumPy, left in torch for a whole release.
++3. ``_winwidthatheight``'s DFT-ordering assumption: fixed in
++   ``numpy/filters/_gabfilters.py``, left in ``numpy/phase/_findgamma.py``,
++   where it made ``pghi_findgamma`` 6-10x wrong for any numeric window.
++
++— and writing this harness immediately produced three more, all in torch code
++that no test had ever compared against its NumPy twin:
++
++4. ``spsi``'s phase accumulator ran in **float32**.  ``2.0 * torch.pi * a[m]``
++   with an int32 ``a`` promotes to the *default* dtype, not the resolved one,
++   so the product was rounded to single precision before meeting the float64
++   instantaneous frequency.  7.7e-8 rad of error on the first frame, 7.3e-6 by
++   frame 63, in a function whose signature and resolved dtype both say float64.
++5. ``reassigned_spectrogram`` had ``tgrad`` and ``fgrad`` **swapped** in its
++   return dict, so ``instfreq_deviation`` reported the group delay and
++   ``groupdelay_shift`` reported the instantaneous frequency — off by a factor
++   of ``fs/2pi`` as well.  The NumPy copy carries a comment describing this
++   exact defect being fixed *there*.  It also dropped ``L`` from both the
++   analysis and gradient calls, wrapped the gradient call in a bare
++   ``except Exception -> zeros``, padded the dB image at 0.0 dB (i.e. magnitude
++   1.0, which then won the ``peak_db`` maximum), hardcoded the clip level to
++   60, and omitted the ``db_range`` parameter its NumPy twin has always had.
++6. ``filterbank_spectrogram`` shared the 0.0-dB padding and the dropped ``L``.
++
++Six for six.  The pattern is not going to stop being true on its own, so the
++harness is built to be *self-maintaining* rather than a list somebody has to
++remember to extend:
++
++* ``test_public_surface_divergence_is_recorded`` enumerates both backends and
++  fails if the set of names present in one and not the other changes.  Add a
++  function to NumPy and forget torch, and this fails.
++* ``test_every_shared_symbol_has_a_parity_driver`` fails if a shared symbol has
++  no entry in ``DRIVERS``.  Add a function to *both* backends and forget to say
++  how to compare them, and this fails.
++* ``test_backends_agree`` is parametrised over ``DRIVERS`` and does the actual
++  comparison.
++
++The two enforcement tests are the point.  Without them this file is a snapshot
++that rots; with them it is a constraint on the codebase.
++"""
++
++from __future__ import annotations
++
++import importlib
++import warnings
++
++import pytest
++
++import numpy as np
++
++torch = pytest.importorskip("torch")
++
++FS, LS = 4000.0, 512
++
++SUBPACKAGES = ["core", "filterbanks", "filters", "operators", "phase", "sigproc", "diagnostics"]
++
++# Relative tolerance for "the two backends computed the same thing".  Both run
++# in float64; anything above this is an algorithmic difference, not rounding.
++RTOL = 1e-8
++
++
++# ---------------------------------------------------------------------------
++# Recorded surface divergences
++# ---------------------------------------------------------------------------
++# A name in one backend and not the other.  Every entry here is a deliberate
++# asymmetry with a reason; the test below fails if the real divergence set stops
++# matching this one, in either direction.  Adding a function to one backend
++# without the other lands here as a failure rather than as silence.
++
++NUMPY_ONLY = {
++    "core": {
++        # Time-domain filtering path; torch is frequency-domain only.
++        "comp_filterbank_td",
++        "comp_ifilterbank_td",
++        # Array/length helpers with direct torch equivalents in the stdlib.
++        "floor23",
++        "involute",
++        "middlepad",
++        "modcent",
++        "postpad",
++        "resize_fir",
++        "setnorm",
++    },
++    "filterbanks": {
++        # Diagnostics and plotting: NumPy/matplotlib-side reporting, deliberately
++        # not duplicated into the differentiable backend.
++        "analyze_coefficients",
++        "analyze_filterbank",
++        "analyze_frame_operator",
++        "magresp",
++        "pgrpdelay",
++        "plotfft",
++        "plotfilterbank",
++        "print_report",
++        # Design/inspection helpers.
++        "filterbank_is_real",
++        "filterbankbounds_svd",
++        "filterbankwin",
++        "painlessfilterbank",
++        "rampsignal",
++        "resize_fir",
++        "transferfunction",
++        "pack_coefficients",
++        "unpack_coefficients",
++    },
++    "filters": {
++        # Auditory scale conversions and window/wavelet primitives — pure scalar
++        # maths, used at design time, no gradient path needed.
++        "audfiltbw",
++        "audspace",
++        "audtofreq",
++        "erbtofreq",
++        "freqtoaud",
++        "freqtoerb",
++        "freqwavelet",
++        "freqwin",
++        "gammatonefir",
++        "pgauss",
++        "compute_tfr_from_filters",
++        "greenwoodfilters",
++        "partial_tighten",
++    },
++    "phase": {
++        # Window-constant search; design-time, scalar.
++        "pghi_findgamma",
++        "wpghi_findgamma",
++    },
++    "sigproc": {"largest"},
++    "diagnostics": {"FilterbankRecommendation", "center_freqs", "recommend_filterbank"},
++}
++
++TORCH_ONLY = {
++    "core": {
++        # Resampling primitives the torch filterbank core uses internally.
++        "comp_downs",
++        "comp_ups",
++        # Differentiable window/derivative helpers.
++        "pderiv",
++        "psech",
++    },
++    "filters": {
++        # Biquad internals and the NumPy->torch filter converter.
++        "biquad_response",
++        "comp_biquad",
++        "numpy_filters_to_torch",
++    },
++    "phase": {
++        # Lower-level entry points the torch phase modules expose; the NumPy
++        # equivalents are private.
++        "comp_filterbankphasederiv",
++        "comp_filterbankphasegrad",
++        "comp_filterbankreassign",
++        "comp_phasederivfilters_2nd",
++    },
++}
++
++
++# ---------------------------------------------------------------------------
++# Fixture
++# ---------------------------------------------------------------------------
++
++
++@pytest.fixture(scope="module")
++def X():
++    """One redundant, uniform Gabor bank and everything the drivers need from it.
++
++    Uniform on purpose: the RTISIL family is O(frames), and a non-uniform ERB
++    bank at this length puts 864 frames in the lowpass channel, which turns a
++    2-second suite into a 200-second one.  Redundancy 2.1 so that phase
++    retrieval is a real problem — an undercomplete bank makes several of these
++    routines converge trivially and would hide a broken one.
++    """
++    from cool_frames.numpy.filterbanks import filterbank, filterbank_is_real
++    from cool_frames.numpy.filters import filter_freqresp, gabfilters
++    from cool_frames.numpy.filters._tfr import compute_tfr_from_filters
++    from cool_frames.numpy.phase._centerfreq import filter_center_frequencies
++
++    t = np.arange(LS) / FS
++    sig = np.sin(2 * np.pi * (300 * t + 40 * t * t * FS / LS)) + 0.4 * np.sin(2 * np.pi * 1100 * t)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        g, a, fc, L, _info = gabfilters(fs=FS, Ls=LS, M=32, a=8, real=True)
++
++    a_np = np.asarray(a)
++    real = bool(filterbank_is_real(g, a_np, L))
++    c = filterbank(sig, g, a_np, L)
++    mag = [np.abs(np.asarray(cm)) for cm in c]
++
++    G, foff = [], []
++    for gm in g:
++        H, off = filter_freqresp(gm, L)
++        G.append(np.asarray(H))
++        foff.append(int(off))
++
++    return dict(
++        sig=sig,
++        g=g,
++        a=a_np,
++        fc=np.asarray(fc),
++        L=L,
++        real=real,
++        c=c,
++        mag=mag,
++        M=len(g),
++        G=G,
++        foff=np.asarray(foff),
++        F=np.fft.fft(sig, L),
++        realonly=np.zeros(len(g), dtype=bool),
++        N=np.array([len(m) for m in mag]),
++        sqtfr=np.sqrt(np.asarray(compute_tfr_from_filters(g, L), dtype=float)),
++        fc_norm=filter_center_frequencies(g, L),
++        sigma=[np.ones_like(m) for m in mag],
++    )
++
++
++def _t(x):
++    """NumPy -> torch, structure-preserving."""
++    if isinstance(x, list):
++        return [_t(v) for v in x]
++    if isinstance(x, np.ndarray):
++        return torch.as_tensor(x)
++    return x
++
++
++# ---------------------------------------------------------------------------
++# Drivers:  key -> (fixture, backend) -> (args, kwargs)
++# ---------------------------------------------------------------------------
++
++
++def _analysis(X, be):
++    return (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), X["g"], X["a"], X["L"]), {}
++
++
++def _iterative_phase(X, be):
++    m = X["mag"] if be == "numpy" else _t(X["mag"])
++    return (m, X["g"], X["a"]), {"L": X["L"], "Ls": LS, "real": X["real"], "maxit": 3}
++
++
++def _grad_from_mag(X, be):
++    from cool_frames.numpy.phase import comp_filterbankneighbors
++
++    NEIGH, posInfo = comp_filterbankneighbors(X["a"], X["M"], X["N"], True)
++    abss = np.concatenate([m.ravel() for m in X["mag"]])
++    args = (abss, X["N"], X["a"], X["M"], X["sqtfr"], X["fc_norm"], NEIGH, posInfo, 1.0)
++    if be == "torch":
++        args = tuple(torch.as_tensor(v) if isinstance(v, np.ndarray) else v for v in args)
++    return args, {}
++
++
++DRIVERS = {
++    # ---- core -----------------------------------------------------------
++    "core::comp_extBoundary": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), 64, "zero"),
++        {},
++    ),
++    "core::comp_filterbank_fft": lambda X, be: (
++        (
++            X["F"] if be == "numpy" else torch.as_tensor(X["F"]),
++            X["G"] if be == "numpy" else _t(X["G"]),
++            X["a"],
++        ),
++        {},
++    ),
++    "core::comp_filterbank_fftbl": lambda X, be: (
++        (
++            X["F"] if be == "numpy" else torch.as_tensor(X["F"]),
++            X["G"] if be == "numpy" else _t(X["G"]),
++            X["foff"],
++            X["a"],
++            X["realonly"],
++        ),
++        {},
++    ),
++    "core::comp_ifilterbank_fft": lambda X, be: (
++        (
++            X["c"] if be == "numpy" else _t(X["c"]),
++            X["G"] if be == "numpy" else _t(X["G"]),
++            X["a"],
++            X["L"],
++        ),
++        {},
++    ),
++    "core::comp_ifilterbank_fftbl": lambda X, be: (
++        (
++            X["c"] if be == "numpy" else _t(X["c"]),
++            X["G"] if be == "numpy" else _t(X["G"]),
++            X["foff"],
++            X["a"],
++            X["realonly"],
++            X["L"],
++        ),
++        {},
++    ),
++    "core::filterbanklength": lambda X, be: ((LS, X["a"]), {}),
++    # ---- filterbanks ----------------------------------------------------
++    "filterbanks::filterbank": _analysis,
++    "filterbanks::ifilterbank": lambda X, be: (
++        (X["c"] if be == "numpy" else _t(X["c"]), X["g"], X["a"], LS),
++        {"real": X["real"]},
++    ),
++    "filterbanks::filterbankdual": lambda X, be: ((X["g"], X["a"], X["L"]), {"real": X["real"]}),
++    "filterbanks::filterbanktight": lambda X, be: ((X["g"], X["a"], X["L"]), {"real": X["real"]}),
++    "filterbanks::filterbankbounds": lambda X, be: ((X["g"], X["a"], X["L"]), {"real": X["real"]}),
++    "filterbanks::filterbankresponse": lambda X, be: (
++        (X["g"], X["a"], X["L"]),
++        {"real": X["real"]},
++    ),
++    "filterbanks::filterbankfreqz": lambda X, be: ((X["g"], X["a"], X["L"]), {}),
++    "filterbanks::filterbankscale": lambda X, be: ((X["g"], 2.0), {}),
++    "filterbanks::filterbanklengthcoef": lambda X, be: (
++        (X["c"] if be == "numpy" else _t(X["c"]), X["a"]),
++        {},
++    ),
++    "filterbanks::filterbankiter": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), X["g"], X["a"], X["L"]),
++        {"maxit": 20},
++    ),
++    "filterbanks::ifilterbankiter": lambda X, be: (
++        (X["c"] if be == "numpy" else _t(X["c"]), X["g"], X["a"], LS),
++        {"maxit": 20},
++    ),
++    # ---- filters --------------------------------------------------------
++    "filters::audfilters": lambda X, be: ((FS, LS), {"M": 8}),
++    "filters::cqtfilters": lambda X, be: ((FS, LS), {"fmin": 100.0, "bins": 4}),
++    "filters::gabfilters": lambda X, be: ((FS, LS), {"M": 16, "a": 16, "real": True}),
++    "filters::waveletfilters": lambda X, be: ((FS, LS), {"bins": 4}),
++    "filters::warpedfilters": lambda X, be: (
++        (lambda f: np.log(np.maximum(f, 1e-9)), np.exp, FS, 50.0, 1800.0, 4, LS),
++        {},
++    ),
++    "filters::firwin": lambda X, be: (("hann", 64), {}),
++    "filters::filter_freqresp": lambda X, be: ((X["g"][3], X["L"]), {}),
++    "filters::filterbanklength": lambda X, be: ((LS, X["a"]), {}),
++    "filters::biquadfilter": lambda X, be: (
++        (np.array([300.0, 900.0]), np.array([100.0, 200.0])),
++        {"fs": FS},
++    ),
++    # ---- operators ------------------------------------------------------
++    "operators::framemul": lambda X, be: (
++        (
++            X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]),
++            X["g"],
++            X["g"],
++            X["a"],
++            X["sigma"] if be == "numpy" else _t(X["sigma"]),
++            X["L"],
++        ),
++        {"real": X["real"]},
++    ),
++    "operators::framemuladj": lambda X, be: (
++        (
++            X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]),
++            X["g"],
++            X["g"],
++            X["a"],
++            X["sigma"] if be == "numpy" else _t(X["sigma"]),
++            X["L"],
++        ),
++        {"real": X["real"]},
++    ),
++    "operators::framemulinv": lambda X, be: (
++        (
++            X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]),
++            X["g"],
++            X["g"],
++            X["a"],
++            X["sigma"] if be == "numpy" else _t(X["sigma"]),
++            X["L"],
++        ),
++        {"real": X["real"]},
++    ),
++    "operators::framemuleigs": lambda X, be: (
++        (X["g"], X["g"], X["a"], X["sigma"] if be == "numpy" else _t(X["sigma"]), X["L"], 4),
++        {"real": X["real"]},
++    ),
++    "operators::framemulappr": lambda X, be: (
++        (
++            np.eye(X["L"]) if be == "numpy" else torch.eye(X["L"], dtype=torch.float64),
++            X["g"],
++            X["g"],
++            X["a"],
++            X["L"],
++        ),
++        {"real": X["real"]},
++    ),
++    # ---- phase ----------------------------------------------------------
++    "phase::gla": _iterative_phase,
++    "phase::legla": _iterative_phase,
++    "phase::rtisila": _iterative_phase,
++    "phase::gsrtisila": _iterative_phase,
++    "phase::lertisila": _iterative_phase,
++    "phase::decolbfgs": _iterative_phase,
++    "phase::spsi": lambda X, be: (
++        (X["mag"] if be == "numpy" else _t(X["mag"]), X["a"], X["fc_norm"], 1.0),
++        {},
++    ),
++    # A *non-degenerate* argument pair on purpose.  Passing (c, |c|) makes both
++    # backends return ~0 by construction, and two different flavours of zero
++    # compare badly in relative terms while proving nothing.
++    "phase::magnitudeerr": lambda X, be: _metric_args(X, be),
++    "phase::magnitudeerrdb": lambda X, be: _metric_args(X, be),
++    "phase::filterbankphasegrad": _analysis,
++    "phase::filterbankphasederiv": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), X["g"], X["a"]),
++        {"L": X["L"]},
++    ),
++    "phase::filterbankreassign": _analysis,
++    "phase::filterbanksynchrosqueeze": _analysis,
++    "phase::filterbankconstphase": _analysis,
++    "phase::comp_filterbankneighbors": lambda X, be: ((X["a"], X["M"], X["N"], True), {}),
++    "phase::comp_filterbankphasegradfrommag": _grad_from_mag,
++    # ---- sigproc / diagnostics ------------------------------------------
++    "sigproc::thresh": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), 0.3),
++        {"mode": "soft"},
++    ),
++    "diagnostics::filterbank_spectrogram": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), FS),
++        {},
++    ),
++    "diagnostics::reassigned_spectrogram": lambda X, be: (
++        (X["sig"] if be == "numpy" else torch.as_tensor(X["sig"]), FS),
++        {},
++    ),
++}
++
++
++def _metric_args(X, be):
++    pert = [m * (1 + 0.05 * np.sin(np.arange(m.size))) for m in X["mag"]]
++    if be == "numpy":
++        return (X["c"], pert), {}
++    return (_t(X["c"]), _t(pert)), {}
++
++
++# Shared symbols compared *structurally* rather than element-wise, each with the
++# reason and the test that covers them instead.
++STRUCTURAL_ONLY = {
++    # `decolbfgs` runs an L-BFGS line search, and NumPy's (scipy) and torch's
++    # differ, so the two legitimately land in different local minima.  Covered
++    # by test_decolbfgs_agrees_in_quality_not_in_iterates.
++    "phase::decolbfgs",
++}
++
++
++# ---------------------------------------------------------------------------
++# Comparison
++# ---------------------------------------------------------------------------
++
++
++def _is_filter_list(o):
++    return isinstance(o, list) and o and all(isinstance(x, dict) and "H" in x for x in o)
++
++
++def _filters_to_array(g, L):
++    """Evaluate a filter list to its frequency responses.
++
++    Filter dicts are not comparable field-by-field across backends: NumPy leaves
++    ``H`` as a *callable* for the auditory, CQT and wavelet designers and
++    materialises it for Gabor, while torch materialises everything as a tensor.
++    Both describe the same filter.  Evaluating is the comparison that means
++    something.
++    """
++    from cool_frames.numpy.filters import filter_freqresp
++
++    out = []
++    for gm in g:
++        gm_np = dict(gm)
++        H = gm_np.get("H")
++        if isinstance(H, torch.Tensor):
++            gm_np["H"] = H.detach().cpu().numpy()
++        foff = gm_np.get("foff")
++        if isinstance(foff, torch.Tensor):
++            gm_np["foff"] = int(foff.item())
++        Hf, off = filter_freqresp(gm_np, L)
++        buf = np.zeros(L, dtype=complex)
++        Hf = np.asarray(Hf).ravel()
++        idx = (np.arange(len(Hf)) + int(off)) % L
++        buf[idx] = Hf
++        out.append(buf)
++    return np.concatenate(out)
++
++
++def _designer_L(o):
++    """The ``L`` inside a designer's own return tuple, if this is one.
++
++    The filter designers return ``(g, a, fc, L, info)``, so when the object under
++    comparison *is* a designer's output, its own ``L`` is authoritative and
++    nothing needs inferring.
++    """
++    if len(o) >= 4 and _is_filter_list(o[0]) and isinstance(o[3], (int, np.integer)):
++        return int(o[3])
++    return None
++
++
++def _natural_L(*objs):
++    """The length at which to evaluate a pair of filter lists.
++
++    A filter list is only meaningful at *its own* ``L``, and neither side
++    carries it: NumPy leaves ``H`` as a callable that will regenerate at
++    whatever length it is asked for, and torch materialises ``H`` at the length
++    the designer chose.  So the materialised side is the one that knows, and its
++    ``len(H)`` is the answer.
++
++    Getting this wrong is not a loud failure, it is a *false alarm*: evaluating
++    an ``audfilters`` bank at the fixture's L = 512 instead of the designer's
++    L = 648 reports a 7.6e-2 divergence for two banks that agree to 0.0 channel
++    by channel.  A parity harness that cries wolf gets muted, so the length is
++    derived rather than assumed, and ``None`` is returned when neither side can
++    say — in which case the filter list is skipped and the caller is told.
++    """
++    lengths = []
++    for o in objs:
++        if not _is_filter_list(o):
++            continue
++        for gm in o:
++            H = gm.get("H")
++            if isinstance(H, torch.Tensor):
++                lengths.append(int(H.numel()))
++            elif isinstance(H, np.ndarray) and H.ndim == 1 and H.size:
++                lengths.append(int(H.size))
++    # Only when every materialised response has the *same* length is that length
++    # an ``L``.  Filters stored at their compact support have per-channel lengths
++    # (11, 17, 19, 21, ... for an ERB bank), and picking any one of them — first,
++    # longest, whatever — evaluates the two sides at different things and reports
++    # a 5.4e-2 divergence between banks that are identical.  When the lengths
++    # disagree, the honest answer is that this object does not say what L is.
++    if not lengths:
++        return None
++    return lengths[0] if len(set(lengths)) == 1 else None
++
++
++def _flatten(o, L, other=None, L_authoritative=False):
++    """Anything -> a flat complex array, or None if it carries no numbers.
++
++    ``other`` is the corresponding object from the *other* backend, used only to
++    resolve the evaluation length of a filter list (see :func:`_natural_L`).
++    """
++    if o is None or isinstance(o, str) or callable(o):
++        return None
++    if _is_filter_list(o):
++        # An L that came from the object's own designer tuple wins over anything
++        # inferred from the filters.  Where neither is available the filter list
++        # is *skipped* rather than evaluated at a guessed length — see
++        # ``test_filter_lists_without_a_known_L_are_skipped_not_guessed`` for why
++        # that loses no coverage.
++        if L_authoritative:
++            return _filters_to_array(o, L)
++        use_L = _natural_L(o, other)
++        return None if use_L is None else _filters_to_array(o, use_L)
++    if isinstance(o, torch.Tensor):
++        o = o.detach().cpu().numpy()
++    if isinstance(o, (bool, np.bool_)):
++        return np.atleast_1d(np.asarray(float(o), dtype=complex))
++    if isinstance(o, (int, float, complex, np.number)):
++        return np.atleast_1d(np.asarray(o, dtype=complex))
++    if isinstance(o, np.ndarray):
++        return np.asarray(o).ravel().astype(complex)
++    if isinstance(o, dict):
++        keys = sorted(o)
++        parts = [
++            _flatten(o[k], L, other.get(k) if isinstance(other, dict) else None) for k in keys
++        ]
++    elif isinstance(o, (list, tuple)):
++        oth = (
++            other if isinstance(other, (list, tuple)) and len(other) == len(o) else [None] * len(o)
++        )
++        dL = _designer_L(o)
++        inner_L = L if dL is None else dL
++        parts = [_flatten(v, inner_L, w, L_authoritative=dL is not None) for v, w in zip(o, oth)]
++    else:
++        try:
++            return np.atleast_1d(np.asarray(o)).ravel().astype(complex)
++        except Exception:
++            return None
++    parts = [p for p in parts if p is not None and p.size]
++    return np.concatenate(parts) if parts else None
++
++
++def _relerr(an, at):
++    scale = max(float(np.max(np.abs(an))) if an.size else 0.0, 1e-30)
++    return float(np.max(np.abs(an - at))) / scale if an.size else 0.0
++
++
++# ---------------------------------------------------------------------------
++# Surface enumeration
++# ---------------------------------------------------------------------------
++
++
++def _surface():
++    """{subpackage: {'numpy': {names}, 'torch': {names}}} for the public API."""
++    out = {}
++    for s in SUBPACKAGES:
++        row = {}
++        for be in ("numpy", "torch"):
++            m = importlib.import_module(f"cool_frames.{be}.{s}")
++            names = getattr(m, "__all__", None)
++            if names is None:
++                names = [n for n in dir(m) if not n.startswith("_")]
++            row[be] = {n for n in names if callable(getattr(m, n, None))}
++        out[s] = row
++    return out
++
++
++def _shared():
++    return sorted(
++        f"{s}::{n}" for s, row in _surface().items() for n in (row["numpy"] & row["torch"])
++    )
++
++
++# ---------------------------------------------------------------------------
++# The two enforcement tests — the reason this file does not rot
++# ---------------------------------------------------------------------------
++
++
++def test_public_surface_divergence_is_recorded():
++    """The set of names in one backend and not the other must match the record.
++
++    This is the test that catches "added to NumPy, forgotten in torch" on the
++    day it happens rather than two releases later.  It fails in *both*
++    directions: a new divergence fails because it is not in the record, and a
++    divergence that gets resolved fails because the record still claims it.
++    Either way the answer is to edit ``NUMPY_ONLY`` / ``TORCH_ONLY`` deliberately
++    and say why in the comment.
++    """
++    surface = _surface()
++    problems = []
++    for s, row in surface.items():
++        actual_n = row["numpy"] - row["torch"]
++        actual_t = row["torch"] - row["numpy"]
++        rec_n = NUMPY_ONLY.get(s, set())
++        rec_t = TORCH_ONLY.get(s, set())
++
++        for name in sorted(actual_n - rec_n):
++            problems.append(
++                f"  {s}.{name}: exists in NumPy only and is not recorded. "
++                f"Either implement it for torch, or add it to NUMPY_ONLY['{s}'] with a reason."
++            )
++        for name in sorted(actual_t - rec_t):
++            problems.append(
++                f"  {s}.{name}: exists in torch only and is not recorded. "
++                f"Either implement it for NumPy, or add it to TORCH_ONLY['{s}'] with a reason."
++            )
++        for name in sorted(rec_n - actual_n):
++            problems.append(
++                f"  {s}.{name}: recorded as NumPy-only but is no longer. "
++                f"Remove it from NUMPY_ONLY['{s}'] — and add a driver, since it is now shared."
++            )
++        for name in sorted(rec_t - actual_t):
++            problems.append(
++                f"  {s}.{name}: recorded as torch-only but is no longer. "
++                f"Remove it from TORCH_ONLY['{s}'] — and add a driver, since it is now shared."
++            )
++
++    assert not problems, "the backends' public surfaces have drifted:\n" + "\n".join(problems)
++
++
++def test_every_shared_symbol_has_a_parity_driver():
++    """No shared symbol may go uncompared.
++
++    A driver is three lines.  The alternative — a symbol that exists in both
++    backends and is compared by nothing — is the exact condition under which
++    all six of the recorded defects survived.
++    """
++    shared = set(_shared())
++    missing = sorted(shared - set(DRIVERS))
++    stale = sorted(set(DRIVERS) - shared)
++
++    assert not missing, (
++        "these symbols exist in both backends but have no parity driver:\n"
++        + "\n".join(f"  {k}" for k in missing)
++        + "\n\nAdd an entry to DRIVERS mapping (fixture, backend) -> (args, kwargs)."
++    )
++    assert not stale, "these DRIVERS entries no longer name a shared symbol:\n" + "\n".join(
++        f"  {k}" for k in stale
++    )
++
++
++# ---------------------------------------------------------------------------
++# The comparison itself
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("key", sorted(DRIVERS))
++def test_backends_agree(key, X):
++    """Drive one shared symbol in both backends and compare the results.
++
++    Both backends run in float64, so the bar is 1e-8 relative — six orders of
++    magnitude of slack over accumulated rounding, and tight enough that a
++    float32 path (which is how ``spsi`` was failing, at 8.8e-6) cannot hide.
++    """
++    sub, name = key.split("::")
++    drv = DRIVERS[key]
++
++    outs = {}
++    for be in ("numpy", "torch"):
++        mod = importlib.import_module(f"cool_frames.{be}.{sub}")
++        args, kwargs = drv(X, be)
++        with warnings.catch_warnings():
++            warnings.simplefilter("ignore")
++            outs[be] = getattr(mod, name)(*args, **kwargs)
++
++    an = _flatten(outs["numpy"], X["L"], outs["torch"])
++    at = _flatten(outs["torch"], X["L"], outs["numpy"])
++
++    if an is None and at is None:
++        pytest.skip(f"{key}: neither backend returns comparable numbers")
++
++    assert an is not None and at is not None, (
++        f"{key}: one backend returned comparable numbers and the other did not "
++        f"(numpy {'None' if an is None else an.shape}, torch {'None' if at is None else at.shape})"
++    )
++
++    if key in STRUCTURAL_ONLY:
++        return  # shape agreement is all that is claimed; see the dedicated test
++
++    assert an.shape == at.shape, f"{key}: numpy returned {an.shape}, torch returned {at.shape}"
++    err = _relerr(an, at)
++    assert err < RTOL, (
++        f"{key}: backends differ by {err:.3e} relative (tolerance {RTOL:.0e}). "
++        f"Both run in float64; an error this size is an algorithmic difference, "
++        f"not rounding. Check for int-tensor/Python-float promotion (which "
++        f"silently drops to the default dtype, float32) before assuming otherwise."
++    )
++
++
++# ---------------------------------------------------------------------------
++# The exceptions, each with its own claim
++# ---------------------------------------------------------------------------
++
++
++def test_decolbfgs_agrees_in_quality_not_in_iterates(X):
++    """``decolbfgs`` is allowed to differ, but only within a bound, and not silently.
++
++    NumPy's L-BFGS and torch's are different implementations with different line
++    searches, so the two backends legitimately land in different local minima of
++    the same non-convex problem.  What is *not* legitimate is an arbitrary gap,
++    so the claim made here is on the outcome: both must reach comparable
++    consistency.
++
++    Also pinned: the two keep different iteration histories.  For ``maxit=3``
++    NumPy returns four ``relres`` entries and torch five, and the values diverge
++    from the first iterate (0.880 vs 0.915) while both report ``niter=3``.  A
++    caller plotting convergence gets a different curve per backend. Recorded
++    rather than fixed — reconciling the bookkeeping is a return-contract change,
++    like the RTISIL ``relres`` question.
++    """
++    import cool_frames.numpy.phase as NP
++    import cool_frames.torch.phase as TP
++    from cool_frames.numpy.filterbanks import filterbank, filterbankdual, ifilterbank
++    from cool_frames.numpy.phase import magnitudeerrdb
++
++    kw = dict(L=X["L"], Ls=LS, real=X["real"], maxit=3)
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        cn, _fn, rn, itn = NP.decolbfgs(X["mag"], X["g"], X["a"], **kw)
++        ct, _ft, rt, itt = TP.decolbfgs(_t(X["mag"]), X["g"], X["a"], **kw)
++
++    gd = filterbankdual(X["g"], X["a"], X["L"], real=X["real"])
++
++    def consistency(coefs):
++        coefs = [np.asarray(x.detach().cpu() if hasattr(x, "detach") else x) for x in coefs]
++        f = ifilterbank(coefs, gd, X["a"], LS, real=X["real"])
++        return float(
++            magnitudeerrdb(filterbank(np.real(np.asarray(f)), X["g"], X["a"], X["L"]), X["mag"])
++        )
++
++    en, et = consistency(cn), consistency(ct)
++    assert en < 0.0 and et < 0.0, (
++        f"decolbfgs retrieved no phase: numpy {en:.2f} dB, torch {et:.2f} dB"
++    )
++    assert abs(en - et) < 3.0, (
++        f"decolbfgs backends reached {en:.2f} dB and {et:.2f} dB — a gap this large is "
++        "more than two line searches disagreeing"
++    )
++
++    # The bookkeeping divergence, pinned.
++    rn = np.atleast_1d(np.asarray(rn))
++    rt = np.atleast_1d(np.asarray(rt.detach().cpu() if hasattr(rt, "detach") else rt))
++    assert int(itn) == int(itt) == 3, "both backends should report the requested iteration count"
++    assert len(rn) != len(rt), (
++        "decolbfgs's relres histories are now the same length — if the bookkeeping was "
++        "reconciled, delete this assertion and document the change in the return contract"
++    )
++
++
++def test_filter_lists_are_compared_by_response_not_by_representation(X):
++    """Guard the comparator's own assumption, so a silent no-op cannot creep in.
++
++    ``_filters_to_array`` is what lets the designers be compared at all: NumPy
++    stores ``H`` as a callable for audfilters/cqtfilters/waveletfilters and
++    torch materialises it, so a field-by-field comparison would either fail on
++    every designer or, worse, quietly compare nothing. This asserts the
++    evaluation path is actually reached and actually produces numbers.
++    """
++    from cool_frames.numpy.filters import audfilters as np_aud
++    from cool_frames.torch.filters import audfilters as t_aud
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        gn, _a, _fc, L, _i = np_aud(FS, LS, M=8)
++        gt, _a2, _fc2, _L2, _i2 = t_aud(FS, LS, M=8)
++
++    assert _is_filter_list(gn) and _is_filter_list(gt), (
++        "fixture assumption: both return filter lists"
++    )
++    assert any(callable(g["H"]) for g in gn), (
++        "NumPy audfilters no longer stores H lazily — the comparator's reason for existing "
++        "has changed; check whether _filters_to_array is still needed"
++    )
++    arr_n, arr_t = _filters_to_array(gn, L), _filters_to_array(gt, L)
++    assert arr_n.size > 0 and arr_n.shape == arr_t.shape
++    assert np.max(np.abs(arr_n)) > 0, (
++        "evaluated filter responses are all zero — comparator is a no-op"
++    )
++
++
++def test_filter_lists_without_a_known_L_are_skipped_not_guessed(X):
++    """The one place the comparator declines to compare, and why that is safe.
++
++    ``filterbank_spectrogram`` returns its filter list in a plain dict, with no
++    ``L`` anywhere in the return value, and the torch side materialises each
++    filter at its own compact support (11, 17, 19, 21, ... bins for an ERB bank)
++    rather than at full band.  There is therefore no length at which the two
++    lists can be evaluated against each other, and ``_flatten`` skips them.
++
++    That is safe for one specific reason, asserted here rather than assumed:
++    ``coeff_db`` *is* the filters applied to a signal.  A divergence in the bank
++    could not survive in the coefficients, and the coefficients are compared to
++    1e-14.  This test fails if that stops being true — if ``coeff_db`` ever
++    disappears from the return value, or stops being derived from ``g`` — at
++    which point the skip becomes a real gap and the comparator needs an L.
++    """
++    import cool_frames.numpy.diagnostics as ND
++    import cool_frames.torch.diagnostics as TD
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        sn = ND.filterbank_spectrogram(X["sig"], FS)
++        st = TD.filterbank_spectrogram(torch.as_tensor(X["sig"]), FS)
++
++    assert _is_filter_list(sn["g"]) and _is_filter_list(st["g"])
++    assert _natural_L(sn["g"], st["g"]) is None, (
++        "the filter lists now agree on a single materialised length — the comparator "
++        "can evaluate them, so remove this exemption and let test_backends_agree cover it"
++    )
++
++    # The claim that makes the skip safe.
++    cn = np.asarray(sn["coeff_db"])
++    ct = np.asarray(st["coeff_db"].detach().cpu())
++    assert cn.size > 0 and cn.shape == ct.shape, "coeff_db must be present and comparable"
++    assert _relerr(cn.ravel().astype(complex), ct.ravel().astype(complex)) < RTOL, (
++        "coeff_db no longer agrees — the filter banks differ after all, and the skipped "
++        "filter-list comparison is now a real gap"
++    )
++
++
++@pytest.mark.parametrize("backend", ["numpy", "torch"])
++def test_framemuleigs_is_reproducible(backend, X):
++    """The same multiplier must give the same eigenvalues twice.
++
++    ``framemuleigs`` falls back to ARPACK (``scipy.sparse.linalg.eigsh``) for
++    large ``L``, and ARPACK starts from a *random* vector unless it is given
++    one.  Both backends called it without a ``v0``, so both returned a different
++    answer run to run — measured 3.83465916 against 3.84270865 for the same
++    fourth eigenvalue, 2e-3 apart, an unconverged iterate on one draw and a
++    converged one on the next.  Frame multipliers have degenerate spectra
++    whenever ``sigma`` is constant, which is the common case, so this was not a
++    corner.
++
++    This test exists separately from ``test_backends_agree`` because the parity
++    comparison only catches non-determinism *when the dice fall badly* — it
++    passed on one run and failed on the next while the defect was present.  A
++    property this file asserts must not depend on luck, so reproducibility is
++    checked directly, by calling twice and demanding bit-identical output.
++    """
++    if backend == "torch":
++        sigma = _t(X["sigma"])
++        import cool_frames.torch.operators as mod
++    else:
++        sigma = X["sigma"]
++        import cool_frames.numpy.operators as mod
++
++    def run():
++        with warnings.catch_warnings():
++            warnings.simplefilter("ignore")
++            out = mod.framemuleigs(X["g"], X["g"], X["a"], sigma, X["L"], 4, real=X["real"])
++        return np.asarray(out.detach().cpu() if hasattr(out, "detach") else out).ravel()
++
++    first, second = run(), run()
++    assert np.array_equal(first, second), (
++        f"{backend}.framemuleigs returned different eigenvalues on two identical calls:\n"
++        f"  {first}\n  {second}\n"
++        "The iterative eigensolver needs a deterministic start vector (v0)."
++    )

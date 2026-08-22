@@ -28,7 +28,11 @@ def filterbankconstphase(
     fgrad: list | None = None,
     sqtfr: np.ndarray | None = None,
     fs: float | None = None,
-    rng: object | None = None,
+    # `object | None` here made CI's mypy step fail: the NumPy function this
+    # forwards to declares `np.random.Generator | int | None`, and `object` is
+    # not assignable to it.  The wrapper should state the same contract as the
+    # thing it wraps.
+    rng: np.random.Generator | int | None = None,
 ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
     """Phase reconstruction using heap-based PGHI (wraps NumPy).
 
