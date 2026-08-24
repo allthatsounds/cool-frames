@@ -3,8 +3,11 @@ torch/phase/_constphase.py
 ===========================
 Heap-based phase reconstruction (PGHI) — wraps the NumPy implementation.
 
-This is the non-differentiable "reference" version.  For a differentiable
-pipeline, use :func:`constphase_nonuniform` from ``_diff_constphase.py``.
+This is the non-differentiable "reference" version: the heap traversal order
+is a discrete function of the magnitudes, so there is no gradient to take.
+For a phase-retrieval step inside a training graph, use
+:func:`cool_frames.torch.phase.gla`, which is a native torch port and is
+differentiable with respect to the input magnitudes.
 """
 
 from __future__ import annotations
@@ -37,8 +40,16 @@ def filterbankconstphase(
     """Phase reconstruction using heap-based PGHI (wraps NumPy).
 
     This delegates to the NumPy heap-based implementation, so it is
-    **not** differentiable.  Use :func:`constphase_nonuniform` for a
-    differentiable alternative.
+    **not** differentiable: the returned tensors are fresh leaves with no
+    ``grad_fn``, and calling ``.backward()`` through them raises.  Use
+    :func:`cool_frames.torch.phase.gla` when the phase step has to sit inside
+    a training graph, or freeze this output as a constant phase and let the
+    gradient flow through the magnitude factor only.
+
+    Only the signal path is available here: ``g`` is converted with
+    ``_torch_filters_to_numpy``, so the NumPy magnitude-path convention
+    (``filterbankconstphase(magnitudes, hops, fc)``) is not reachable through
+    this wrapper.  Call the NumPy function directly for that.
 
     Parameters
     ----------

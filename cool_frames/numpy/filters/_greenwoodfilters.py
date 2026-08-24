@@ -375,7 +375,17 @@ def greenwoodfilters(
         min_win=min_win,
     )
 
-    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "greenwoodfilters"}
+    from ..diagnostics.admissibility import check_admissible
+
+    admissible = check_admissible(
+        fc_arr[1:-1], fsupp[1:-1], fs=fs, L=int(L),
+        fsupp_dc=fsupp_lp, fsupp_nyq=fsupp_hp,
+        min_win=min_win, window=window, designer="greenwoodfilters")
+
+    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "greenwoodfilters",
+            "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
+            "fsupp_dc": float(fsupp_lp), "fsupp_nyq": float(fsupp_hp),
+            "admissible": admissible}
     return g_list, a, fc_arr, int(L), info  # type: ignore[return-value]
 
 

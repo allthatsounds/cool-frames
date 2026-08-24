@@ -23,6 +23,162 @@ from ._edge_filters import (
 )
 from ._freqwavelet import freqwavelet
 
+
+# ---------------------------------------------------------------------------
+# Helper: painless hop caps
+# ---------------------------------------------------------------------------
+
+def _painless_caps(winCell, L: int, scales, trunc_at: float, basefc: float,
+                   aprecise, lp_num: int, M2: int,
+                   quantise: bool = True) -> np.ndarray:
+    r"""Per-channel painless hop caps :math:`a_m \le \lfloor L / W_m \rfloor`.
+
+    A filterbank's frame operator is diagonal in frequency -- the *painless*
+    case, and the only case in which :func:`filterbankdual` /
+    :func:`filterbanktight` are exact -- when every channel's frequency
+    support fits inside one alias-free period, i.e. ``W_m <= L / a_m``.
+
+    ``W_m`` is measured, not modelled: the channel is realised at this ``L``
+    and its live bins counted.  A modelled width would have to reproduce
+    ``freqwavelet``'s rounding, and it is exactly that kind of near-miss that
+    leaves a bank one bin short of painless with no symptom other than a bad
+    dual.
+
+    The lowpass channels have no ``freqwavelet`` realisation at this point, so
+    their bandwidth is bounded by ``aprecise`` (which is what sets it).  That
+    bound is loose; the realised bank is re-checked at the end of
+    :func:`waveletfilters` and a violation there is reported.
+
+    ``quantise`` rounds each cap DOWN to a ``floor23`` (:math:`2^i 3^j`) value
+    so integer hops share factors and ``lcm(a) -> L`` stays small.  Rounding
+    down can only strengthen the inequality.  Rational (``fractional``) hops
+    need no such quantisation and pass ``quantise=False``.
+    """
+    gl_tmp, _ = freqwavelet(
+        winCell, L, scales,
+        output_format="asfreqfilter",
+        efsuppthr=trunc_at,
+        basefc=basefc,
+    )
+    if not isinstance(gl_tmp, list):
+        gl_tmp = [gl_tmp]
+    widths = np.empty(len(gl_tmp), dtype=int)
+    for j, gm in enumerate(gl_tmp):
+        Hj = np.asarray(gm["H"](L)).ravel()
+        nz = np.flatnonzero(np.abs(Hj) > 1e-10)
+        widths[j] = (nz[-1] - nz[0] + 1) if nz.size else 1
+
+    caps = np.empty(M2, dtype=float)
+    for k in range(lp_num):
+        caps[k] = max(1.0, math.floor(L / max(1.0, float(aprecise[k]))))
+    caps[lp_num:M2] = np.maximum(1, (L // np.maximum(widths, 1)))
+    if quantise:
+        caps = np.array([max(1, floor23(int(c))) for c in caps], dtype=float)
+    return caps
+
+
+def _painless_ratio(g: list[dict], a, L: int) -> tuple[float, int]:
+    """Worst realised ``a_m * W_m / L`` over the finished bank, and the count
+    of channels above 1.
+
+    This is the same inequality :func:`_painless_caps` enforces, but measured
+    on the bank that is actually returned -- after the lowpass and Nyquist
+    complements have been appended and after ``redtar`` has rewritten the
+    hops.  Those later steps are exactly where a cap applied mid-design stops
+    being a guarantee.
+    """
+    a_arr = np.asarray(a, dtype=float)
+    if a_arr.ndim == 2:
+        a_rat = a_arr[:, 0] / a_arr[:, 1]
+    else:
+        a_rat = a_arr.ravel()
+    worst = 0.0
+    nbad = 0
+    for m, gm in enumerate(g):
+        H = gm.get("H")
+        if H is None:
+            continue
+        Hm = np.asarray(H(L) if callable(H) else H).ravel()
+        nz = np.flatnonzero(np.abs(Hm) > 1e-10)
+        if not nz.size:
+            continue
+        W = int(nz[-1] - nz[0] + 1)
+        r = float(a_rat[m % len(a_rat)]) * W / L
+        worst = max(worst, r)
+        # One bin of slack: several designers emit L/a + 1 bins by
+        # construction and are painless in practice.
+        if W > L / float(a_rat[m % len(a_rat)]) + 1:
+            nbad += 1
+    return worst, nbad
+
+
+def _repair_complement_hops(g: list[dict], a, L: int) -> int:
+    r"""Lower any channel's hop until it meets its own painless limit.
+
+    :func:`_painless_caps` runs while the hops are being chosen, but the DC
+    lowpass and the Nyquist highpass complements are *appended afterwards* and
+    simply inherit the smallest wavelet hop.  A complement is wide by
+    construction -- it spans everything the wavelets left uncovered -- so on a
+    sparse scale set it can arrive several times over its limit while every
+    wavelet channel is comfortably inside.  At ``fs = 8000``, ``Ls = 1024``,
+    24 scales at 6/octave the Nyquist complement occupied 1113 of 1728 bins at
+    ``a = 6``: ``aW/L = 3.87``, and the exact oracle put the lower frame bound
+    at 0 while the diagonal estimator reported a healthy ``kappa = 4.4``.
+
+    Lowering a hop never invalidates the painless inequality for any other
+    channel, so this is a safe local repair.  Two constraints shape it:
+
+    * ``L`` must stay a whole number of hops, so an integer hop is lowered to
+      the largest **divisor of L** that is within the limit rather than to the
+      limit itself.  (Rational ``[L, N]`` hops are divisor-free: raising ``N``
+      is enough.)
+    * ``g[m]["H"]`` was scaled by ``sqrt(a_m)``, the package's per-channel
+      energy convention, so changing the hop without rescaling would leave the
+      channel with the gain of a hop it no longer has.  The response is
+      rescaled by ``sqrt(a_new / a_old)`` to keep the convention intact.
+
+    Returns the number of channels repaired.
+    """
+    a_arr = np.asarray(a)
+    fixed = 0
+    for m, gm in enumerate(g):
+        H = gm.get("H")
+        if H is None:
+            continue
+        Hm = np.asarray(H(L) if callable(H) else H).ravel()
+        nz = np.flatnonzero(np.abs(Hm) > 1e-10)
+        if not nz.size:
+            continue
+        W = int(nz[-1] - nz[0] + 1)
+        if a_arr.ndim == 2:
+            a_old = float(a_arr[m, 0]) / float(a_arr[m, 1])
+            if W <= L / a_old + 1:
+                continue
+            a_arr[m, 1] = max(int(a_arr[m, 1]), W)
+            a_new_m = float(a_arr[m, 0]) / float(a_arr[m, 1])
+        else:
+            a_old = float(a_arr[m])
+            if W <= L / a_old + 1:
+                continue
+            cap = max(1, int(L // W))
+            d = cap
+            while d > 1 and L % d:
+                d -= 1
+            if d >= a_old:
+                continue
+            a_arr[m] = d
+            a_new_m = float(d)
+        s = math.sqrt(a_new_m / a_old)
+        if callable(H):
+            # Keep it lazy: some channels build their response from L, and
+            # freezing it here would pin the filter to this one length.
+            gm["H"] = (lambda fn, sc: lambda Lq: np.asarray(fn(Lq)) * sc)(H, s)
+        else:
+            gm["H"] = Hm * s
+        fixed += 1
+    return fixed
+
+
 # ---------------------------------------------------------------------------
 # Helper: comp_filterbank_a
 # ---------------------------------------------------------------------------
@@ -209,6 +365,30 @@ def _wavelet_lowpass_repeat(winCell, scales_sorted_2, L, lowpass_number,
 
 
 # ---------------------------------------------------------------------------
+# Helper: exact bin intervals for the admissibility predictor
+# ---------------------------------------------------------------------------
+
+def _bins_to_linear(A: int, W: int, fs: float, L: int) -> list[tuple[float, float]]:
+    """``(fc, fsupp)`` pairs in Hz covering exactly the ``W`` bins from ``A``.
+
+    ``predict_admissible``'s linear rule puts an interval of
+    ``odd(round(L*fsupp/fs))`` bins centred on bin ``round(L*fc/fs)``, so a
+    single pair can only express an *odd* number of bins.  An even-width
+    channel is therefore split into two odd intervals offset by one bin,
+    whose union is exactly ``[A, A+W-1]``.
+    """
+    if W <= 0:
+        return []
+    if W % 2 == 1:
+        return [((A + W // 2) * fs / L, W * fs / L)]
+    if W == 2:
+        return [(A * fs / L, fs / L), ((A + 1) * fs / L, fs / L)]
+    Wp = W - 1
+    return [((A + Wp // 2) * fs / L, Wp * fs / L),
+            ((A + 1 + Wp // 2) * fs / L, Wp * fs / L)]
+
+
+# ---------------------------------------------------------------------------
 # Helpers: merge info dicts
 # ---------------------------------------------------------------------------
 
@@ -251,7 +431,7 @@ def waveletfilters(
     scales=None,
     wavelet=None,
     sampling: str = "regsampling",
-    painless: bool = False,
+    painless: bool = True,
     lowpass: str = "single",
     highpass: str = "auto",
     freqrange: str = "real",
@@ -306,13 +486,37 @@ def waveletfilters(
         ``'regsampling'``, ``'uniform'``, ``'fractional'``,
         ``'fractionaluniform'``.
     painless : bool
-        Hop strategy for ``sampling='regsampling'`` only (no-op otherwise).
-        ``False`` (default) keeps the aggressive ``floor23`` + lcm-reduction
-        heuristic, which is fast but may NOT form a frame (``A`` can be ~0) for
-        some scale sets -- acceptable when a tight frame is not required.
-        ``True`` caps each channel's hop at its painless limit
-        (``a_m <= floor(L / W_m)``, ``W_m`` = that channel's DFT-bin support)
-        so the bank is a guaranteed frame (``A > 0``).
+        Hop strategy.  ``True`` (default) caps each channel's hop at its
+        painless limit (``a_m <= floor(L / W_m)``, ``W_m`` = that channel's
+        measured DFT-bin support), which makes the frame operator diagonal in
+        frequency and therefore makes :func:`filterbankdual` /
+        :func:`filterbanktight` exact.
+
+        ``False`` keeps the aggressive ``floor23`` + lcm-reduction heuristic:
+        roughly 6x cheaper in coefficients, and fine for analysis-only work
+        (scalograms, feature extraction), but the resulting bank is **not**
+        painless and its diagonal dual does not reconstruct.  At
+        ``fs = 8000``, ``Ls = 4096``, 64 geometric scales the two settings
+        measure:
+
+        =============  ===========  =============  ==================
+        ``painless``   redundancy   ``max aW/L``   round-trip error
+        =============  ===========  =============  ==================
+        ``True``       8.98         0.98           4.9e-16
+        ``False``      1.39         22.8           7.5e-01
+        =============  ===========  =============  ==================
+
+        With ``painless=False`` use :func:`ifilterbankiter` (iterative,
+        exact) rather than :func:`filterbankdual` if you need to invert.
+
+        .. versionchanged:: 0.1.1
+           The default was ``False``.  It produced a bank whose canonical dual
+           lost 75 % of the signal with no warning, which is not a defensible
+           default for a designer whose siblings (``audfilters``,
+           ``cqtfilters``, ``greenwoodfilters``) all reconstruct to 5e-16 out
+           of the box.  ``painless`` is also now honoured by ``'uniform'``,
+           ``'fractional'`` and ``'fractionaluniform'``; it used to be
+           silently ignored by all three.
     lowpass : str
         ``'single'``, ``'repeat'``, ``'none'``.
     highpass : str
@@ -487,27 +691,8 @@ def waveletfilters(
             # The support widths scale ~linearly with L, so one re-solve of L
             # after capping converges; we iterate a couple of times for safety.
             for _ in range(3):
-                gl_tmp, _ = freqwavelet(
-                    winCell, L, scales,
-                    output_format="asfreqfilter",
-                    efsuppthr=trunc_at,
-                    basefc=basefc,
-                )
-                if not isinstance(gl_tmp, list):
-                    gl_tmp = [gl_tmp]
-                widths = np.empty(M, dtype=int)
-                for j, gm in enumerate(gl_tmp):
-                    Hj = np.asarray(gm["H"](L)).ravel()
-                    nz = np.flatnonzero(np.abs(Hj) > 1e-10)
-                    widths[j] = (nz[-1] - nz[0] + 1) if nz.size else 1
-                caps = np.empty(M2, dtype=int)
-                for k in range(lp_num):
-                    caps[k] = max(1, int(math.floor(L / max(1.0, aprecise[k]))))
-                caps[lp_num:M2] = np.maximum(1, (L // np.maximum(widths, 1)))
-                # Round each cap DOWN to a floor23 (2^i*3^j) value so the hops
-                # share factors and lcm(a) -> L stays small; floor23 of cap is
-                # always <= cap, preserving the painless inequality a_m <= cap.
-                caps = np.array([max(1, floor23(int(c))) for c in caps], dtype=int)
+                caps = _painless_caps(winCell, L, scales, trunc_at, basefc,
+                                      aprecise, lp_num, M2).astype(int)
                 a_capped = np.minimum(a, caps)
                 if np.array_equal(a_capped, a) and filterbanklength(Ls, a_capped) == L:
                     a = a_capped
@@ -532,7 +717,13 @@ def waveletfilters(
 
     elif sampling == "fractional":
         L = Ls
-        N = np.ceil(Ls / aprecise).astype(int)
+        a_rat = np.asarray(aprecise, dtype=float).copy()
+        if painless:
+            # Rational hops are exact, so the cap needs no floor23 rounding.
+            a_rat = np.minimum(a_rat, _painless_caps(
+                winCell, L, scales, trunc_at, basefc, aprecise, lp_num, M2,
+                quantise=False))
+        N = np.ceil(Ls / a_rat).astype(int)
         a = np.column_stack([np.full(M2, Ls, dtype=int), N])  # type: ignore[assignment]
 
     elif sampling == "fractionaluniform":
@@ -541,11 +732,36 @@ def waveletfilters(
             aprecise[1:] = np.min(aprecise[1:])  # type: ignore[assignment]
         else:
             aprecise[:] = np.min(aprecise)  # type: ignore[assignment]
-        N = np.ceil(Ls / aprecise).astype(int)
+        a_rat = np.asarray(aprecise, dtype=float).copy()
+        if painless:
+            caps = _painless_caps(winCell, L, scales, trunc_at, basefc,
+                                  aprecise, lp_num, M2, quantise=False)
+            # "uniform" is the point of this mode: one hop for every wavelet
+            # channel, so the cap has to be the tightest one, not per-channel.
+            if lowpass_at_zero:
+                a_rat[0] = min(a_rat[0], caps[0])
+                a_rat[1:] = min(float(np.min(a_rat[1:])), float(np.min(caps[1:])))
+            else:
+                a_rat[:] = min(float(np.min(a_rat)), float(np.min(caps)))
+        N = np.ceil(Ls / a_rat).astype(int)
         a = np.column_stack([np.full(M2, Ls, dtype=int), N])  # type: ignore[assignment]
 
     elif sampling == "uniform":
         a_painless = max(1, int(math.floor(np.min(aprecise))))
+        if painless:
+            # `aprecise` is the mother wavelet's natural *time*-domain
+            # subsampling; the painless condition is a statement about
+            # *frequency* support, and for a heavy-tailed wavelet at
+            # trunc_at = 1e-5 the two differ by an order of magnitude.  Solve
+            # for L once with the uncapped hop, cap, then re-solve.
+            for _ in range(3):
+                L_try = filterbanklength(Ls, a_painless)
+                caps = _painless_caps(winCell, L_try, scales, trunc_at, basefc,
+                                      aprecise, lp_num, M2)
+                a_next = max(1, min(a_painless, int(np.min(caps))))
+                if a_next == a_painless:
+                    break
+                a_painless = a_next
         if hop_ms is not None:
             a_val = max(1, int(round(hop_ms / 1000.0 * fs)))
             if a_val > a_painless:
@@ -655,6 +871,16 @@ def waveletfilters(
     if not isinstance(gout, list):
         gout = [gout]
 
+    # Bin geometry of the wavelet channels at this L, captured before the
+    # lowpass/highpass merges renumber ``info``.  ``freqwavelet`` stores
+    # ``foff = ceil(L/fs * flo)`` and a response of ``floor(L/fs * fhi) - foff``
+    # bins, so ``info["fsupp"]`` (= that count + 1) is one more than the number
+    # of bins the channel actually occupies.  See the admissibility block below.
+    _wav_A = np.asarray(info["foff"], dtype=int).ravel().copy()
+    _wav_nbins = np.asarray(info["fsupp"], dtype=int).ravel().copy() - 1
+    _wav_fsupp_raw = np.asarray(info["fsupp"], dtype=float).ravel().copy()
+    _wav_fc_norm = np.asarray(info["fc"], dtype=float).ravel().copy()
+
     # cool_frames extension (no LTFAT equivalent): build a Nyquist highpass complement
     # from the pristine wavelet channels so a real bank covers [0, Nyquist] and
     # is invertible (A>0). LTFAT's waveletfilters leaves this band uncovered and
@@ -753,7 +979,157 @@ def waveletfilters(
         # highpass) take the same delay as the rest of the bank.
         gout[kk]["delay"] = int(delayvec[-1]) if len(delayvec) else 0
 
+    # ── Admissibility ────────────────────────────────────────────────────
+    # Announce a non-frame geometry here, where the parameters were chosen,
+    # rather than letting it surface later as an all-zero dual.
+    #
+    # Geometry.  A wavelet of scale s is a dilation of the mother wavelet, so
+    # its effective support edges are a *fixed multiple* of its centre
+    # frequency -- the dilation cancels:
+    #
+    #     fc_m  = (fs/2) * basefc / s_m
+    #     f_lo  = max(0,  r0 * fc_m),   r0 = fsupp_[0] / peakpos
+    #     f_hi  = min(fs, r4 * fc_m),   r4 = fsupp_[4] / peakpos
+    #
+    # with r0, r4 the support ratios of the mother wavelet at ``trunc_at``.
+    # freqwavelet then occupies the bins
+    #
+    #     A_m = ceil(L/fs * f_lo)  ...  B_m = floor(L/fs * f_hi) - 1
+    #
+    # which is what ``info["foff"]`` and ``info["fsupp"] - 1`` record, so we
+    # read them off directly rather than recomputing the rounding.  Endpoint
+    # bins are alive (|H| = trunc_at * peak), hence ``window="rect"``.
+    #
+    # ``_interval_linear`` can only build odd-width intervals, so an
+    # even-width channel is handed over as two overlapping odd ones whose
+    # union is exactly [A, B]; rounding it up to one odd interval instead
+    # would over-cover the bin above B and mispredict a bank whose only gap
+    # is that single bin.
+    #
+    # The two complements are Hann-taper prototypes of
+    # ``odd(max(min_win, round(L*bw)))`` bins centred on 0 and on fs/2.  The
+    # taper does not vanish at its endpoints (it only reaches half height
+    # there), so all of those bins are alive too -- except when the taper
+    # ratio degenerates to 0 and ``_make_direct_filter`` falls back to a plain
+    # Hann, which does have a dead bin at each end.  The ``sqrt(S_max - S)``
+    # factor can null further bins, but only where the inner channels already
+    # attain the maximum, i.e. only where they cover the bin themselves.
+    _admissible = None
+    _fsupp_inner_hz = _wav_nbins.astype(float) * fs / L
+    _fsupp_dc_hz = 0.0
+    _fsupp_nyq_hz = 0.0
+    if freqrange == "real" and lowpass == "single" and _ghigh is not None:
+        from ..diagnostics.admissibility import check_admissible
+
+        _fc_pred: list[float] = []
+        _fsupp_pred: list[float] = []
+        for _A, _W in zip(_wav_A.tolist(), _wav_nbins.tolist()):
+            for _f, _s in _bins_to_linear(int(_A), int(_W), fs, L):
+                _fc_pred.append(_f)
+                _fsupp_pred.append(_s)
+
+        # DC complement: bandwidth lp_bw = 0.2 / scales_sorted[3] in the
+        # fs = 2 normalised convention, i.e. bw/fs = lp_bw.
+        _lp_bw = 0.2 / scales_sorted[3]
+        _taper_dc = 1 - scales_sorted[3] / scales_sorted[1]
+        _W_dc = max(min_win, round(L * _lp_bw))
+        _W_dc = _W_dc if _W_dc % 2 else _W_dc + 1
+        if _taper_dc <= 0:                      # plain Hann -> 2 dead bins
+            _W_dc -= 2
+        _fsupp_dc_hz = _W_dc * fs / L
+
+        # Nyquist complement: same prototype, bandwidth 2*(1 - fc_last) in the
+        # fs = 2 convention, centred on fs/2.
+        _jmax = int(np.argmax(_wav_fc_norm))
+        _fsupp_hp, _taper_hp = edge_params_from_geometry(
+            float(_wav_fc_norm[_jmax]), float(_wav_fsupp_raw[_jmax]), 2.0,
+            target="nyquist")
+        _W_hp = max(min_win, round(L * _fsupp_hp / 2.0))
+        _W_hp = _W_hp if _W_hp % 2 else _W_hp + 1
+        if _taper_hp <= 0:                      # plain Hann -> 2 dead bins
+            _W_hp -= 2
+        _fsupp_nyq_hz = _W_hp * fs / L
+
+        _admissible = check_admissible(
+            np.asarray(_fc_pred, dtype=float),
+            np.asarray(_fsupp_pred, dtype=float),
+            fs=fs, L=int(L),
+            fsupp_dc=_fsupp_dc_hz, fsupp_nyq=_fsupp_nyq_hz,
+            min_win=1, window="rect", designer="waveletfilters")
+    # Any other channel layout -- lowpass='none' or 'repeat', a two-sided
+    # (complex) bank, or a bank built without the Nyquist complement -- has
+    # DC/Nyquist edges the closed-form predictor cannot express (it always
+    # assumes one complement centred on each).  Rather than return no verdict
+    # at all -- `lowpass='none'` leaves 79 DFT bins uncovered at the default
+    # settings and used to report `admissible=None`, which reads as "fine" --
+    # fall back to measuring the realised diagonal response.  That is O(L*M)
+    # and exact for the question being asked (is any bin covered by nothing),
+    # it just cannot say *which parameter* to change, which is what the
+    # closed-form predictor is for.
+    if _admissible is None:
+        from ..filterbanks._frame import filterbankresponse
+
+        _resp = filterbankresponse(gout, _comp_filterbank_a(a_new, len(gout)),
+                                   int(L), real=(freqrange == "real"))
+        _dead = np.flatnonzero(_resp <= 1e-12 * max(float(np.max(_resp)), 1e-300))
+        _admissible = {
+            "is_frame": bool(_dead.size == 0),
+            "first_hole_bin": int(_dead[0]) if _dead.size else None,
+            "n_hole_bins": int(_dead.size),
+            "source": "measured",
+        }
+        if _dead.size:
+            warnings.warn(
+                f"waveletfilters: this geometry is not a frame. {_dead.size} "
+                f"DFT bins are covered by no filter, the first at bin "
+                f"{int(_dead[0])} (~{_dead[0] * fs / L:.1f} Hz), so the lower "
+                f"frame bound is 0 and the bank is not invertible. "
+                f"lowpass='single' (with highpass='auto') covers both edges.",
+                stacklevel=2,
+            )
+
     info["startindex"] = lp_num
+    info["designer"] = "waveletfilters"
+    # Hz, matching the other designers.  NOTE: the pre-existing
+    # ``info["fsupp"]`` stays in DFT bins (freqwavelet's own convention).
+    info["fsupp_inner"] = _fsupp_inner_hz
+    info["fsupp_dc"] = float(_fsupp_dc_hz)
+    info["fsupp_nyq"] = float(_fsupp_nyq_hz)
+    info["admissible"] = _admissible
+
+    # ── Painless condition, measured on the bank that is actually returned ──
+    # `_painless_caps` enforces the inequality mid-design, but the lowpass and
+    # Nyquist complements are appended afterwards and `redtar` rewrites every
+    # hop, so the guarantee has to be re-checked here rather than assumed.
+    #
+    # This is reported, not enforced: `painless=False` is a legitimate choice
+    # for analysis-only work.  What is not legitimate is finding out about it
+    # from a reconstruction that silently loses three quarters of the signal.
+    if painless and redtar is None:
+        # Not under `redtar`.  There the caller has named the redundancy they
+        # want and `a_new` has already been rewritten to hit it; repairing the
+        # hops afterwards would quietly overrule that.  It overruled it badly,
+        # too: on `sampling='uniform'` the repair pulled the wide channels back
+        # down and made redundancy non-monotone in `redtar`
+        # (0.5 -> 18.0, 2.0 -> 8.9, 20.0 -> 13.6).  A redundancy target and the
+        # painless condition are competing requests; the explicit one wins, and
+        # the check below reports what it cost.
+        _repair_complement_hops(gout, a_new, int(L))
+    _pl_ratio, _pl_bad = _painless_ratio(gout, a_new, int(L))
+    info["painless"] = bool(_pl_bad == 0)
+    info["painless_ratio"] = float(_pl_ratio)
+    if _pl_bad:
+        warnings.warn(
+            f"waveletfilters: {_pl_bad} of {len(gout)} channels violate the "
+            f"painless condition (worst a*W/L = {_pl_ratio:.3g}, needs <= 1). "
+            f"The frame operator is not diagonal, so filterbankdual and "
+            f"filterbanktight are approximate here and reconstruction will "
+            f"lose energy. Pass painless=True for an exactly invertible bank, "
+            f"or invert with ifilterbankiter. info['painless_ratio'] carries "
+            f"the measured value.",
+            stacklevel=2,
+        )
+
     fc = (fs / 2) * info["fc"]
 
     return gout, a_new, fc, L, info

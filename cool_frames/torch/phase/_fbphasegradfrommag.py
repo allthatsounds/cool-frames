@@ -324,7 +324,21 @@ def comp_filterbankphasegradfrommag(
                 if neigh >= 0:
                     numNeighBelow += 1
                     dist = (posInfo[1, neigh] - posInfo[1, w]) / a_np[m]  # type: ignore[index]
-                    tempValBelow += logs[w] - logs[neigh] - dist * fgrad[w]  # type: ignore[index]
+                    # Sign: both branches adjust the neighbour to the centre
+                    # coefficient's time instant, but they form the difference
+                    # in opposite orders.  The above branch computes
+                    # ``logs[neigh] - logs[w]`` and subtracts ``dist*fgrad[w]``;
+                    # here the difference runs the other way, so the same
+                    # correction has to be ADDED.
+                    #
+                    # This backend kept the wrong sign after the NumPy copy was
+                    # fixed -- the same asymmetry that left the centre-frequency
+                    # term behind for a whole release, and for the same reason:
+                    # nothing internal calls this function.  It cost 1.53e-02 in
+                    # tgrad on *interior* channels, which is what
+                    # test_phase_gradient_estimators_agree_between_backends
+                    # exists to catch.
+                    tempValBelow += logs[w] - logs[neigh] + dist * fgrad[w]  # type: ignore[index]
             if numNeighBelow > 0:
                 tempValBelow /= numNeighBelow
 

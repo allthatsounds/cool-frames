@@ -317,6 +317,64 @@ def filterbankconstphase(
             the magnitude path for the phase gradients to be estimated from
             the magnitudes; without it the gradients fall back to zero and
             PGHI degenerates to zero-phase reconstruction.
+
+            **The convention is designer-specific**, and getting it wrong
+            costs accuracy rather than raising.
+
+            *What MATLAB LTFAT does.*  Its designers return ``info.tfr``, a
+            function handle, and ``filterbankconstphase`` uses
+            ``sqrt(info.tfr(L))``.  Recovered from an LTFAT export to 2e-16
+            (``tests/crosslang/report_sqtfr.py``), it is strongly
+            channel-dependent -- for ``audfilters`` at fs = 8 kHz, Ls = 4096 it
+            spans 0.0298 to 719 across 29 channels.  cool-frames' designers do
+            not currently expose an equivalent, which is the porting gap behind
+            everything below.
+
+            *Use LTFAT's convention.*  Round-trip spectral convergence (dB,
+            lower better) on cool-frames' own banks, fs = 8 kHz, Ls = 4096,
+            over three probes -- ``k`` scales gamma globally:
+
+            ====================  =======  =======  =======  ======  ======
+            audfilters             LTFAT    2xLTFAT  4xLTFAT  ones    signal
+            ====================  =======  =======  =======  ======  ======
+            sweep + tones           -9.8    -13.0    -15.7   -16.2   -27.3
+            white noise             -9.9     -9.7     -8.5    -7.5   -11.2
+            AM-FM                  -15.4    -15.2    -10.9   -12.6   -18.9
+            ====================  =======  =======  =======  ======  ======
+
+            ====================  =======  =======  =======  ======  ======
+            cqtfilters             LTFAT    2xLTFAT  4xLTFAT  ones    signal
+            ====================  =======  =======  =======  ======  ======
+            sweep + tones           -5.8    -17.7    -13.6    -3.3   -25.0
+            white noise            -11.3    -11.6    -10.5    -9.8   -11.4
+            AM-FM                  -16.0    -10.5     -9.3    -8.4   -14.4
+            ====================  =======  =======  =======  ======  ======
+
+            ``sqrt(info.tfr(L))`` at ``k = 1`` is best or near-best on two of
+            three probes for both designers, and it is what the reference
+            implementation does.  Single-probe optima disagree wildly --
+            ``ones`` looks 6 dB better than LTFAT on the audfilters sweep and
+            2 dB *worse* on noise; ``2x`` looks 12 dB better on the cqtfilters
+            sweep and 6 dB worse on AM-FM -- so tune this against your own
+            material rather than trusting any one row.
+
+            Not yet checked against LTFAT (those designers did not export):
+            ``waveletfilters``, where the designer populates it and you
+            evaluate ``g[m]['tfr'](L)`` (for Cauchy wavelets
+            ``(alpha - 1) / (pi * fc**2 * L)``), and ``gabfilters``, where
+            ``gamma = Cg * gl**2`` in the window length (``Cg_hann = 0.25645``,
+            tabulated in ``_findgamma.py``).
+
+            Do *not* use ``compute_tfr_from_filters``: it returns L/gamma, the
+            support length, a different quantity.
+
+            The remaining gap to the signal path is not a gamma problem.  The
+            derivative-filter path needs no gamma at all and would otherwise
+            settle this, but it does not reproduce the magnitude path on these
+            banks under *any* gamma, on interior channels either -- so no
+            choice of ``sqtfr`` closes it.  That, rather than the convention,
+            is what limits magnitude-only phase retrieval here.
+
     fs    : sampling rate in Hz.  On the signal path it is read from the
             filters.  On the magnitude path, supplying it is what makes ``fc``
             unambiguous: without it, an ``fc`` that looks like Hz is normalised

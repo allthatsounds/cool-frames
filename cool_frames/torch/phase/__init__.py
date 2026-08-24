@@ -1,9 +1,24 @@
 """cool_frames.torch.phase — differentiable phase gradients, reconstruction and retrieval.
 
 Torch port of :mod:`cool_frames.numpy.phase`: PGHI, Griffin-Lim / fast Griffin-Lim,
-LeGLA, SPSI, the RTISILA family, reassignment and phase derivatives. Every
-algorithm here is differentiable with respect to the input magnitudes, so a
-phase-retrieval step can sit inside a training graph.
+LeGLA, SPSI, the RTISILA family, reassignment and phase derivatives.
+
+Not everything here is differentiable, and the difference matters if you are
+putting a phase step inside a training graph:
+
+* :func:`gla` is a native torch port and **is** differentiable with respect to
+  the input magnitudes -- it returns the reconstructed waveform alongside the
+  coefficients, so it is a single-call magnitude-to-waveform op. This is the
+  one to reach for.
+* :func:`filterbankconstphase` (PGHI) wraps the NumPy heap integrator and is
+  **not** differentiable: the traversal order is a discrete function of the
+  magnitudes. Its output can still be frozen as a constant phase, with the
+  gradient flowing through the magnitude factor into ``ifilterbank``.
+* :func:`decolbfgs` runs its inner LBFGS under ``torch.no_grad()``, and
+  :func:`gsrtisila` drops to NumPy internally; neither carries a gradient.
+
+Analysis and synthesis themselves (``cool_frames.torch.filterbanks``) are fully
+differentiable, with the exception of ``ifilterbankiter``.
 """
 
 from ._constphase import filterbankconstphase

@@ -187,6 +187,7 @@ def comp_filterbankphasegradfrommag(
     posInfo: np.ndarray,
     gderivweight: float = 0.5,
     do_tfrdiff: bool = False,
+    edge_mode: str = "rescaled",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Phase gradient estimation from magnitude for a non-uniform filterbank.
 
@@ -207,6 +208,12 @@ def comp_filterbankphasegradfrommag(
     posInfo : (2, Nsum) position info [channel; time_position]
     gderivweight : weight for tfr-difference correction (default 0.5)
     do_tfrdiff : whether to include sqtfr-difference correction
+    edge_mode : how to scale the DC and Nyquist complements, which have only
+        one frequency neighbour.  ``'rescaled'`` (default) puts them on the
+        interior's two-sided scaling; ``'ltfat'`` reproduces MATLAB LTFAT,
+        which leaves them at half that.  Identical on every interior channel.
+        See the comment at the summation for why this is a choice and not
+        simply a bug.
 
     Returns
     -------
@@ -294,24 +301,52 @@ def comp_filterbankphasegradfrommag(
                 if neigh >= 0:
                     numNeighBelow += 1
                     dist = (posInfo[1, neigh] - posInfo[1, w]) / a[m]
-                    tempValBelow += logs[w] - logs[neigh] - dist * fgrad[w]
+                    # Both branches adjust the neighbour to the centre
+                    # coefficient's time instant.  The above branch forms
+                    # logs[neigh] - logs[w] and subtracts dist*fgrad[w]; this
+                    # branch forms the difference the other way round, so the
+                    # same correction has to be ADDED.  (Subtracting it here
+                    # too biases every interior channel; the effect on the
+                    # reconstructed phase is small because dist is usually a
+                    # fraction of a frame, but the sign is wrong.)
+                    tempValBelow += logs[w] - logs[neigh] + dist * fgrad[w]
             if numNeighBelow > 0:
                 tempValBelow /= numNeighBelow
 
             # Each side is a one-sided difference quotient estimating the same
             # frequency-derivative of the log-magnitude.  Interior channels have
-            # both; edge channels have only one.  Average the available sides
-            # and restore the interior's two-sided scaling, so that channel 0
-            # and channel M-1 are on the same scale as everything between them.
-            # (Previously the two sides were summed with the missing side's
-            # denominator defaulting to 1.0, which left the edge channels a
-            # factor of two short and divided by the wrong spacing.)
+            # both; the DC and Nyquist complements have only one, and the two
+            # conventions differ by exactly a factor of two there (and only
+            # there -- measured against LTFAT on every coefficient of both
+            # designers exported so far):
+            #
+            #   "rescaled" (default)  2 * mean(sides).  Averages the available
+            #       sides and restores the interior's two-sided scaling, so
+            #       channel 0 and channel M-1 sit on the same scale as
+            #       everything between them.
+            #   "ltfat"               sum(sides).  What LTFAT's
+            #       comp_filterbankphasegradfrommag does, so the edge channels
+            #       come out half of the interior scaling.
+            #
+            # They are identical wherever both sides exist.  Which one is
+            # *right* is not settled: the derivative-filter (signal) path,
+            # which needs no gamma and would otherwise arbitrate, does not
+            # reproduce the magnitude path on these banks under any gamma --
+            # on interior channels either -- so it cannot adjudicate the edges.
+            # Until that is resolved, the default preserves the interior
+            # scaling and ``edge_mode="ltfat"`` reproduces the reference bit
+            # for bit, which is what the cross-language test asserts.
             sides = []
             if m < M - 1:
                 sides.append((tempValAbove + aboveNom) / aboveDenom)
             if m > 0:
                 sides.append((tempValBelow + belowNom) / belowDenom)
-            temp[n] = 2.0 * float(np.mean(sides)) if sides else 0.0
+            if not sides:
+                temp[n] = 0.0
+            elif edge_mode == "ltfat":
+                temp[n] = float(np.sum(sides))
+            else:
+                temp[n] = 2.0 * float(np.mean(sides))
 
         # ``fc`` is a *normalised* centre frequency in [0, 2] (2 == fs), the
         # same convention the heap integrator and ``filterbankphasegrad`` use.

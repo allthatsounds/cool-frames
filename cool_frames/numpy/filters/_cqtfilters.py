@@ -357,7 +357,17 @@ def cqtfilters(
         min_win=min_win,
     )
 
-    info = {"fc": fc, "a": a, "L": int(L), "designer": "cqtfilters"}
+    from ..diagnostics.admissibility import check_admissible
+
+    admissible = check_admissible(
+        fc[1:-1], fsupp[1:-1], fs=fs, L=int(L),
+        fsupp_dc=fsupp_dc, fsupp_nyq=fsupp_nyq,
+        min_win=min_win, window=window, designer="cqtfilters")
+
+    info = {"fc": fc, "a": a, "L": int(L), "designer": "cqtfilters",
+            "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
+            "fsupp_dc": float(fsupp_dc), "fsupp_nyq": float(fsupp_nyq),
+            "admissible": admissible}
     return g, a, fc, int(L), info  # type: ignore[return-value]
 
 

@@ -162,6 +162,10 @@ def warpedfilters(
     ) + 2
     fsupp[M-1] = math.ceil(2 * (nf - scaletofreq(chan_max + 1 / bins - bwmul))) + 2
 
+    # Capture the single-sided edge bandwidths for the admissibility check
+    # before ``freqrange='complex'`` mirrors ``fsupp`` below.
+    _fsupp_dc, _fsupp_nyq = float(fsupp[0]), float(fsupp[M - 1])
+
     # Subsampling rates
     aprecise = fs / fsupp
     aprecise[1:-1] = aprecise[1:-1] / redmul
@@ -299,5 +303,19 @@ def warpedfilters(
         min_win=min_win,
     )
 
-    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "warpedfilters"}
+    from ..diagnostics.admissibility import check_admissible
+
+    # The warped rule: channels sit uniformly in the scale coordinate and each
+    # filter is +/- bwmul wide *in that coordinate*, so the interval is derived
+    # from ``scalevec`` rather than from Hz supports.
+    admissible = check_admissible(
+        None, None, fs=fs, L=int(L),
+        fsupp_dc=_fsupp_dc, fsupp_nyq=_fsupp_nyq,
+        warped=(scalevec, scaletofreq, bwmul), min_win=1,
+        designer="warpedfilters")
+
+    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "warpedfilters",
+            "fsupp": fsupp, "scalevec": scalevec, "bwmul": float(bwmul),
+            "fsupp_dc": _fsupp_dc, "fsupp_nyq": _fsupp_nyq,
+            "admissible": admissible}
     return g, a, fc_arr, int(L), info  # type: ignore[return-value]

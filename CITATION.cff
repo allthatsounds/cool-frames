@@ -25,9 +25,9 @@ abstract: >-
   Orchestration and Listening): a Python port and redesign of the LTFAT
   filterbank module providing auditory, wavelet, constant-Q, Gabor and
   warped filter design with exact analysis/synthesis and phase
-  retrieval, in NumPy and PyTorch. It includes
-  a 301-test property-based test suite grounded in frame theory for
-  cross-language validation against MATLAB LTFAT.
+  retrieval, in NumPy and PyTorch. It includes a property-based test
+  suite grounded in frame theory for cross-language validation against
+  MATLAB LTFAT.
 preferred-citation:
   type: article
   title: "cool-frames: A Python Toolbox for Invertible Auditory Filterbanks with Frame-Theoretic Foundations"

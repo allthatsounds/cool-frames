@@ -164,9 +164,22 @@ def comp_warpedfreqresponse(winname: str, fc: float, bw: float,
     if pos_hi > L / 2:
         pos_hi = math.floor(scaletofreq(fcscale + 0.5 * bw - nyquest2) / fs * L)
 
-    # Evaluate windows at warped positions
-    win_lo = firwin_eval(winname, bins_lo)
-    win_hi = firwin_eval(winname, bins_hi)
+    # Evaluate windows at warped positions.
+    #
+    # firwin_eval uses the whole-point-even convention: x in [0, 1), peak at
+    # x = 0, zero for x >= 0.5, and even under x -> 1 - x.  In particular it
+    # returns 0 for every NEGATIVE x.  bins_lo/bins_hi are centred on the
+    # channel and therefore run over [-0.5, 0.5], so passing them unwrapped
+    # silently zeroed the entire LOWER sideband of every warped filter: the
+    # realised support of each channel began at round(L*fc/fs) -- its own
+    # centre bin -- instead of half a passband below it.  Measured on a
+    # log-warped bank at fs = 8 kHz, bins = 1, bwmul = 0.6, channel fc = 128 Hz
+    # occupied bins 19..26 where its design calls for 12..26.
+    #
+    # Wrapping into [0, 1) restores the symmetric window, because the
+    # whole-point-even window is even about 0.5 (mod 1 maps -0.4 to 0.6).
+    win_lo = firwin_eval(winname, np.mod(bins_lo, 1.0))
+    win_hi = firwin_eval(winname, np.mod(bins_hi, 1.0))
 
     H = win_lo + win_hi
     H = np.nan_to_num(H, nan=0.0)

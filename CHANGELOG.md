@@ -301,6 +301,171 @@ path.
   running a transform. It now uses a local `Generator` and accepts
   `rng=<seed or Generator>` for reproducible output.
 
+### Frame admissibility is now predictable in closed form
+
+A painless bank can be handed parameters for which it is not a frame: the lower
+bound is exactly zero, a band of the spectrum is annihilated, and
+`filterbankbounds` does not notice because it is evaluated on a response that
+does not see the gap. `filterbankbounds_svd` does notice, but costs O(L^2) and
+needs the bank built first.
+
+`cool_frames.diagnostics.admissibility` answers the question before the bank
+exists, from the design parameters alone. `A = 0` iff the filters leave a DFT
+bin uncovered, and coverage is integer arithmetic: a prototype of odd length
+`W_m` centred on bin `k_m = round(L*f_m/fs)` overlaps its neighbour iff
+`k_{m+1} - k_m <= (W_m-1)/2 + (W_{m+1}-1)/2 - 1`.
+
+Because every designer places its channels uniformly in a warping coordinate
+*and* sizes its filters constant in that same coordinate, the warping
+derivative cancels and the condition reduces to one dimensionless ratio,
+`D_u < L_u - c*fs/(L*b_min)`, binding at the lowest channel. The designer
+families then reach the floor by different routes: `warpedfilters` reduces to
+the scale-independent `2*bwmul > 1/bins` and `audfilters` to
+`spacing < bwmul/winbw`, whereas for constant-Q designs `fc` cancels and the
+continuum condition `Qvar > t/(t+1)` (with `t = 2**(1/bins)`) holds for every
+`Qvar >= 2/3` — so a constant-Q bank never fails from redundancy, only from
+low-frequency resolution.
+
+Verified against the measured frame response on **8,524 of 8,524
+configurations**, no errors in either direction: `audfilters` 5400 (540 per
+scale across all ten scales), `greenwoodfilters` 540, `cqtfilters` 1916,
+`warpedfilters` 668 under two different warpings. The covering mechanism itself
+was additionally confirmed against `filterbankbounds_svd` (66/66) and against
+the measured response for `waveletfilters` and `gabfilters` (150/150).
+
+Conditioning comes with it but is weaker: `ripple_curve` gives kappa as a
+universal function of the overlap ratio alone (1 at the Hann-squared
+partition-of-unity ratios 1/4 and 1/3, 2 at half overlap, divergent as the
+ratio approaches 1), accurate to within a decade on 87 % of admissible banks.
+The `floor23` hop quantisation is not modelled, so the predictor is **exact for
+"is it a frame"** and **order-of-magnitude for "how well conditioned"**.
+
+New API: `predict_admissible`, `ripple_curve`, `max_overlap_for_kappa`,
+`min_channels`, `min_bins`. 16 regression tests pin the agreement so that a
+change to any designer's geometry which breaks it fails the build.
+
+**Every designer now runs the check itself.** `audfilters`, `cqtfilters`,
+`greenwoodfilters`, `warpedfilters`, `waveletfilters` and `gabfilters` call
+`check_admissible` before returning and publish the verdict as
+`info["admissible"]`, alongside the geometry it used (`fsupp`, `fsupp_inner`,
+`fsupp_dc`, `fsupp_nyq`; `scalevec` and `bwmul` for `warpedfilters`). A
+geometry below the floor raises `NotAFrameWarning` naming the first uncovered
+bin and its frequency. The bank is still built — analysis still works, and
+studying the gap is a legitimate thing to want — but the failure is announced
+where the parameters were chosen rather than later, when the missing band shows
+up as an all-zero dual.
+
+Extending the predictor to the two remaining designers needed a rule for each,
+since neither is a painless frequency-domain design:
+
+- `gabfilters` builds its prototype in the **time** domain, so its realised
+  support is not a designed bandwidth but the width of the block it stores:
+  every channel occupies exactly `gl = len(g)` DFT bins at
+  `A_k = k*(L/M) - gl//2`, with no dead endpoints. For a named window
+  (`gl == M`) this reduces to **frame iff `L/M <= M`**.
+- `waveletfilters` are dilations, so each support edge is a fixed multiple of
+  that channel's centre frequency — the dilation cancels — and the designer
+  reads the interval straight off `freqwavelet`'s own `foff`/`fsupp`.
+
+Validated at 100 % on 5,525 `gabfilters` and 4,259 `waveletfilters`
+configurations, including randomised hold-out grids and grids deliberately
+biased toward non-frames, plus an independent 720-configuration re-check.
+Layouts the covering test cannot express report `info["admissible"] = None`
+rather than an unvalidated verdict: `gabfilters(windowaxis='freq')`,
+`gabfilters` given a window array whose length is not `M`, and
+`waveletfilters` with `lowpass='none'`/`'repeat'`, `highpass='none'` or a
+two-sided `freqrange`.
+
+Note that this makes some existing configurations warn that did not before —
+correctly. The package's own `waveletfilters` test fixtures build banks whose
+measured lower bound is exactly zero.
+
+### The three Colab notebooks were broken, and nothing could see it
+
+`examples/colab/*.ipynb` imported `filterbankrealdual`,
+`constphase_nonuniform`, `cool_frames.numpy.phase._admm` and
+`cool_frames.numpy.phase._diff_admm` — none of which exist — unpacked the
+designers' five-element return into four names, and called
+`_causal_tgrad_tick` and `_fixed_order_phase_tick`, which no cell defines. They
+had been that way since the June 2026 consolidation moved the Diff-RTPGHI
+research code out of the package.
+
+Nothing caught it because `[tool.ruff] include` is a whitelist and carried
+`extend-exclude = ["examples/colab"]`, annotated "WIP Colab tutorial notebooks
+(cross-cell refs / placeholder helpers) are not linted as library code". A
+reviewer's first act is to open `02_reproduce_paper_results.ipynb` and press
+Run, so this was the most visible code in the repository and the least tested.
+
+All three are rebuilt against the shipped API and now execute end to end:
+
+- **01** is a PGHI tutorial: filterbank geometry, the admissibility check, the
+  signal path versus the magnitude path, heap integration, fGLA refinement.
+- **02** benchmarks every phase-retrieval method the package ships over six
+  signals on the 134-channel ERB bank. The Diff-RTPGHI, ADMM, RAAR and DM rows
+  are gone — those algorithms live with the SPL paper's code, not here, and
+  printing rows this package cannot compute was the wrong fix. The RTISI-LA
+  family and `legla` are also absent, for a measured reason stated in the
+  notebook: at 77x redundancy a two-iteration `rtisila` run takes minutes, and
+  `legla` refuses to build its kernel below `relthr = 0.5`, which truncates so
+  hard that what runs is no longer meaningfully LeGLA.
+- **03** measures which torch paths carry a gradient (analysis, synthesis and
+  `gla` do; `filterbankconstphase` and `ifilterbankiter` do not), gradchecks
+  `gla` against central finite differences, optimises through it, and then
+  shows why a waveform target is nevertheless the wrong objective downstream of
+  Griffin-Lim from zero phase — and that freezing the phase restores a monotone
+  magnitudes-to-waveform map without losing differentiability.
+
+`tests/test_example_notebooks.py` compiles every cell and resolves every
+`cool_frames` import in every notebook under `examples/`, and flags any name
+that is called but never bound. It fails on all three of the old notebooks. The
+ruff exclusion is gone and notebooks are linted (`extend-include = ["*.ipynb"]`).
+
+### Two torch docstrings said the opposite of the truth
+
+`cool_frames.torch.phase`'s module docstring claimed "every algorithm here is
+differentiable with respect to the input magnitudes", and
+`torch/phase/_constphase.py` twice directed readers to
+`constphase_nonuniform` in `_diff_constphase.py` for a differentiable
+alternative. That module does not exist anywhere in the package, and
+`filterbankconstphase` is a NumPy shim that detaches. Both now state what is
+actually differentiable and what is not, and point at `gla`, which is.
+
+### `warpedfilters` was losing the lower sideband of every filter
+
+Found by the above: the predictor was correct about the design and the
+implementation was not. `comp_warpedfreqresponse` evaluates its prototype at
+warped bin positions, producing an argument that runs symmetrically over
+[-0.5, 0.5], and passes it to `firwin_eval` — which uses the whole-point-even
+convention (`x` in [0, 1), peak at 0, even about 0.5) and returns zero for
+every negative argument. Every warped channel therefore began at its own centre
+bin instead of half a passband below it: on a log-warped bank at fs = 8 kHz,
+`bins = 1`, `bwmul = 0.6`, channel `fc = 128 Hz` occupied bins 19..26 where its
+design calls for 12..26.
+
+Wrapping the argument into [0, 1) restores the symmetric window. Realised
+supports now match the design to the bin, and the admissibility predictor's
+accuracy on `warpedfilters` goes from 70.5 % to 100 %.
+
+The same negative-argument pattern survives in the legacy `comp_zerofilt` and
+`_comp_nyquistfilt` edge builders, which are dead code (the unified complement
+is used instead) and should be deleted rather than repaired.
+
+### Also fixed here
+
+- **`comp_filterbankphasegradfrommag` below-branch time correction had the
+  wrong sign.** Both branches adjust the neighbour to the centre coefficient's
+  time instant; the upward branch forms `logs[neigh] - logs[w]` and subtracts
+  the correction, the downward branch forms the difference the other way round
+  and must therefore add it. It subtracted in both. The effect on reconstructed
+  phase is small — `dist` is usually a fraction of a frame — but it biased
+  every interior channel.
+- **The `sqtfr` convention is now documented per designer** on
+  `filterbankconstphase`: `ones(M)` for `audfilters` (and explicitly *not*
+  `compute_tfr_from_filters`, which returns L/gamma), `g[m]['tfr'](L)` for
+  `waveletfilters`, `Cg*gl**2` for `gabfilters`, and not established for
+  `cqtfilters`. None of these has been validated side by side against MATLAB
+  LTFAT; that check is what still limits magnitude-only phase retrieval.
+
 ### Also in this release
 
 - **`reconstruct` derives `real=` from the filters** instead of hardcoding
@@ -428,6 +593,70 @@ it was a list of places nobody had checked.
   of -13 dB, while GLA honestly reports 0.249 for the same quality — and
   `wpghi_findgamma` accepts a `tfr` argument it never reads. See
   `DEFECT_REGISTER.md`.
+
+### `waveletfilters` shipped a bank that could not be inverted
+
+`waveletfilters` defaulted to `painless=False`. The resulting bank sat 22x
+over its painless limit, so its frame operator was not diagonal in frequency
+and the diagonal dual that `filterbankdual` returns — the only dual this
+package computes in closed form — was not a dual at all. A white-noise round
+trip lost **75 %** of the signal. `filterbanktight` failed the same way, and
+even `ifilterbankiter` left 12 % after 400 CG iterations.
+
+The bank looked healthy while doing it. `filterbankbounds` reported
+`A = 1.658`, `kappa = 2.276`; `filterbankbounds_svd`, the exact eigenvalue
+oracle, reported `A = 0`. Both were right about their own question:
+`filterbankresponse` computes the *diagonal entry* of the frame operator
+correctly, and on this bank the operator carried 45 % of its mass off the
+diagonal.
+
+Changes:
+
+- **`painless` now defaults to `True`.** The default bank round-trips at
+  4.9e-16, matching `audfilters` (5.1e-16) and `cqtfilters` (5.5e-16). It
+  costs redundancy — 1.39 to 8.98 at `fs = 8000`, `Ls = 4096`, 64 geometric
+  scales — and `painless=False` still gives you the cheap analysis-only bank,
+  now with a warning saying what it cannot do.
+
+- **`painless` is honoured by every sampling mode.** It used to apply to
+  `regsampling` only and be silently ignored by `uniform`, `fractional` and
+  `fractionaluniform`, which failed to reconstruct (0.09, 0.82, 0.80). All
+  four are now at 4.4e-16.
+
+- **The DC and Nyquist complements get their hops capped too.** They are
+  appended after the hops are chosen and simply inherited one. On a sparse
+  scale set (24 scales at 6/octave) the Nyquist complement — wide by
+  construction, because it spans everything the wavelets left uncovered —
+  arrived 1113 bins wide on a hop of 6, `aW/L = 3.87`. One channel over the
+  limit was enough to put the exact lower bound at 0 while the estimator
+  reported `kappa = 4.4`. Lowering a hop is a safe local repair; the response
+  is rescaled by `sqrt(a_new/a_old)` to keep the `scal = sqrt(a)` convention.
+
+- **`info["painless"]` and `info["painless_ratio"]`** report the condition
+  measured on the bank actually returned, after the complements are appended
+  and after `redtar` has rewritten the hops — the two places where a cap
+  applied mid-design stops being a guarantee. A violation warns at
+  construction, where the parameters were chosen.
+
+- **`info["admissible"]` no longer returns `None` for layouts the closed-form
+  predictor cannot express** (`lowpass='none'`/`'repeat'`, complex banks).
+  `lowpass='none'` leaves 79 DFT bins uncovered at the defaults and used to
+  report `None`, which reads as "fine". Those layouts now fall back to
+  measuring the realised response and report `source='measured'`.
+
+Why no test caught it: `tests/layer1_filters/unit/test_waveletfilters.py`
+had a `TestReconstruction` class whose docstring documented the defect as
+expected behaviour and then declined to test it — "waveletfilters ... does NOT
+form a painless frame. We therefore test reconstruction with cqtfilters and
+audfilters." There was no reconstruction test for `waveletfilters` at all. The
+`cqtfilters` case that stayed behind asserted `rel_err < 1.0`, so a 100 %
+relative error passed; it measures 4.7e-16. And no test anywhere compared
+`filterbankbounds` against `filterbankbounds_svd`, which is the one comparison
+that makes a non-diagonal frame operator visible. All three are now fixed:
+reconstruction tests for `waveletfilters` across all four sampling modes and
+both entry points, a `< 1e-10` bound on the `cqtfilters` case, and an
+estimator-vs-oracle test parametrised over four designers with the
+non-painless bank kept as a negative control.
 
 
 ## 0.1.0

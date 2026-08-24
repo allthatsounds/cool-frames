@@ -372,7 +372,19 @@ def audfilters(fs: float, Ls: int, *,
         min_win=min_win,
     )
 
-    info = {"fc": fc, "a": a, "L": int(L), "scale": scale, "designer": "audfilters"}
+    # Announce a non-frame geometry here, where the parameters were chosen,
+    # rather than letting it surface later as an all-zero dual.
+    from ..diagnostics.admissibility import check_admissible
+
+    admissible = check_admissible(
+        fc[1:-1], fsupp[1:-1], fs=fs, L=int(L),
+        fsupp_dc=fsupp_lp, fsupp_nyq=fsupp_hp,
+        min_win=min_win, window=window, designer="audfilters")
+
+    info = {"fc": fc, "a": a, "L": int(L), "scale": scale, "designer": "audfilters",
+            "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
+            "fsupp_dc": float(fsupp_lp), "fsupp_nyq": float(fsupp_hp),
+            "admissible": admissible}
     return g_list, a, fc, int(L), info  # type: ignore[return-value]
 
 
