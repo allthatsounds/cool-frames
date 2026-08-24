@@ -364,9 +364,22 @@ def cqtfilters(
         fsupp_dc=fsupp_dc, fsupp_nyq=fsupp_nyq,
         min_win=min_win, window=window, designer="cqtfilters")
 
+    from ._tfr import tfr_from_bandwidth
+
+    # The DC and Nyquist complements carry their bandwidth in `fsupp_dc` /
+    # `fsupp_nyq`, not in `fsupp` -- audfilters and greenwoodfilters store 0
+    # there.  Feeding the raw array to the rule gives tfr = nan on exactly
+    # those two channels, and `sqrt(info["tfr"])` then poisons every
+    # coefficient of the magnitude path.
+    _bw = np.asarray(fsupp, dtype=float).copy()
+    _bw[0] = float(fsupp_dc)
+    _bw[-1] = float(fsupp_nyq)
+
     info = {"fc": fc, "a": a, "L": int(L), "designer": "cqtfilters",
             "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
             "fsupp_dc": float(fsupp_dc), "fsupp_nyq": float(fsupp_nyq),
+            "tfr": tfr_from_bandwidth(_bw, fs, int(L)),
+            "tfr_source": "LTFAT rule (matches info.tfr(L) to 2.1e-05)",
             "admissible": admissible}
     return g, a, fc, int(L), info  # type: ignore[return-value]
 

@@ -358,22 +358,119 @@ def filterbankconstphase(
             sweep and 6 dB worse on AM-FM -- so tune this against your own
             material rather than trusting any one row.
 
-            Not yet checked against LTFAT (those designers did not export):
-            ``waveletfilters``, where the designer populates it and you
-            evaluate ``g[m]['tfr'](L)`` (for Cauchy wavelets
-            ``(alpha - 1) / (pi * fc**2 * L)``), and ``gabfilters``, where
-            ``gamma = Cg * gl**2`` in the window length (``Cg_hann = 0.25645``,
-            tabulated in ``_findgamma.py``).
+            *The rule behind it.*  LTFAT publishes ``info.tfr`` as an opaque
+            function handle and never states how it is built.  Recovered from
+            ``tests/reference_data/sqtfr_*.mat``, it is
+
+                tfr[m] = 1 / (2 * winbw**2) * L / W[m]**2
+                W[m]   = fsupp[m] * L / fs
+
+            with ``W_m`` the channel's *designed* bandwidth in DFT bins and
+            ``winbw`` the prototype window's equivalent-bandwidth factor
+            (``3/8`` for the Hann every painless designer here uses, so the
+            leading constant is ``32/9``).  The product ``tfr_m * W_m^2 / L``
+            is constant to **4.2e-16** over all 29 audfilters channels (tfr
+            spanning 0.0298 to 719) and all 78 cqtfilters channels, which
+            fixes the form; the formula then reproduces LTFAT's own numbers to
+            a *uniform* 4.5e-5 and 2.1e-5 respectively -- median equal to max,
+            so one scale factor, not a per-channel error, and that residual is
+            the small ``fsupp`` convention difference between the packages.
+
+            Every designer here now publishes it as ``info["tfr"]``, so::
+
+                g, a, fc, L, info = audfilters(fs, Ls)
+                c, mask = filterbankconstphase(
+                    s, a, fc, sqtfr=np.sqrt(info["tfr"]), fs=fs)
+
+            ``info["tfr_source"]`` says how far each one is validated.
+            ``warpedfilters`` is the interesting case: LTFAT returns no info
+            struct at all for it -- no ``fc``, no ``tfr`` -- so there is no
+            reference value and no cross-language check is possible.  But it
+            designs its bandwidths by the same warped rule and windows them
+            with the same Hann, so the formula applies unchanged and the value
+            is *derived* rather than copied.  ``greenwoodfilters`` is the same
+            situation without the drama (LTFAT has no such designer).
+
+            ``waveletfilters`` does not use this rule: its channels are
+            dilations of a mother wavelet, and the designer populates
+            ``info['tfr']`` from that geometry instead -- for Cauchy wavelets
+            ``(alpha - 1) / (pi * fc**2 * L)``.  ``gabfilters`` likewise has
+            its own, ``gamma = Cg * gl**2`` in the window length
+            (``Cg_hann = 0.25645``, tabulated in ``_findgamma.py``).
 
             Do *not* use ``compute_tfr_from_filters``: it returns L/gamma, the
-            support length, a different quantity.
+            support length, a different quantity.  Note also that measuring
+            the realised response with ``comp_tfrfromwin`` and taking
+            ``L/gamma`` is *not* the rule above -- it gives a Hann constant of
+            3.5288 rather than 3.5556 and disagrees with LTFAT by about 1 %,
+            varying channel to channel.  LTFAT uses the design bandwidth, not
+            the realised one.
 
-            The remaining gap to the signal path is not a gamma problem.  The
-            derivative-filter path needs no gamma at all and would otherwise
-            settle this, but it does not reproduce the magnitude path on these
-            banks under *any* gamma, on interior channels either -- so no
-            choice of ``sqtfr`` closes it.  That, rather than the convention,
-            is what limits magnitude-only phase retrieval here.
+            The remaining gap to the signal path is not a gamma problem, and
+            it is not this package's.  The derivative-filter path needs no
+            gamma at all and would otherwise settle the question, but it does
+            not reproduce the magnitude path on these banks under *any* gamma,
+            on interior channels either -- so no choice of ``sqtfr`` closes
+            it.
+
+            *That gap is inherited from LTFAT, measured rather than assumed.*
+            ``tests/compare_paths_ltfat.m`` runs LTFAT's own
+            ``filterbankphasegrad`` against LTFAT's own
+            ``comp_filterbankphasegradfrommag`` at its own
+            ``sqrt(info.tfr(L))``, entirely inside MATLAB with no Python
+            anywhere.  On cqtfilters, over the cells above -40 dB, the two
+            LTFAT paths agree only to a correlation of 0.85 (tgrad) and 0.95
+            (fgrad), with a *median relative difference of 0.54 and 0.67* on
+            interior channels.  Per-channel least-squares slopes scatter
+            around 1 with roughly 50 % spread, so this is not a units or
+            convention mismatch -- the two estimators genuinely disagree.
+
+            And the port is faithful on both sides of that comparison.  The
+            magnitude path was already shown identical (median ratio
+            1.00000000 under ``edge_mode='ltfat'``).  The signal path
+            reproduces LTFAT's to a correlation of **0.999846** in tgrad and
+            0.9755 in fgrad, once the documented ``fc`` convention is applied
+            -- this package returns the absolute instantaneous frequency,
+            LTFAT the deviation from the channel centre, so the comparison is
+            ``tgrad - fc``.  Without that subtraction the correlation reads
+            0.124, which is the shape of a convention error rather than a
+            defect and is worth recognising before chasing it.
+
+            *Which path is right?*  Neither of the above answers that -- the
+            two were only ever compared against each other.  Against a signal
+            whose instantaneous frequency is known analytically, the
+            derivative-filter path is exact and the magnitude estimator is
+            not.  Median recovered IF on isolated tones, fs = 8 kHz,
+            Ls = 4096, over the cells within 10 dB of the peak:
+
+            ==============  =========  ==================  ==================
+            probe           true       signal path         magnitude path
+            ==============  =========  ==================  ==================
+            audfilters
+            tone 440 Hz        440 Hz    440.0 Hz (0.0 %)    446.7 Hz (1.5 %)
+            tone 1000 Hz      1000 Hz   1000.0 Hz (0.0 %)    892.8 Hz (10.7 %)
+            tone 2500 Hz      2500 Hz   2500.0 Hz (0.0 %)   2530.7 Hz (1.2 %)
+            cqtfilters
+            tone 440 Hz        440 Hz    440.0 Hz (0.0 %)    438.1 Hz (0.4 %)
+            tone 1000 Hz      1000 Hz   1000.0 Hz (0.0 %)    976.3 Hz (2.4 %)
+            tone 2500 Hz      2500 Hz   2500.0 Hz (0.0 %)   2396.0 Hz (4.2 %)
+            ==============  =========  ==================  ==================
+
+            So the signal path is ground truth and the deviation is the
+            magnitude estimator's.  Note the scale: 0.4-10.7 % on an isolated
+            sinusoid against a median relative difference of 0.54 on the
+            broadband probe, which is what you would expect from an estimator
+            that assumes one dominant component per cell.
+
+            What this does and does not license.  It licenses "the gap is a
+            property of the PGHI magnitude-gradient estimator as specified by
+            LTFAT, not of this port" -- the estimator is reproduced bit for
+            bit and the reference exhibits the same gap.  It does **not**
+            license "magnitude-only gradient estimation cannot do better":
+            exactly one algorithm has been tested, and two faithful
+            implementations of one algorithm agreeing is evidence about the
+            port, not about the method class.  A different magnitude-only
+            estimator may well close some of this.
 
     fs    : sampling rate in Hz.  On the signal path it is read from the
             filters.  On the magnitude path, supplying it is what makes ``fc``

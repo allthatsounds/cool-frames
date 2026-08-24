@@ -156,11 +156,15 @@ def test_gradient_kernel_matches_ltfat(designer):
 
 @pytest.mark.requires_ref
 @pytest.mark.parametrize("designer", DESIGNERS)
-def test_default_edge_mode_differs_only_at_the_edges(designer):
-    """The shipped default rescales the two one-sided channels by 2.
+def test_rescaled_edge_mode_differs_only_at_the_edges(designer):
+    """``edge_mode='rescaled'`` scales the two one-sided channels by exactly 2.
 
-    Pinned deliberately: it is a documented divergence from LTFAT, not an
-    accident, and if it ever spreads beyond channels 0 and M-1 that is a bug.
+    This was the default until the signal path was shown exact against a known
+    instantaneous frequency and could arbitrate; on the DC channel ``'ltfat'``
+    measured 1.4-2.0x more accurate across three designers, so the default is
+    now ``'ltfat'`` and this pins the alternative.  What matters either way is
+    that the choice touches *only* channels 0 and M-1 -- if it ever reaches an
+    interior channel that is a bug.
     """
     ref = _load(designer)
     _require_reference_geometry(ref, designer)
@@ -234,3 +238,105 @@ def test_documented_sqtfr_reproduces_ltfat_gradients(designer):
         f"{designer}: gamma recovered from LTFAT's own gradients disagrees "
         f"with info.tfr(L) by up to {np.nanmax(rel):.3e} — the export or the "
         "algebra is wrong, fix that before drawing conclusions")
+
+
+# ---------------------------------------------------------------------------
+# 4. the rule behind info.tfr
+# ---------------------------------------------------------------------------
+
+@pytest.mark.requires_ref
+@pytest.mark.parametrize("designer", ["audfilters", "cqtfilters"])
+def test_tfr_follows_the_bandwidth_rule(designer):
+    """LTFAT's ``info.tfr`` is ``1/(2 winbw^2) * L / W^2`` in the *designed*
+    bandwidth.
+
+    LTFAT publishes ``info.tfr`` as an opaque function handle and never states
+    how it is built, so the rule was recovered from these exports.  Two claims
+    are pinned separately, because they fail for different reasons:
+
+    * the **form** -- ``tfr * W^2 / L`` is constant across channels.  This is
+      the strong one: it holds to 4e-16 over tfr values spanning four orders
+      of magnitude, and it is what lets the rule be applied to a designer
+      LTFAT gives no tfr for at all.
+    * the **constant** -- that it equals ``1/(2 winbw^2) = 32/9`` for a Hann.
+      Checked loosely, because this package's ``fsupp`` and LTFAT's differ by
+      a hair and that shows up here as a uniform ~5e-5 scale.
+    """
+    from cool_frames.filters import audfilters, cqtfilters
+    from cool_frames.numpy.filters._firwin import hann_winbw
+    from cool_frames.numpy.filters._tfr import tfr_from_bandwidth
+
+    ref = _load(designer)
+    tfr = np.asarray(ref["tfr"], float).ravel()
+    if str(ref["tfr_source"]) == "absent" or not np.isfinite(tfr).any():
+        pytest.skip(f"LTFAT's {designer} exposes no info.tfr")
+
+    fs, Ls, L = float(ref["fs"]), int(ref["Ls"]), int(ref["L"])
+    build = {"audfilters": audfilters, "cqtfilters": cqtfilters}[designer]
+    kw = {} if designer == "audfilters" else dict(fmin=50.0, fmax=fs / 2 - 100, bins=12)
+    _g, _a, _fc, L2, info = build(fs, Ls, **kw)
+    assert L2 == L, f"{designer}: bank length differs ({L2} vs {L}) — not comparable"
+
+    W = np.asarray(info["fsupp"], float).ravel() * L / fs
+    ok = np.isfinite(tfr) & (tfr > 0) & np.isfinite(W) & (W > 0)
+    assert ok.sum() >= 10, f"{designer}: only {ok.sum()} usable channels"
+
+    # --- the form ---
+    prod = tfr[ok] * W[ok] ** 2 / L
+    spread = float(np.std(prod) / abs(np.mean(prod)))
+    assert spread < 1e-12, (
+        f"{designer}: tfr * W^2 / L is not constant (relative spread {spread:.3e}); "
+        f"the bandwidth rule does not describe this designer"
+    )
+
+    # --- the constant ---
+    assert abs(float(np.median(prod)) - 1.0 / (2 * hann_winbw() ** 2)) < 1e-3
+
+    # --- and the helper reproduces LTFAT end to end ---
+    pred = tfr_from_bandwidth(info["fsupp"], fs, L)
+    rel = np.abs(pred[ok] - tfr[ok]) / tfr[ok]
+    assert rel.max() < 1e-3, (
+        f"{designer}: tfr_from_bandwidth is off by up to {rel.max():.2e}")
+    # Uniform, not per-channel: a real error would vary across channels.
+    assert rel.max() / max(np.median(rel), 1e-30) < 1.01, (
+        f"{designer}: the residual varies channel to channel "
+        f"(median {np.median(rel):.2e}, max {rel.max():.2e}), so it is not "
+        f"just the fsupp convention offset"
+    )
+
+
+@pytest.mark.parametrize("designer", ["audfilters", "cqtfilters",
+                                      "greenwoodfilters", "warpedfilters"])
+def test_every_designer_publishes_a_usable_tfr(designer):
+    """``info["tfr"]`` has to exist and be usable as ``sqtfr`` on every
+    designer the rule covers -- including ``warpedfilters``, where LTFAT
+    supplies nothing and the value is derived.  Needs no reference data."""
+    import warnings as _w
+
+    from cool_frames.filters import (
+        audfilters,
+        cqtfilters,
+        greenwoodfilters,
+        warpedfilters,
+    )
+
+    fs, Ls = 8000, 4096
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        if designer == "audfilters":
+            out = audfilters(fs, Ls)
+        elif designer == "cqtfilters":
+            out = cqtfilters(fs, Ls, fmin=50.0, fmax=3900.0, bins=12)
+        elif designer == "greenwoodfilters":
+            out = greenwoodfilters(fs, Ls)
+        else:
+            out = warpedfilters(np.log, np.exp, fs, 50.0, 3900.0, 12, Ls)
+    info = out[4]
+    tfr = np.asarray(info["tfr"], float).ravel()
+    assert "tfr_source" in info and info["tfr_source"]
+    live = np.isfinite(tfr)
+    assert live.sum() >= max(4, len(tfr) // 2), (
+        f"{designer}: only {live.sum()} of {len(tfr)} channels have a finite tfr")
+    assert np.all(tfr[live] > 0), f"{designer}: non-positive tfr"
+    # sqrt(tfr) is what filterbankconstphase consumes.
+    assert np.all(np.isfinite(np.sqrt(tfr[live])))

@@ -659,6 +659,102 @@ estimator-vs-oracle test parametrised over four designers with the
 non-painless bank kept as a negative control.
 
 
+### LTFAT's `tfr` rule, recovered; and which phase-gradient path is right
+
+**`info["tfr"]` on every painless designer.** LTFAT publishes `info.tfr` as an
+opaque function handle and never states how it is built, so cool-frames'
+designers exposed no equivalent and `filterbankconstphase`'s magnitude path had
+no `sqtfr` to offer callers. Recovered from the exported references:
+
+```
+tfr[m] = 1/(2*winbw**2) * L / W[m]**2,    W[m] = fsupp[m] * L/fs
+```
+
+`W` is the channel's *designed* bandwidth in DFT bins and `winbw` the prototype
+window's equivalent-bandwidth factor (3/8 for the Hann, so the constant is
+32/9). The form is the strong part: `tfr * W**2 / L` is constant to **4.2e-16**
+across all 29 audfilters channels — over tfr values spanning 0.0298 to 719 —
+and all 78 cqtfilters channels. The formula then reproduces LTFAT's own numbers
+to a *uniform* 4.5e-5 and 2.1e-5 (median equal to max, so one scale factor, not
+a per-channel error; that residual is the small `fsupp` convention difference).
+
+This is **not** `L / comp_tfrfromwin(realised |H|)`, which gives a Hann constant
+of 3.5288 instead of 3.5556 and is off by ~1 % per channel, varying. LTFAT uses
+the design bandwidth, not the realised response.
+
+`audfilters`, `cqtfilters`, `greenwoodfilters` and `warpedfilters` now publish
+`info["tfr"]` and `info["tfr_source"]`. `warpedfilters` is the case that
+motivated this: LTFAT returns no info struct for it at all — no `fc`, no `tfr` —
+so no reference value exists and no cross-language check is possible, but it
+designs its bandwidths by the same warped rule and windows them with the same
+Hann, so the value is derived rather than left blank.
+
+**`edge_mode` now defaults to `'ltfat'`.** The DC and Nyquist complements have
+one frequency neighbour rather than two, and the two implementations scaled that
+case differently — this package averaged and restored the interior's two-sided
+scaling, LTFAT sums, so those channels came out exactly 2x apart. Which was
+right could not be adjudicated, because the derivative-filter path that would
+otherwise arbitrate does not reproduce the magnitude path under any gamma.
+
+It can be adjudicated now: the signal path turns out to be **exact** against a
+known instantaneous frequency (0.0 % on every tone probe, both designers), so it
+is legitimate ground truth. Median wrapped |magnitude − signal| on the DC
+channel, in Hz:
+
+| designer | probe | `rescaled` | `ltfat` | ratio |
+|---|---|---|---|---|
+| audfilters | white noise | 6.39 | **3.99** | 1.60 |
+| audfilters | sweep | 8.33 | **5.98** | 1.39 |
+| audfilters | 3 tones | 8.02 | **5.77** | 1.39 |
+| greenwoodfilters | white noise | 36.07 | **24.70** | 1.46 |
+| cqtfilters | white noise | 22.67 | **11.62** | 1.95 |
+
+Five of five, three designers, and interior channels identical to the last bit.
+The torch backend tracks the same choice. The Nyquist complement does not
+arbitrate and is excluded: both modes land 1200–4000 Hz from the signal path
+there, on a scale where fs/2 = 4000, so the magnitude estimate is worthless on
+that channel regardless — a separate limitation, now recorded.
+
+**The signal/magnitude gap is a resolution effect, not a fixed bias.** This
+revises the previous "structural, not a parameter choice" framing, which was
+measured on one bank. Median inner-channel |magnitude − signal|, cqtfilters:
+
+| bins/octave | M | sweep | white noise | 3 tones |
+|---|---|---|---|---|
+| 3 | 21 | 139.03 | 36.06 | 391.07 |
+| 6 | 40 | 16.13 | 17.75 | 136.69 |
+| 12 | 78 | 1.35 | 9.33 | 3.75 |
+| 24 | 154 | 0.52 | 4.93 | 0.62 |
+| 48 | 305 | **0.44** | 2.05 | **0.44** |
+
+On a well-resolved bank the two paths agree to well under 1 Hz on tonal
+material. Broadband input converges more slowly and does not reach that floor,
+which is what an estimator assuming one dominant component per cell should do.
+Spectral crowding matters too but less, and not monotonically in spacing: at
+bins=12, one tone 0.61 Hz, two an octave apart 1.77, three semitones 0.80, one
+semitone 1.47, white noise 9.33.
+
+The same resolution story explains the `sqtfr` sensitivity documented earlier.
+On the coarse audfilters bank a global 2x beats LTFAT's own `sqrt(info.tfr(L))`
+(24.0 vs 78.4 Hz on the sweep); on the finer cqtfilters bank the two are within
+15 % (1.15 vs 1.35). Gamma matters when the bank is under-resolved and stops
+mattering when it is not — so `2x` beating the derived value on
+`greenwoodfilters` (20.6 vs 54.4) is the *same* effect seen where the tfr is
+known-correct, not evidence that the derived value is wrong. That is the closest
+thing to validation available for a designer the reference gives nothing for.
+
+**Fixed while doing this:** `tfr` came out `nan` on exactly the DC and Nyquist
+channels of `audfilters` and `greenwoodfilters`, whose complements carry their
+bandwidth in `fsupp_dc`/`fsupp_nyq` and store `0` in `fsupp`. `sqrt(info["tfr"])`
+would have poisoned every coefficient of the magnitude path. All four designers
+now return finite `tfr` on every channel.
+
+**What none of this licenses:** any claim that magnitude-only gradient
+estimation is intrinsically limited. Exactly one algorithm was tested, and two
+faithful implementations of one algorithm agreeing is evidence about the port,
+not about the method class.
+
+
 ## 0.1.0
 
 First public release.

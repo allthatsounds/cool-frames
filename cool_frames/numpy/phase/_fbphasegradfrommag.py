@@ -187,7 +187,7 @@ def comp_filterbankphasegradfrommag(
     posInfo: np.ndarray,
     gderivweight: float = 0.5,
     do_tfrdiff: bool = False,
-    edge_mode: str = "rescaled",
+    edge_mode: str = "ltfat",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Phase gradient estimation from magnitude for a non-uniform filterbank.
 
@@ -209,11 +209,12 @@ def comp_filterbankphasegradfrommag(
     gderivweight : weight for tfr-difference correction (default 0.5)
     do_tfrdiff : whether to include sqtfr-difference correction
     edge_mode : how to scale the DC and Nyquist complements, which have only
-        one frequency neighbour.  ``'rescaled'`` (default) puts them on the
-        interior's two-sided scaling; ``'ltfat'`` reproduces MATLAB LTFAT,
-        which leaves them at half that.  Identical on every interior channel.
-        See the comment at the summation for why this is a choice and not
-        simply a bug.
+        one frequency neighbour.  ``'ltfat'`` (default) sums the available
+        sides, reproducing MATLAB LTFAT; ``'rescaled'`` averages them and
+        restores the interior's two-sided scaling, which comes out exactly 2x.
+        Identical on every interior channel.  See the comment at the
+        summation: this was an open question and is now settled by
+        measurement.
 
     Returns
     -------
@@ -328,14 +329,34 @@ def comp_filterbankphasegradfrommag(
             #       comp_filterbankphasegradfrommag does, so the edge channels
             #       come out half of the interior scaling.
             #
-            # They are identical wherever both sides exist.  Which one is
-            # *right* is not settled: the derivative-filter (signal) path,
-            # which needs no gamma and would otherwise arbitrate, does not
-            # reproduce the magnitude path on these banks under any gamma --
-            # on interior channels either -- so it cannot adjudicate the edges.
-            # Until that is resolved, the default preserves the interior
-            # scaling and ``edge_mode="ltfat"`` reproduces the reference bit
-            # for bit, which is what the cross-language test asserts.
+            # They are identical wherever both sides exist.
+            #
+            # Which one is right is now settled, and it is "ltfat".  The
+            # derivative-filter (signal) path is exact against a known
+            # instantaneous frequency (0.0 % on every tone probe --
+            # tests/crosslang/known_if_probe.py), so it can arbitrate after
+            # all.  Median wrapped |magnitude - signal| on the DC channel, in
+            # Hz, over the cells within 10 dB of that channel's peak:
+            #
+            #   designer          probe          rescaled   ltfat   ratio
+            #   audfilters        white noise        6.39    3.99    1.60
+            #   audfilters        sweep              8.33    5.98    1.39
+            #   audfilters        3 tones            8.02    5.77    1.39
+            #   greenwoodfilters  white noise       36.07   24.70    1.46
+            #   cqtfilters        white noise       22.67   11.62    1.95
+            #
+            # Five of five in favour, three designers, and interior channels
+            # identical to the last bit (ratio 1.000) as they must be.  The
+            # default was 'rescaled' while nothing could adjudicate; it is now
+            # 'ltfat', which is both the measurably better choice and the one
+            # the reference makes.
+            #
+            # The Nyquist complement cannot arbitrate and is not counted
+            # above: both modes land 1200-4000 Hz from the signal path there,
+            # on a scale where fs/2 = 4000, so the estimate is worthless
+            # regardless of how its one side is scaled.  That is a separate
+            # limitation of the magnitude path on a redesigned complement
+            # whose shape the estimator's model does not describe.
             sides = []
             if m < M - 1:
                 sides.append((tempValAbove + aboveNom) / aboveDenom)

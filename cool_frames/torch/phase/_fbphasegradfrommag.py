@@ -344,11 +344,14 @@ def comp_filterbankphasegradfrommag(
 
             # Each side is a one-sided difference quotient estimating the same
             # frequency-derivative of the log-magnitude.  Interior channels have
-            # both; edge channels have only one.  Average the available sides and
-            # restore the interior's two-sided scaling, so channel 0 and channel
-            # M-1 sit on the same scale as everything between them.  Kept
-            # deliberately identical to the NumPy implementation — see
-            # ``cool_frames/numpy/phase/_fbphasegradfrommag.py``.
+            # both; the DC and Nyquist complements have only one, and summing
+            # the available sides leaves those two at half the interior
+            # scaling.  That is what LTFAT does, and measuring both against the
+            # exact signal path showed it is also the more accurate choice on
+            # the DC channel (1.4-2.0x lower error, five of five probes across
+            # three designers).  This backend has no `edge_mode` switch: it
+            # tracks the NumPy default, which is now 'ltfat'.  See
+            # ``cool_frames/numpy/phase/_fbphasegradfrommag.py`` for the table.
             sides = []
             if m < M - 1:
                 sides.append((tempValAbove + aboveNom) / aboveDenom)
@@ -358,7 +361,7 @@ def comp_filterbankphasegradfrommag(
                 acc = sides[0]
                 for extra in sides[1:]:
                     acc = acc + extra
-                temp[n] = 2.0 * acc / len(sides)
+                temp[n] = acc
             else:
                 temp[n] = 0.0
 
