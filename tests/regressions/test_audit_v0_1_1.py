@@ -682,13 +682,20 @@ def test_diagonal_dual_warns_when_the_bank_is_not_painless():
     So a non-painless bank got a silently approximate dual: on
     ``waveletfilters`` the returned "tight" frame is rank-deficient and loses
     72 % of the signal while ``filterbankbounds`` prints kappa = 1.000000.
+
+    ``waveletfilters(FS, LS)`` is no longer such a bank: ``painless`` now
+    defaults to ``True``, precisely because that default was indefensible, so
+    the non-painless case has to be asked for explicitly.  The subject of this
+    test is ``filterbanktight``'s warning, not the designer's default -- that
+    default is pinned by ``TestReconstruction`` in
+    ``tests/layer1_filters/unit/test_waveletfilters.py``.
     """
     from cool_frames.numpy.filterbanks import filterbanktight
     from cool_frames.numpy.filters import audfilters, waveletfilters
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        g, a, _fc, L, _i = waveletfilters(FS, LS)
+        g, a, _fc, L, _i = waveletfilters(FS, LS, painless=False)
         filterbanktight(g, a, L)
     assert any("painless" in str(w.message) for w in caught), (
         "no warning for a bank that badly violates the painless condition"
