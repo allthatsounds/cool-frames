@@ -92,12 +92,36 @@ def comp_phasegradfilters(g: list[dict], a, L: int) -> tuple[list[dict], list[di
                 H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
-                # Centered DFT indices (fftindex with Nyquist=0)
-                k_abs = (np.arange(fo_v, fo_v + n_h) % L_).astype(float)
-                k_cent = k_abs.copy()
-                nyq = L_ // 2
-                k_cent[k_abs > nyq] -= L_
-                k_cent[k_abs == nyq] = 0.0  # Nyquist convention
+                # Signed DFT indices over the filter's own support.
+                #
+                # These must stay CONTIGUOUS.  Reducing each index mod L and
+                # then centring it about L/2 independently -- which is what
+                # this did until v0.1.1 -- splits any channel whose support
+                # crosses L/2: the lower half keeps indices near +L/2 and the
+                # upper half is thrown to near -L/2.  The frequency-weighted
+                # response then very nearly cancels, and the instantaneous
+                # frequency this filter exists to measure comes out at roughly
+                # zero instead of roughly Nyquist.
+                #
+                # Exactly one channel per bank crosses L/2: the Nyquist
+                # complement, which is symmetric about the fold because a real
+                # filterbank's top channel has to be.  On cqtfilters at
+                # fs = 8000, Ls = 4096 it occupies bins 2774..3058 with
+                # L/2 = 2916, and the split put its phase-gradient deviation
+                # at -5106.8 Hz where MATLAB LTFAT reports 0.0; every other
+                # channel already agreed with LTFAT to about 0.6 Hz.  With the
+                # support kept contiguous that channel lands at 18.0 Hz and
+                # the rest are untouched.
+                #
+                # Shifting by a whole multiple of L keeps the mapping to DFT
+                # bins exact while putting the support's midpoint in
+                # [-L/2, L/2], which is the branch a real bank wants.  There is
+                # no separate "Nyquist = 0" clause any more: an index lands on
+                # L/2 only when the support contains that bin, and that is
+                # precisely the straddling case, where zeroing it would remove
+                # the centre of the very channel being measured.
+                k_cent = np.arange(fo_v, fo_v + n_h).astype(float)
+                k_cent -= L_ * np.round(0.5 * (k_cent[0] + k_cent[-1]) / L_)
                 return k_cent * H_vals
 
             # --- gh: time-weighted (for group delay / fgrad) ---

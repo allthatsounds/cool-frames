@@ -331,32 +331,41 @@ def comp_filterbankphasegradfrommag(
             #
             # They are identical wherever both sides exist.
             #
-            # Which one is right is now settled, and it is "ltfat".  The
-            # derivative-filter (signal) path is exact against a known
-            # instantaneous frequency (0.0 % on every tone probe --
-            # tests/crosslang/known_if_probe.py), so it can arbitrate after
-            # all.  Median wrapped |magnitude - signal| on the DC channel, in
-            # Hz, over the cells within 10 dB of that channel's peak:
+            # Which one is right is NOT settled on accuracy grounds, and the
+            # default is 'ltfat' for reference fidelity instead.
             #
-            #   designer          probe          rescaled   ltfat   ratio
-            #   audfilters        white noise        6.39    3.99    1.60
-            #   audfilters        sweep              8.33    5.98    1.39
-            #   audfilters        3 tones            8.02    5.77    1.39
-            #   greenwoodfilters  white noise       36.07   24.70    1.46
-            #   cqtfilters        white noise       22.67   11.62    1.95
+            # A first pass here concluded 'ltfat' was measurably better: the
+            # derivative-filter path is exact against a known instantaneous
+            # frequency on interior channels, so it looked like a usable
+            # reference, and against it 'ltfat' halved the DC-channel error on
+            # five of five probes across three designers.
             #
-            # Five of five in favour, three designers, and interior channels
-            # identical to the last bit (ratio 1.000) as they must be.  The
-            # default was 'rescaled' while nothing could adjudicate; it is now
-            # 'ltfat', which is both the measurably better choice and the one
-            # the reference makes.
+            # That comparison was unsound.  The DC and Nyquist complements are
+            # symmetric real channels -- a real bank's edge channels have to be
+            # -- so they carry no net phase advance and the signal path
+            # collapses to the channel's own centre frequency there whatever
+            # the content: 0 Hz at DC, fs/2 at Nyquist.  "Closer to the signal
+            # path" on those two channels therefore means "closer to fc", which
+            # rewards whichever mode estimates smaller, not whichever is right.
             #
-            # The Nyquist complement cannot arbitrate and is not counted
-            # above: both modes land 1200-4000 Hz from the signal path there,
-            # on a scale where fs/2 = 4000, so the estimate is worthless
-            # regardless of how its one side is scaled.  That is a separate
-            # limitation of the magnitude path on a redesigned complement
-            # whose shape the estimator's model does not describe.
+            # Against a tone of KNOWN frequency inside the DC channel's band,
+            # the verdict is mixed and both modes are off by more than the
+            # difference between them (estimate, error, in Hz):
+            #
+            #   designer          tone     rescaled        ltfat
+            #   audfilters        15 Hz     3.3 (11.7)    1.7 (13.3)   rescaled
+            #   audfilters        22 Hz     6.5 (15.5)    3.3 (18.7)   rescaled
+            #   cqtfilters        20 Hz   -33.7 (53.7)  -16.9 (36.9)   ltfat
+            #   greenwoodfilters  15 Hz  -329.3 (344.3) -164.6 (179.6) ltfat
+            #
+            # On cqtfilters and greenwoodfilters both modes return the wrong
+            # SIGN, and 'ltfat' only looks better because it is half of a wrong
+            # number.  So the edge channels cannot adjudicate this: the phase
+            # gradient is not reliably measurable on them by either path.
+            #
+            # 'ltfat' is the default because it reproduces the reference
+            # implementation bit for bit, which is a coherent policy for a
+            # port.  It is not claimed to be more accurate.
             sides = []
             if m < M - 1:
                 sides.append((tempValAbove + aboveNom) / aboveDenom)

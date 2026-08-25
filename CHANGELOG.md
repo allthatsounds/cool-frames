@@ -689,31 +689,61 @@ so no reference value exists and no cross-language check is possible, but it
 designs its bandwidths by the same warped rule and windows them with the same
 Hann, so the value is derived rather than left blank.
 
-**`edge_mode` now defaults to `'ltfat'`.** The DC and Nyquist complements have
-one frequency neighbour rather than two, and the two implementations scaled that
-case differently — this package averaged and restored the interior's two-sided
-scaling, LTFAT sums, so those channels came out exactly 2x apart. Which was
-right could not be adjudicated, because the derivative-filter path that would
-otherwise arbitrate does not reproduce the magnitude path under any gamma.
+**`edge_mode` now defaults to `'ltfat'` — for reference fidelity, not
+accuracy.** The DC and Nyquist complements have one frequency neighbour rather
+than two, and the two implementations scaled that case differently, so those
+channels came out exactly 2x apart.
 
-It can be adjudicated now: the signal path turns out to be **exact** against a
-known instantaneous frequency (0.0 % on every tone probe, both designers), so it
-is legitimate ground truth. Median wrapped |magnitude − signal| on the DC
-channel, in Hz:
+A first pass concluded `'ltfat'` was measurably better, using the
+derivative-filter path as reference. That was unsound and is retracted. The
+complements are symmetric real channels — a real bank's edge channels have to
+be — so they carry no net phase advance, and the signal path collapses to the
+channel's own centre frequency there whatever the content. "Closer to the
+signal path" on those channels means "closer to `fc`", which rewards whichever
+mode estimates smaller.
 
-| designer | probe | `rescaled` | `ltfat` | ratio |
+Against a tone of *known* frequency inside the DC channel's band the verdict is
+mixed, and both modes are off by more than the difference between them:
+
+| designer | tone | `rescaled` | `ltfat` | closer |
 |---|---|---|---|---|
-| audfilters | white noise | 6.39 | **3.99** | 1.60 |
-| audfilters | sweep | 8.33 | **5.98** | 1.39 |
-| audfilters | 3 tones | 8.02 | **5.77** | 1.39 |
-| greenwoodfilters | white noise | 36.07 | **24.70** | 1.46 |
-| cqtfilters | white noise | 22.67 | **11.62** | 1.95 |
+| audfilters | 15 Hz | 3.3 (err 11.7) | 1.7 (err 13.3) | rescaled |
+| audfilters | 22 Hz | 6.5 (err 15.5) | 3.3 (err 18.7) | rescaled |
+| cqtfilters | 20 Hz | −33.7 (err 53.7) | −16.9 (err 36.9) | ltfat |
+| greenwoodfilters | 15 Hz | −329.3 (err 344.3) | −164.6 (err 179.6) | ltfat |
 
-Five of five, three designers, and interior channels identical to the last bit.
-The torch backend tracks the same choice. The Nyquist complement does not
-arbitrate and is excluded: both modes land 1200–4000 Hz from the signal path
-there, on a scale where fs/2 = 4000, so the magnitude estimate is worthless on
-that channel regardless — a separate limitation, now recorded.
+On cqtfilters and greenwoodfilters both modes return the wrong *sign*. So the
+edge channels cannot adjudicate this, and the default rests on matching the
+reference implementation — a coherent policy for a port — not on accuracy. The
+torch backend tracks the same choice.
+
+**Fixed: the phase gradient split the Nyquist complement in half.**
+`comp_phasegradfilters` weights each filter by its signed DFT index, and it
+reduced each index mod `L` then centred it about `L/2` *independently*. That
+splits any support crossing `L/2`: the lower half keeps indices near `+L/2`,
+the upper half is thrown to near `−L/2`, and the frequency-weighted response
+nearly cancels.
+
+Every real bank has such channels — the Nyquist complement is centred exactly
+on the fold, and the topmost few ordinary channels spill their upper tails past
+it. Measured against MATLAB LTFAT's own `filterbankphasegrad` on the same
+cqtfilters bank, the complement's deviation read **−5106.8 Hz** where LTFAT
+reports **0.0**; every other channel already agreed to about 0.6 Hz. The
+partially-straddling channels were only mildly affected (most of their energy
+sits below the fold) and had always agreed to ~1 Hz.
+
+Keeping the support contiguous — shifting it by a whole multiple of `L` so its
+midpoint lands in `[−L/2, L/2]` — brings the complement to 18.0 Hz and moves
+nothing else. A tone at 3996 Hz inside audfilters' complement now reads 4000.1
+Hz where it read −105.2 Hz. The same construction appeared in
+`_phasederiv.py` in both backends, where the index is squared so the split
+largely self-cancelled; fixed there too for consistency. The torch
+`_phasegrad.py` imports the NumPy function, so it inherits the fix.
+
+Note what remains true regardless: on a symmetric real channel the phase
+gradient collapses to that channel's centre frequency, because there is no net
+phase advance to measure. That is geometry, not a defect, and it means neither
+path resolves content *within* an edge channel.
 
 **The signal/magnitude gap is a resolution effect, not a fixed bias.** This
 revises the previous "structural, not a parameter choice" framing, which was
