@@ -23,6 +23,7 @@ channel carries no net phase advance -- that is a property of the geometry, not
 a defect, and it is why the tolerances below are stated against ``fc`` rather
 than against the probe tone.
 """
+
 from __future__ import annotations
 
 import warnings
@@ -57,10 +58,13 @@ def _channel_median_if(f, g, a, L, m):
     return float(np.median(tg[sel][live])) * FS / 2
 
 
-@pytest.mark.parametrize("designer,kw,tone", [
-    ("audfilters", {}, 3996.0),
-    ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12), 3950.0),
-])
+@pytest.mark.parametrize(
+    "designer,kw,tone",
+    [
+        ("audfilters", {}, 3996.0),
+        ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12), 3950.0),
+    ],
+)
 def test_nyquist_complement_reports_near_nyquist_not_near_zero(designer, kw, tone):
     """The regression itself: a tone inside the complement's band must not be
     reported as a near-DC instantaneous frequency."""
@@ -84,10 +88,13 @@ def test_nyquist_complement_reports_near_nyquist_not_near_zero(designer, kw, ton
     )
 
 
-@pytest.mark.parametrize("designer,kw", [
-    ("audfilters", {}),
-    ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12)),
-])
+@pytest.mark.parametrize(
+    "designer,kw",
+    [
+        ("audfilters", {}),
+        ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12)),
+    ],
+)
 def test_which_channels_straddle_the_fold(designer, kw):
     """Pins the premise, so a designer change that moves the crossing shows up
     here rather than as a mysterious gradient.
@@ -131,10 +138,13 @@ def test_which_channels_straddle_the_fold(designer, kw):
     )
 
 
-@pytest.mark.parametrize("designer,kw,tone", [
-    ("audfilters", {}, 1000.0),
-    ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12), 1000.0),
-])
+@pytest.mark.parametrize(
+    "designer,kw,tone",
+    [
+        ("audfilters", {}, 1000.0),
+        ("cqtfilters", dict(fmin=50.0, fmax=3900.0, bins=12), 1000.0),
+    ],
+)
 def test_inner_channels_are_untouched_by_the_fix(designer, kw, tone):
     """The interior is where the signal path is exact, and the index change
     must not have disturbed it."""
