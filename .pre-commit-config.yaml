@@ -2,22 +2,28 @@
 # https://pre-commit.com/
 repos:
   # Ruff: lint + format in one pass (fast, Rust-based)
+  # rev MUST match the ruff pinned in .github/workflows/ci.yml, or the hook
+  # and CI disagree about what "formatted" means.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
+    rev: v0.16.4
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
   # Mypy: type checking
+  # rev and invocation both mirror .github/workflows/ci.yml.  The entry used to
+  # be a bare `mypy cool_frames`, which checks 100 files instead of CI's 33 and
+  # surfaces 4 errors in the research layers that CI deliberately does not
+  # gate on -- so the hook failed on a clean tree.
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
+    rev: v1.20.2
     hooks:
       - id: mypy
-        args: [--ignore-missing-imports]
+        args: [--ignore-missing-imports, --follow-imports=silent]
         additional_dependencies: [numpy>=1.24]
         pass_filenames: false
-        entry: mypy cool_frames
+        entry: mypy cool_frames/torch cool_frames/numpy/core/_math.py cool_frames/numpy/core/_fourier.py cool_frames/numpy/core/_norm.py
 
   # General hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
