@@ -213,9 +213,16 @@ jobs:
       # installed) and were never *collected* here, so every regression
       # protecting a torch fix ran nowhere in CI — green locally, absent
       # upstream. Their coverage never reached codecov either.
+      #
+      # `tests/test_example_notebooks.py` is here for the same reason. It runs
+      # in test-numpy too, but notebook 3 imports `cool_frames.torch.*`, which
+      # that job cannot import; there those imports are deferred with a warning.
+      # This is the only job where they are actually resolved, so leaving the
+      # file out would mean notebook 3's torch imports were checked nowhere —
+      # which is precisely the hole this test file was written to close.
       - name: Run Torch backend tests
         run: |
-          pytest tests/torch_backend/ tests/regressions/ \
+          pytest tests/torch_backend/ tests/regressions/ tests/test_example_notebooks.py \
             -m "not slow" \
             --tb=short -q \
             --cov=cool_frames \

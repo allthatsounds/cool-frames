@@ -35,6 +35,7 @@ import ast
 import importlib
 import json
 import pathlib
+import warnings
 
 import pytest
 
@@ -98,7 +99,27 @@ def _imports(src: str):
 
 @pytest.mark.parametrize("path", _NOTEBOOKS, ids=lambda p: p.name)
 def test_notebook_imports_resolve(path):
-    missing = []
+    """Every ``cool_frames`` name a notebook imports must actually exist.
+
+    Two different things raise ImportError here and only one of them is the rot
+    this test was written for:
+
+    * ``cool_frames.numpy.phase._admm`` does not exist. That is the bug.
+    * ``cool_frames.torch.filterbanks`` does exist, but importing it imports
+      torch, and the ``test-numpy`` job installs ``.[dev]`` without torch. That
+      is the environment. ``ci.yml`` already splits the doctests along exactly
+      this line, for exactly this reason; this test was not given the same
+      treatment and so failed on notebook 3 in all four numpy matrix entries.
+
+    They are told apart by which module the error names: a ModuleNotFoundError
+    naming something outside ``cool_frames`` is a missing optional dependency,
+    and is deferred to the ``test-torch`` job, which runs this file with torch
+    installed and therefore defers nothing. A bare ImportError naming no module
+    counts as rot -- guessing the other way is how a real breakage goes quiet,
+    which is the failure this file exists to prevent.
+    """
+    missing: list[str] = []
+    deferred: list[str] = []
     for i, src in enumerate(_cells(path)):
         try:
             pairs = list(_imports(src))
@@ -108,10 +129,26 @@ def test_notebook_imports_resolve(path):
             try:
                 mod = importlib.import_module(module)
             except ImportError as exc:
-                missing.append(f"cell {i}: no module {module!r} ({exc})")
+                absent = getattr(exc, "name", None)
+                if absent is not None and absent.split(".")[0] != "cool_frames":
+                    deferred.append(f"{module} (needs {absent!r})")
+                else:
+                    missing.append(f"cell {i}: no module {module!r} ({exc})")
                 continue
             if name is not None and not hasattr(mod, name):
                 missing.append(f"cell {i}: {module} has no attribute {name!r}")
+
+    if deferred:
+        # Visible in the warnings summary rather than silent: a deferral that
+        # nobody can see is indistinguishable from a check that never runs.
+        warnings.warn(
+            f"{path.name}: {len(deferred)} import(s) not checked in this "
+            "environment because an optional dependency is absent; the "
+            "test-torch job checks them -- "
+            + ", ".join(sorted(set(deferred))),
+            stacklevel=1,
+        )
+
     assert not missing, (
         f"{path.name} imports things that do not exist:\n  "
         + "\n  ".join(missing))
