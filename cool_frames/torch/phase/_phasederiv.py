@@ -108,8 +108,14 @@ def comp_phasederivfilters_2nd(
                 H_vals = np.asarray(_eval_H(H_c, L_), dtype=complex)
                 n_h = len(H_vals)
                 fo_v = int(fo_c(L_)) if callable(fo_c) else int(fo_c)
-                k_abs = (np.arange(fo_v, fo_v + n_h) % L_).astype(float)
-                k_abs[k_abs > L_ / 2] -= L_
+                # Contiguous signed indices -- see the long note in
+                # ``_phasegrad.py``.  Reducing mod L and centring each index
+                # independently splits any support that crosses L/2, which is
+                # every bank's Nyquist complement.  Here the index is squared
+                # so the split nearly cancels, but the seam is still wrong and
+                # there is no reason to keep two different conventions.
+                k_abs = np.arange(fo_v, fo_v + n_h).astype(float)
+                k_abs -= L_ * np.round(0.5 * (k_abs[0] + k_abs[-1]) / L_)
                 tmul = -(k_abs**2)  # (j·k)² = -k²
                 return H_vals * tmul
 

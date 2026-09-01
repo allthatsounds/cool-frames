@@ -162,6 +162,10 @@ def warpedfilters(
     ) + 2
     fsupp[M-1] = math.ceil(2 * (nf - scaletofreq(chan_max + 1 / bins - bwmul))) + 2
 
+    # Capture the single-sided edge bandwidths for the admissibility check
+    # before ``freqrange='complex'`` mirrors ``fsupp`` below.
+    _fsupp_dc, _fsupp_nyq = float(fsupp[0]), float(fsupp[M - 1])
+
     # Subsampling rates
     aprecise = fs / fsupp
     aprecise[1:-1] = aprecise[1:-1] / redmul
@@ -299,5 +303,37 @@ def warpedfilters(
         min_win=min_win,
     )
 
-    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "warpedfilters"}
+    from ..diagnostics.admissibility import check_admissible
+
+    # The warped rule: channels sit uniformly in the scale coordinate and each
+    # filter is +/- bwmul wide *in that coordinate*, so the interval is derived
+    # from ``scalevec`` rather than from Hz supports.
+    admissible = check_admissible(
+        None, None, fs=fs, L=int(L),
+        fsupp_dc=_fsupp_dc, fsupp_nyq=_fsupp_nyq,
+        warped=(scalevec, scaletofreq, bwmul), min_win=1,
+        designer="warpedfilters")
+
+    # LTFAT publishes no info struct at all for warpedfilters -- no fc, no
+    # tfr -- so `filterbankconstphase`'s magnitude path had no sqtfr to use on
+    # this designer and no reference to copy one from. The rule LTFAT applies
+    # to the designers that DO expose one was recovered from its own exports
+    # (see `tfr_from_bandwidth`) and depends only on the designed bandwidth
+    # and the window, both of which warpedfilters has. So it is derived here
+    # rather than left blank. It is NOT validated against LTFAT and cannot be.
+    from ._tfr import tfr_from_bandwidth
+
+    # As for the other designers: the two edge channels' bandwidths are the
+    # ones captured before the `freqrange='complex'` mirror, not whatever
+    # `fsupp` holds at those positions now.
+    _bw = np.asarray(fsupp, dtype=float).copy()
+    _bw[0] = float(_fsupp_dc)
+    _bw[min(M - 1, len(_bw) - 1)] = float(_fsupp_nyq)
+
+    info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "warpedfilters",
+            "fsupp": fsupp, "scalevec": scalevec, "bwmul": float(bwmul),
+            "fsupp_dc": _fsupp_dc, "fsupp_nyq": _fsupp_nyq,
+            "tfr": tfr_from_bandwidth(_bw, fs, int(L)),
+            "tfr_source": "derived (no LTFAT reference exists)",
+            "admissible": admissible}
     return g, a, fc_arr, int(L), info  # type: ignore[return-value]

@@ -53,9 +53,39 @@ def _winwidthatheight(g: np.ndarray, atheight: float) -> float:
     """Width of window *g* at relative height *atheight*.
 
     Port of the nested ``winwidthatheight`` in pghi_findgamma.m.
+
+    The MATLAB original reads ``gnum(1:floor(gl/2)+1)`` and looks for the
+    threshold crossing as the index *increases*, which is only meaningful for
+    DFT ordering — peak at index 0, decaying outwards.  Handed the centred
+    ordering that ``scipy.signal.get_window`` and every other Python window
+    source produces, the scan runs *up* the rising flank instead of down the
+    falling one, the crossing indices pin near the peak, and the measured width
+    comes out at roughly ``gl`` for any window shape.  Through v0.1.1 that made
+    ``pghi_findgamma(hann_vector)`` return ``Cg = 2.195`` against the
+    precomputed ``Cg = 0.25645`` for the same window — 8.5x too large, silently
+    — and 6.1x to 10.3x for the other tabulated shapes.  Since ``gamma``
+    scales the phase gradients PGHI integrates, an error of that size does not
+    degrade the phase estimate, it replaces it.
+
+    This is the same defect, in a second copy of the same helper, that was
+    fixed in ``cool_frames/numpy/filters/_gabfilters.py`` — see
+    ``test_window_width_measurement_depends_on_window_shape``.  The two copies
+    are private, near-identical, and were never compared, so the fix landed in
+    one of them.  ``test_findgamma.py`` now asserts they agree.
+
+    Rolling the peak to index 0 first makes the routine correct for both
+    layouts and leaves the DFT-ordered case bit-identical (its argmax is
+    already 0).
     """
     g = np.asarray(g, dtype=float).ravel()
     gl = len(g)
+    if gl == 0:
+        return 0.0
+
+    peak = int(np.argmax(g))
+    if peak != 0:
+        g = np.roll(g, -peak)
+
     gmax = float(np.max(g))
     fracofmax = gmax / (1.0 / atheight)  # = gmax * atheight
 
@@ -83,6 +113,22 @@ def _findbestgauss(gnum: np.ndarray, atheightrange: np.ndarray | None = None) ->
     """Find the relative height at which a Gaussian best matches *gnum*.
 
     Simplified port — uses a brute-force search over atheight values.
+
+    Like :func:`_winwidthatheight`, this works in DFT ordering: the zero-pad
+    below splits *gnum* at its midpoint and wraps the second half to the end of
+    ``glong``, and the reference Gaussian is built on the wrap-around distance
+    ``min(l, L-l)``.  Both only line up if the window peaks at index 0, so the
+    peak is rolled there first.
+
+    Known limitation: the returned ``atheight`` regularly pins at the top of
+    ``atheightrange`` (0.8) for the standard windows, which means the minimum is
+    at the boundary rather than interior and the search has not actually found
+    the best Gaussian.  With the ordering fixed, the resulting ``Cg`` is 7-45 %
+    above the tabulated constant for the same window (Hann 0.309 vs 0.256;
+    cosine 0.600 vs 0.415).  Pass the window *name* when you have it —
+    :func:`pghi_findgamma` then returns the exact tabulated value and never
+    reaches this search.  ``test_findgamma.py`` pins the gap so that narrowing
+    it is a visible change.
     """
     if atheightrange is None:
         atheightrange = np.arange(0.01, 0.801, 0.001)
@@ -90,8 +136,12 @@ def _findbestgauss(gnum: np.ndarray, atheightrange: np.ndarray | None = None) ->
     gl = len(gnum)
     L = 10 * gl
 
-    # Peak-normalise and zero-pad
+    # Peak-normalise, then roll the peak to index 0 (see docstring).
+    gnum = np.asarray(gnum, dtype=float).ravel()
     gnum = gnum / np.max(np.abs(gnum))
+    peak = int(np.argmax(gnum))
+    if peak != 0:
+        gnum = np.roll(gnum, -peak)
     glong = np.zeros(L)
     half = (gl + 1) // 2
     glong[:half] = gnum[:half]

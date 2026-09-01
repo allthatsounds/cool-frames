@@ -1,0 +1,1483 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 6eec608..c47bd9f 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -103,6 +103,10 @@ jobs:
+           files: coverage-numpy-${{ matrix.python-version }}.xml
+           flags: numpy
+           token: ${{ secrets.CODECOV_TOKEN }}
++          # A dropped upload used to be a warning in a green job. The project
++          # read 76 % — the numpy job alone — because the torch report was not
++          # landing and nothing said so. See codecov.yml.
++          fail_ci_if_error: true
+ 
+       - name: Upload test results
+         if: always()
+@@ -171,9 +175,15 @@ jobs:
+           # Use CPU-only torch to keep CI fast
+           pip install torch --index-url https://download.pytorch.org/whl/cpu
+ 
++      # `tests/torch_backend/` is not where all the torch tests live: the
++      # regression suites carry torch cases too, guarded with
++      # `pytest.importorskip("torch")`. Those skip in test-numpy (no torch
++      # installed) and were never *collected* here, so every regression
++      # protecting a torch fix ran nowhere in CI — green locally, absent
++      # upstream. Their coverage never reached codecov either.
+       - name: Run Torch backend tests
+         run: |
+-          pytest tests/torch_backend/ \
++          pytest tests/torch_backend/ tests/regressions/ \
+             -m "not slow" \
+             --tb=short -q \
+             --cov=cool_frames \
+@@ -192,6 +202,7 @@ jobs:
+           files: coverage-torch-${{ matrix.python-version }}.xml
+           flags: torch
+           token: ${{ secrets.CODECOV_TOKEN }}
++          fail_ci_if_error: true
+ 
+       - name: Upload test results
+         if: always()
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 590b904..171feae 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -370,6 +370,66 @@ but its `/8000` is a digital-frequency normalisation rather than a sampling
+ rate, so the tones were always below Nyquist. The code is unchanged and the
+ comment now says so.
+ 
++### Found by chasing the coverage number
++
++Codecov read 76 %. Executing the code no test had executed turned up two more
++defects, which is the useful thing to say about the metric: it was not hygiene,
++it was a list of places nobody had checked.
++
++- **`pghi_findgamma` returned a window constant 6-10x too large for a numeric
++  window.** A 256-tap Hann gave `Cg = 2.195` against the tabulated 0.25645 for
++  the same window — and the table *is* the precomputed answer to that search.
++  Since `gamma = Cg * gl**2` scales the phase gradients PGHI integrates, this
++  did not blur the phase estimate, it replaced it.
++
++  The cause is the fifth occurrence in this audit of one defect fixed in one of
++  two copies. `_winwidthatheight` finds the threshold crossing by scanning
++  `g[:gl//2+1]`, which only tracks the falling flank if the window peaks at
++  index 0; handed the centred ordering `scipy.signal.get_window` produces, it
++  runs up the rising flank and measures roughly `gl` for any shape. The same
++  helper in `cool_frames/numpy/filters/_gabfilters.py` had this fixed in the
++  second pass; the copy under `numpy/phase/` kept it, because the two are
++  private, near-identical and nothing compared them. Windows passed by *name*
++  were never affected — they return the tabulated constant and never enter the
++  search — so no existing caller could see it.
++
++  Fixed, and `test_findgamma.py` now holds the two copies to each other across
++  eight window shapes at four heights.
++
++  Still open, and pinned in both directions: with the ordering corrected the
++  search is 7-45 % above the table, because `_findbestgauss` returns the top of
++  its own hardcoded search range for four of the five tabulated windows. The
++  test asserts the ratio stays in `[1.0, 1.5)`, so neither a regression to the
++  6-10x error nor a genuine improvement can pass silently.
++
++- **Every regression test protecting a torch fix ran in neither CI job.** The
++  torch cases in `tests/regressions/` are guarded with
++  `pytest.importorskip("torch")`, so they skip in the numpy job for want of
++  torch — and the torch job collected only `tests/torch_backend/`. Green
++  locally, absent upstream, and their coverage reached codecov from nowhere.
++  Together with `codecov-action`'s default of `fail_ci_if_error: false`, which
++  turns a dropped upload into a warning inside a green job, that is why the
++  project read 76 % — the numpy job alone, to within a point — while the union
++  of the two jobs measures **85.04 %**. A `codecov.yml` now declares both flags
++  with carryforward and an 80 % target on project and patch.
++
++- **The iterative phase-retrieval family had no test coverage at all.**
++  `rtisila`, `gsrtisila`, `lertisila`, `legla`, `decolbfgs` and `spsi` — twelve
++  implementations across the two backends — sat at 7-11 %, meaning imports ran
++  and algorithms did not. All twelve are correct; `test_phase_retrieval_family.py`
++  now exercises them, asserting **consistency** rather than `magnitudeerr`,
++  which every routine in this family satisfies by construction and on which zero
++  phase scores a perfect `-inf dB`.
++
++- Two reporting defects found there, **pinned rather than fixed**, because both
++  are changes to a public return contract and the call is yours:
++  `relres` from the RTISIL family is computed after the magnitude projection and
++  is therefore ~1e-16 unconditionally — reported alongside an actual consistency
++  of -13 dB, while GLA honestly reports 0.249 for the same quality — and
++  `wpghi_findgamma` accepts a `tfr` argument it never reads. See
++  `DEFECT_REGISTER.md`.
++
++
+ ## 0.1.0
+ 
+ First public release.
+diff --git a/DEFECT_REGISTER.md b/DEFECT_REGISTER.md
+index a5a7ac7..a173ddd 100644
+--- a/DEFECT_REGISTER.md
++++ b/DEFECT_REGISTER.md
+@@ -376,6 +376,159 @@ The changeset is now checked with `vermin --target=3.10` rather than by
+ guesswork: the shipped package comes out 3.9-compatible, and the only flag in
+ the tests is the guarded `tomllib` import, which vermin cannot see through.
+ 
++## Closed in the fifth pass — found by chasing coverage
++
++Codecov read 76 %. Raising it meant executing code no test had executed, and
++two of the three things found were defects rather than gaps. That is the point
++worth keeping: the coverage number was not a hygiene metric, it was a list of
++places where nobody had checked.
++
++### The window-width helper, in its second copy
++
++`pghi_findgamma(window_vector)` returned `Cg = 2.195` for a 256-tap Hann,
++against the precomputed `Cg = 0.25645` for the same window. The table *is* the
++precomputed answer to that search, so the two must agree. Measured factors:
++
++| window   | table `Cg` | numeric `Cg` | factor |
++|----------|-----------:|-------------:|-------:|
++| hann     |    0.25645 |      2.19460 |   8.6x |
++| hamming  |    0.29794 |      2.26669 |   7.6x |
++| blackman |    0.17954 |      1.85417 |  10.3x |
++| bartlett |    0.27561 |      2.02420 |   7.3x |
++| cosine   |    0.41532 |      2.54799 |   6.1x |
++
++`gamma = Cg * gl**2` scales the phase gradients PGHI integrates, so an error of
++this size does not blur the phase estimate, it replaces it — the same failure
++mode as the missing centre-frequency term in `comp_filterbankphasegradfrommag`.
++
++The cause: `_winwidthatheight` scans `g[:gl//2+1]` for the threshold crossing,
++which tracks the *falling* flank only if the window peaks at index 0. Handed
++the centred ordering that `scipy.signal.get_window` — and every other Python
++window source — produces, it runs up the rising flank instead, the crossing
++indices pin near the peak, and the measured width comes out at roughly `gl` for
++any shape.
++
++**This is a defect the audit had already found and fixed.** The same helper
++exists in `cool_frames/numpy/filters/_gabfilters.py`; the second pass fixed it
++there with a `np.roll(g, -argmax)` and wrote
++`test_window_width_measurement_depends_on_window_shape` to hold it. The copy in
++`_findgamma.py` kept the bug, because the two are private, near-identical, and
++nothing compared them. Anything reached through the window *name* was
++unaffected — named windows return the tabulated constant and never enter the
++search — so the failure was invisible to every existing caller.
++
++Fixed by applying the same roll in `_winwidthatheight` and `_findbestgauss`.
++`test_findgamma.py` now asserts the two copies agree on eight window shapes at
++four heights, so the next fix cannot land in one of them.
++
++That makes **five** occurrences of "fixed where it broke, and nowhere else" in
++this audit — four across the two backends, and this one across two modules of
++the same backend.
++
++### What the fix does not fix
++
++With the ordering corrected the numeric search is still 7-45 % above the table
++(hann 0.309 vs 0.256; cosine 0.600 vs 0.415). `_findbestgauss` returns
++`atheight = 0.8` for four of the five tabulated windows — the top of its
++hardcoded `np.arange(0.01, 0.801, 0.001)` — so the minimum sits on the boundary
++and the search has not converged to anything. Bartlett does find an interior
++minimum at 0.285 and is no more accurate for it, so the pinning is not the whole
++story. The module already calls itself a "simplified port".
++
++Left as-is and **pinned in both directions**:
++`test_numeric_search_still_disagrees_with_the_table` asserts the ratio is in
++`[1.0, 1.5)`, so the 6-10x error cannot return *and* a genuine improvement fails
++the test rather than passing silently. Closing this properly needs reference
++values from `findbestgauss.m`, which is a porting job, not a patch.
++
++### `relres` from the RTISIL family is not a convergence measure
++
++`rtisila`, `gsrtisila` and `lertisila` end with
++`c[m][n] = s[m][n] * exp(1j*phase)` and *then* compute
++`relres = ||abs(c) - s|| / ||s||`. That difference is zero by construction, so
++the number reports whether the last assignment executed, not whether the
++algorithm converged. Measured on a redundancy-2.1 Gabor bank: all three report
++`relres ~ 1e-16` while their actual consistency is -13 dB, and GLA — within one
++decibel of them on the metric that matters — honestly reports 0.249. Selecting a
++method by `relres` reads the RTISIL family as fifteen orders of magnitude
++better. `niter` is likewise `maxit * n_frames`, so four iterations report as 256.
++
++Not fixed: redefining `relres` changes a public return contract, and the choice
++of what it should measure is yours. Pinned by
++`test_relres_is_not_a_convergence_measure`, which asserts the *current* wrong
++behaviour so that changing it is deliberate and visible.
++
++### `wpghi_findgamma` ignores its `tfr` argument
++
++The signature promises a filterbank-domain variant taking a per-channel
++time-frequency ratio; the body is `return pghi_findgamma(g, **kwargs)` and
++`tfr` is never read. A caller who computes one and passes it in gets the plain
++Gabor answer with no indication. Pinned rather than fixed — making `tfr` mean
++something is a design decision about per-channel gamma, not a typo.
++
++### Why codecov read 76 % when the library measures 85 %
++
++Not a defect in the library, but it was hiding them. Coverage comes from two
++jobs that see different halves:
++
++| report | coverage |
++|--------|---------:|
++| `test-numpy` alone (no torch installed; all of `cool_frames/torch` reads 0 %) | 77.79 % |
++| `test-torch` alone | 71.85 % |
++| **union — the library's actual coverage** | **85.04 %** |
++
++76 % is the numpy job on its own, to within a point: the second report was not
++reaching the merge. Two causes, both fixed:
++
++1. The torch job collected only `tests/torch_backend/`. Every torch case in
++   `tests/regressions/` is guarded with `pytest.importorskip("torch")` — those
++   skip in test-numpy for want of torch and were never *collected* in
++   test-torch, so **every regression protecting a torch fix ran in neither
++   job.** Green locally, absent upstream. Now collected in test-torch.
++2. `codecov-action` defaults to `fail_ci_if_error: false`, so a rejected upload
++   is a warning inside a green job. Both uploads now set it true.
++
++A `codecov.yml` now declares both flags with `carryforward: true` (so a run
++where one job is skipped does not report a 13-point drop), sets the project
++target at 80 % and the patch target at 80 % — the latter being the check that
++would have caught the phase-retrieval family shipping at 7-11 %.
++
++Adding coverage to the doctest steps was measured and *not* done: doctests lift
++the numpy job by 0.76 points and the union by nothing at all, since the torch
++job already reaches those lines.
++
++### The gap that was only a gap
++
++`rtisila`, `gsrtisila`, `lertisila`, `legla`, `decolbfgs` and `spsi` — six
++routines, twelve implementations across the two backends — sat at 7-11 %
++coverage, meaning the module docstring and the imports ran and the algorithms
++did not. All twelve shipped in v0.1.0 and v0.1.1 without a single call from the
++suite. `filterbankconstphase` was in exactly that position when the audit found
++its gradient estimator returning frequency deviations to an integrator that
++consumes absolute frequencies, so this was not a hypothetical risk.
++
++Tested, and they are correct. `test_phase_retrieval_family.py` asserts what
++matters — **consistency**, not `magnitudeerr`, which every routine in this
++family satisfies by construction and on which zero phase scores a perfect
++`-inf dB`. Against a +8.4 dB zero-phase baseline on a redundancy-2.1 bank:
++
++| routine   | 1 iter  | 10 iters |
++|-----------|--------:|---------:|
++| gla       | +0.6 dB | -12.0 dB |
++| legla     | +0.5 dB | -12.0 dB |
++| rtisila   | -7.9 dB | -13.0 dB |
++| gsrtisila | -7.9 dB | -13.0 dB |
++| lertisila | -8.6 dB | -12.1 dB |
++| decolbfgs | -5.1 dB | -10.3 dB |
++
++The two backends agree to 1e-8 relative on all of them except `decolbfgs`,
++whose L-BFGS line search legitimately differs (-10.25 dB vs -10.16 dB).
++
++One observation, not a defect: `gsrtisila` at its default `startphase='zero'`
++is bit-identical to `rtisila`, because `startphase` is the only thing that
++distinguishes them and the default takes no initialisation branch. The
++Gnann-Spiertz variant is only a variant if you ask for one.
++
+ ## Minor, recorded for completeness
+ 
+ - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —
+diff --git a/codecov.yml b/codecov.yml
+new file mode 100644
+index 0000000..648fa03
+--- /dev/null
++++ b/codecov.yml
+@@ -0,0 +1,82 @@
++# Codecov configuration
++# =====================
++#
++# Why this file exists
++# --------------------
++# Coverage in this repo is produced by two CI jobs that see different halves of
++# the library:
++#
++#   * ``test-numpy``  installs ``.[dev]`` *without* torch, so every module under
++#     ``cool_frames/torch/`` is imported by nobody and reports 0 %.  Measured
++#     alone: 77.8 %.
++#   * ``test-torch``  installs torch and runs the torch suites.  Measured alone:
++#     71.9 %.
++#
++# Neither number is the library's coverage.  The union is — 85.0 % — and it is
++# only the union if *both* uploads reach Codecov and are merged.  The project
++# was reading 76 %, which is the numpy job on its own to within a point, so the
++# second upload was not landing.  Two things caused that and both are fixed
++# here and in ci.yml:
++#
++#   1. The torch job collected only ``tests/torch_backend/``.  Every torch case
++#      in ``tests/regressions/`` is guarded with ``pytest.importorskip("torch")``
++#      — those skip in test-numpy for want of torch and were never *collected*
++#      in test-torch, so they ran in neither job and their coverage existed
++#      nowhere.  ci.yml now collects ``tests/regressions/`` in the torch job.
++#   2. ``codecov-action`` defaults to ``fail_ci_if_error: false``: a rejected or
++#      dropped upload is a warning in a green job.  Both uploads now set it
++#      true, so a missing report fails the build instead of quietly halving the
++#      reported number.
++#
++# ``carryforward`` on both flags means a commit that only touches, say, the
++# NumPy job reuses the last known torch measurement rather than treating the
++# whole torch backend as newly uncovered.  Without it, any run where one job is
++# skipped reports a ~13-point drop that has nothing to do with the change.
++
++codecov:
++  require_ci_to_pass: true
++  notify:
++    # Do not post a status until both flags have reported.
++    after_n_builds: 2
++
++coverage:
++  precision: 2
++  round: down
++  range: "70...90"
++
++  status:
++    project:
++      default:
++        # Measured union at the time of writing: 85.04 %.  The threshold allows
++        # ordinary churn; a real regression still trips it.
++        target: 80%
++        threshold: 1%
++        if_ci_failed: error
++    patch:
++      default:
++        # New code should arrive with tests.  This is the check that would have
++        # caught the phase-retrieval family shipping at 7-11 % coverage.
++        target: 80%
++        threshold: 5%
++
++flags:
++  numpy:
++    paths:
++      - cool_frames/
++    carryforward: true
++  torch:
++    paths:
++      - cool_frames/
++    carryforward: true
++
++comment:
++  layout: "reach, diff, flags, files"
++  behavior: default
++  require_changes: false
++
++ignore:
++  - "tests/"
++  - "benchmarks/"
++  - "examples/"
++  - "docs/"
++  - "torch_additions/"   # parked torch extras; excluded from the wheel too
+diff --git a/cool_frames/numpy/phase/_findgamma.py b/cool_frames/numpy/phase/_findgamma.py
+index bf110db..17ede33 100644
+--- a/cool_frames/numpy/phase/_findgamma.py
++++ b/cool_frames/numpy/phase/_findgamma.py
+@@ -53,9 +53,39 @@ def _winwidthatheight(g: np.ndarray, atheight: float) -> float:
+     """Width of window *g* at relative height *atheight*.
+ 
+     Port of the nested ``winwidthatheight`` in pghi_findgamma.m.
++
++    The MATLAB original reads ``gnum(1:floor(gl/2)+1)`` and looks for the
++    threshold crossing as the index *increases*, which is only meaningful for
++    DFT ordering — peak at index 0, decaying outwards.  Handed the centred
++    ordering that ``scipy.signal.get_window`` and every other Python window
++    source produces, the scan runs *up* the rising flank instead of down the
++    falling one, the crossing indices pin near the peak, and the measured width
++    comes out at roughly ``gl`` for any window shape.  Through v0.1.1 that made
++    ``pghi_findgamma(hann_vector)`` return ``Cg = 2.195`` against the
++    precomputed ``Cg = 0.25645`` for the same window — 8.5x too large, silently
++    — and 6.1x to 10.3x for the other tabulated shapes.  Since ``gamma``
++    scales the phase gradients PGHI integrates, an error of that size does not
++    degrade the phase estimate, it replaces it.
++
++    This is the same defect, in a second copy of the same helper, that was
++    fixed in ``cool_frames/numpy/filters/_gabfilters.py`` — see
++    ``test_window_width_measurement_depends_on_window_shape``.  The two copies
++    are private, near-identical, and were never compared, so the fix landed in
++    one of them.  ``test_findgamma.py`` now asserts they agree.
++
++    Rolling the peak to index 0 first makes the routine correct for both
++    layouts and leaves the DFT-ordered case bit-identical (its argmax is
++    already 0).
+     """
+     g = np.asarray(g, dtype=float).ravel()
+     gl = len(g)
++    if gl == 0:
++        return 0.0
++
++    peak = int(np.argmax(g))
++    if peak != 0:
++        g = np.roll(g, -peak)
++
+     gmax = float(np.max(g))
+     fracofmax = gmax / (1.0 / atheight)  # = gmax * atheight
+ 
+@@ -83,6 +113,22 @@ def _findbestgauss(gnum: np.ndarray, atheightrange: np.ndarray | None = None) ->
+     """Find the relative height at which a Gaussian best matches *gnum*.
+ 
+     Simplified port — uses a brute-force search over atheight values.
++
++    Like :func:`_winwidthatheight`, this works in DFT ordering: the zero-pad
++    below splits *gnum* at its midpoint and wraps the second half to the end of
++    ``glong``, and the reference Gaussian is built on the wrap-around distance
++    ``min(l, L-l)``.  Both only line up if the window peaks at index 0, so the
++    peak is rolled there first.
++
++    Known limitation: the returned ``atheight`` regularly pins at the top of
++    ``atheightrange`` (0.8) for the standard windows, which means the minimum is
++    at the boundary rather than interior and the search has not actually found
++    the best Gaussian.  With the ordering fixed, the resulting ``Cg`` is 7-45 %
++    above the tabulated constant for the same window (Hann 0.309 vs 0.256;
++    cosine 0.600 vs 0.415).  Pass the window *name* when you have it —
++    :func:`pghi_findgamma` then returns the exact tabulated value and never
++    reaches this search.  ``test_findgamma.py`` pins the gap so that narrowing
++    it is a visible change.
+     """
+     if atheightrange is None:
+         atheightrange = np.arange(0.01, 0.801, 0.001)
+@@ -90,8 +136,12 @@ def _findbestgauss(gnum: np.ndarray, atheightrange: np.ndarray | None = None) ->
+     gl = len(gnum)
+     L = 10 * gl
+ 
+-    # Peak-normalise and zero-pad
++    # Peak-normalise, then roll the peak to index 0 (see docstring).
++    gnum = np.asarray(gnum, dtype=float).ravel()
+     gnum = gnum / np.max(np.abs(gnum))
++    peak = int(np.argmax(gnum))
++    if peak != 0:
++        gnum = np.roll(gnum, -peak)
+     glong = np.zeros(L)
+     half = (gl + 1) // 2
+     glong[:half] = gnum[:half]
+diff --git a/cool_frames/torch/phase/_fbphasegradfrommag.py b/cool_frames/torch/phase/_fbphasegradfrommag.py
+index d4e172f..3b87c0f 100644
+--- a/cool_frames/torch/phase/_fbphasegradfrommag.py
++++ b/cool_frames/torch/phase/_fbphasegradfrommag.py
+@@ -328,11 +328,38 @@ def comp_filterbankphasegradfrommag(
+             if numNeighBelow > 0:
+                 tempValBelow /= numNeighBelow
+ 
+-            temp[n] = (tempValAbove + aboveNom) / aboveDenom + (
+-                tempValBelow + belowNom
+-            ) / belowDenom
+-
+-        tgrad[chanStart : chanStart + Nm] = temp / denom
++            # Each side is a one-sided difference quotient estimating the same
++            # frequency-derivative of the log-magnitude.  Interior channels have
++            # both; edge channels have only one.  Average the available sides and
++            # restore the interior's two-sided scaling, so channel 0 and channel
++            # M-1 sit on the same scale as everything between them.  Kept
++            # deliberately identical to the NumPy implementation — see
++            # ``cool_frames/numpy/phase/_fbphasegradfrommag.py``.
++            sides = []
++            if m < M - 1:
++                sides.append((tempValAbove + aboveNom) / aboveDenom)
++            if m > 0:
++                sides.append((tempValBelow + belowNom) / belowDenom)
++            if sides:
++                acc = sides[0]
++                for extra in sides[1:]:
++                    acc = acc + extra
++                temp[n] = 2.0 * acc / len(sides)
++            else:
++                temp[n] = 0.0
++
++        # ``fc`` is a *normalised* centre frequency in [0, 2] (2 == fs).  The
++        # difference quotient above estimates the *deviation* of the
++        # instantaneous frequency from the channel's centre frequency, while the
++        # heap integrator consumes the absolute value.  Omitting this term left
++        # tgrad off by the centre frequency itself.
++        #
++        # This backend kept the defect for a whole release after the NumPy one
++        # was fixed, because nothing internal calls it — the torch
++        # ``filterbankconstphase`` delegates to NumPy — so no test went red.  On
++        # a 660 Hz tone at fs = 4000 it returned -0.0509 where the truth is
++        # 0.3300.  The parity test now pins the two backends together.
++        tgrad[chanStart : chanStart + Nm] = temp / denom + fc_t[m]
+         chanStart += Nm
+ 
+     # ----- Scale fgrad by tfr² / (2π) * N(m) -----
+diff --git a/tests/regressions/test_backend_parity.py b/tests/regressions/test_backend_parity.py
+new file mode 100644
+index 0000000..1d70e5c
+--- /dev/null
++++ b/tests/regressions/test_backend_parity.py
+@@ -0,0 +1,357 @@
++"""
++test_backend_parity.py
++======================
++Tests that hold the two backends to the same answers.
++
++The v0.1.1 audit fixed the same defect four times in four places, because the
++NumPy and torch implementations of the phase family are *separate* code rather
++than one wrapping the other, and nothing compared them.  Each fix went in where
++the failure was noticed and nowhere else:
++
++* ``real=False`` as a default: fixed in NumPy ``filterbankiter``, then torch
++  ``filterbankiter``, then NumPy ``ifilterbankiter``, and finally torch
++  ``ifilterbankiter`` — which had gone on reconstructing the flagship bank with
++  23 % error through all three of the others.
++* The missing centre-frequency term in the phase-gradient estimator: fixed in
++  NumPy, and left in torch for a whole release.
++
++Both survived because the torch copies have no internal callers — the torch
++``filterbankconstphase`` delegates to NumPy — so the test suite stayed green
++while a publicly exported, publicly documented function returned the wrong
++numbers.
++
++The lesson these tests encode is that "fix it where it broke" does not work for
++a two-backend library.  What works is asserting the backends agree, so a fix
++applied to one and not the other fails immediately rather than in a release or
++two.
++"""
++
++from __future__ import annotations
++
++import warnings
++
++import pytest
++
++import numpy as np
++
++FS = 4000
++LS = 512
++
++
++def _fixture():
++    """An ERB bank plus the arrays the gradient estimator wants."""
++    from cool_frames.numpy.filterbanks import filterbank
++    from cool_frames.numpy.filters import audfilters
++    from cool_frames.numpy.filters._tfr import compute_tfr_from_filters
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        g, a, fc, L, _info = audfilters(FS, LS)
++        t = np.arange(LS) / FS
++        # A pure tone, so the true instantaneous frequency is known exactly and
++        # the absolute-vs-deviation question has a checkable answer.
++        x = np.sin(2 * np.pi * 660.0 * t) * np.hanning(LS)
++        s = [np.abs(u) for u in filterbank(x, g, a, L=L)]
++
++    M = len(g)
++    a_arr = np.atleast_1d(np.asarray(a))
++    a_int = np.array(
++        [int(a_arr[m]) if a_arr.ndim == 1 else int(a_arr[m, 0]) for m in range(M)],
++        dtype=int,
++    )
++    return dict(
++        M=M,
++        L=L,
++        N=np.array([len(u) for u in s], dtype=int),
++        a_int=a_int,
++        abss=np.concatenate(s),
++        sqtfr=np.sqrt(np.asarray(compute_tfr_from_filters(g, L), dtype=float)),
++        # The [0, 2] convention the integrator uses: 2 == fs.
++        fc_norm=np.asarray(fc, dtype=float) / FS * 2.0,
++        f0=660.0,
++    )
++
++
++@pytest.mark.requires_torch_impl
++def test_phase_gradient_estimators_agree_between_backends():
++    """The torch estimator kept the missing centre-frequency term for a release.
++
++    ``comp_filterbankphasegradfrommag`` exists twice — a NumPy version and an
++    independent 346-line torch version — and only the NumPy one was fixed when
++    the defect was found.  On a 660 Hz tone at fs = 4000, where the true
++    normalised instantaneous frequency is 0.33, torch returned **-0.0509**: the
++    deviation from the channel's centre frequency rather than the absolute
++    value.
++
++    Nothing internal calls the torch copy, so no existing test could notice.
++    This one compares the two directly, which is the only check that would have.
++    """
++    torch = pytest.importorskip("torch")
++    from cool_frames.numpy.phase._fbphasegradfrommag import (
++        comp_filterbankneighbors as np_neighbors,
++    )
++    from cool_frames.numpy.phase._fbphasegradfrommag import (
++        comp_filterbankphasegradfrommag as np_grad,
++    )
++    from cool_frames.torch.phase import comp_filterbankphasegradfrommag as t_grad
++    from cool_frames.torch.phase._fbphasegradfrommag import (
++        comp_filterbankneighbors as t_neighbors,
++    )
++
++    f = _fixture()
++    NEIGH, pos = np_neighbors(f["a_int"], f["M"], f["N"], do_real=True)
++    tg_np, fg_np, _logs = np_grad(
++        f["abss"], f["N"], f["a_int"], f["M"], f["sqtfr"], f["fc_norm"], NEIGH, pos
++    )
++
++    NEIGH_t, pos_t = t_neighbors(
++        torch.as_tensor(f["a_int"]), f["M"], torch.as_tensor(f["N"]), do_real=True
++    )
++    tg_t, fg_t, _l = t_grad(
++        torch.as_tensor(f["abss"]),
++        torch.as_tensor(f["N"]),
++        torch.as_tensor(f["a_int"]),
++        f["M"],
++        torch.as_tensor(f["sqtfr"]),
++        torch.as_tensor(f["fc_norm"]),
++        NEIGH_t,
++        pos_t,
++    )
++    tg_t = np.asarray(tg_t.detach())
++    fg_t = np.asarray(fg_t.detach())
++
++    assert np.allclose(tg_np, tg_t, rtol=1e-7, atol=1e-9), (
++        f"tgrad differs between backends: max |diff| = {np.max(np.abs(tg_np - tg_t)):.3e}"
++    )
++    assert np.allclose(fg_np, fg_t, rtol=1e-7, atol=1e-9), (
++        f"fgrad differs between backends: max |diff| = {np.max(np.abs(fg_np - fg_t)):.3e}"
++    )
++
++    # ...and both are the *absolute* instantaneous frequency, not a deviation.
++    # This is the half that a pure parity check would miss: two backends can
++    # agree and both be wrong.
++    expected = f["f0"] / FS * 2.0
++    loudest = int(np.argmax(f["abss"]))
++    for name, tg in (("numpy", tg_np), ("torch", tg_t)):
++        assert abs(tg[loudest] - expected) < 0.15, (
++            f"{name} tgrad at the loudest cell is {tg[loudest]:.4f}, expected about "
++            f"{expected:.4f}. A value near zero means the centre-frequency term "
++            f"is missing again."
++        )
++
++
++@pytest.mark.requires_torch_impl
++def test_phase_gradient_estimator_is_actually_differentiable():
++    """The torch copy exists *only* to be differentiable, so pin that.
++
++    Its docstring says "fully differentiable", and that claim is the entire
++    reason for maintaining a second implementation instead of wrapping NumPy
++    like the rest of the torch phase module does.  An untested claim of this
++    kind is how the module came to be 4 % covered while carrying a wrong answer.
++    """
++    torch = pytest.importorskip("torch")
++    from cool_frames.torch.phase import comp_filterbankphasegradfrommag as t_grad
++    from cool_frames.torch.phase._fbphasegradfrommag import (
++        comp_filterbankneighbors as t_neighbors,
++    )
++
++    f = _fixture()
++    NEIGH_t, pos_t = t_neighbors(
++        torch.as_tensor(f["a_int"]), f["M"], torch.as_tensor(f["N"]), do_real=True
++    )
++    abss = torch.as_tensor(f["abss"], dtype=torch.float64).clone().requires_grad_(True)
++
++    tgrad, fgrad, _logs = t_grad(
++        abss,
++        torch.as_tensor(f["N"]),
++        torch.as_tensor(f["a_int"]),
++        f["M"],
++        torch.as_tensor(f["sqtfr"]),
++        torch.as_tensor(f["fc_norm"]),
++        NEIGH_t,
++        pos_t,
++    )
++
++    assert tgrad.requires_grad, "tgrad is detached from the graph"
++    assert fgrad.requires_grad, "fgrad is detached from the graph"
++
++    (tgrad.pow(2).sum() + fgrad.pow(2).sum()).backward()
++
++    assert abss.grad is not None, "no gradient reached the magnitudes"
++    assert torch.all(torch.isfinite(abss.grad)), "the gradient contains inf or nan"
++    assert float(torch.linalg.norm(abss.grad)) > 0, "the gradient is identically zero"
++
++
++@pytest.mark.requires_torch_impl
++def test_iterative_routines_agree_between_backends():
++    """The ``real=False`` default defect lived in four places, one per backend.
++
++    Each was found separately and three were fixed before the fourth was even
++    noticed.  Comparing the pairs is what makes the next such divergence fail on
++    the first run rather than the fourth.
++    """
++    torch = pytest.importorskip("torch")
++    from cool_frames.numpy.filterbanks import filterbank as np_fb
++    from cool_frames.numpy.filterbanks import filterbankiter as np_iter
++    from cool_frames.numpy.filterbanks import ifilterbankiter as np_iiter
++    from cool_frames.numpy.filters import audfilters
++    from cool_frames.torch.filterbanks import filterbank as t_fb
++    from cool_frames.torch.filterbanks import filterbankiter as t_iter
++    from cool_frames.torch.filterbanks import ifilterbankiter as t_iiter
++
++    x = np.random.default_rng(0).standard_normal(LS)
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        g, a, _fc, L, _info = audfilters(FS, LS)
++
++        # Analysis: same iteration count and residual from the derived default.
++        _cn, rn, itn = np_iter(x, g, a)
++        _ct, rt, itt = t_iter(torch.as_tensor(x, dtype=torch.float64), g, a)
++
++        # Synthesis: same reconstruction.
++        cn = np_fb(x, g, a, L=L)
++        xr_np = np.real(np.asarray(np_iiter(cn, g, a, Ls=LS)[0]))[:LS]
++        ct = t_fb(torch.as_tensor(x, dtype=torch.float64), g, a, L=L)
++        xr_t = np.real(np.asarray(t_iiter(ct, g, a, Ls=LS)[0].detach()))[:LS]
++
++    assert itn == itt, f"filterbankiter iteration counts differ: numpy {itn}, torch {itt}"
++    assert float(np.atleast_1d(rn)[-1]) == pytest.approx(float(rt), rel=1e-6)
++
++    for name, xr in (("numpy", xr_np), ("torch", xr_t)):
++        err = np.linalg.norm(xr - x) / np.linalg.norm(x)
++        assert err < 1e-10, f"{name} ifilterbankiter round-trip error {err:.4g}"
++    assert np.allclose(xr_np, xr_t, rtol=1e-8, atol=1e-10), (
++        "the two backends' iterative synthesis disagree"
++    )
++
++
++# ---------------------------------------------------------------------------
++# Reassignment: exported, and until now essentially untested
++# ---------------------------------------------------------------------------
++
++
++def _chirp_bank():
++    from cool_frames.numpy.filters import audfilters
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        g, a, fc, L, _info = audfilters(FS, LS)
++    t = np.arange(LS) / FS
++    T = LS / FS
++    # A chirp: its energy lies along a sloping ridge, which is the case
++    # reassignment exists to sharpen and the case where a wrong sign or a
++    # transposed axis would be obvious.
++    x = np.sin(2 * np.pi * (200 * t + 300 * t**2 / T)) * np.hanning(LS)
++    return g, a, fc, L, x
++
++
++def _flat(result):
++    first = result[0] if isinstance(result, tuple) else result
++    return np.concatenate(
++        [np.asarray(u.detach() if hasattr(u, "detach") else u).ravel() for u in first]
++    )
++
++
++@pytest.mark.requires_impl
++def test_reassignment_conserves_energy_and_concentrates_it():
++    """``filterbankreassign`` was 71 % covered in NumPy and 5 % in torch.
++
++    Three exported functions with no meaningful test between them.  These are
++    the two properties that define the operation, so a version that moved
++    energy to the wrong place would fail one or the other:
++
++    * **Energy is conserved.** Reassignment relocates energy; it does not create
++      or destroy it. The totals must match to floating-point.
++    * **Energy concentrates.** That is the entire point — the reassigned
++      distribution needs fewer cells to hold the same fraction of the total.
++      Measured at 21 cells for 90 % of the energy against 26 for the raw
++      spectrogram.
++    """
++    from cool_frames.numpy.filterbanks import filterbank
++    from cool_frames.numpy.phase import filterbankreassign
++
++    g, a, fc, L, x = _chirp_bank()
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        raw = np.concatenate([np.abs(u).ravel() ** 2 for u in filterbank(x, g, a, L=L)])
++        reassigned = _flat(filterbankreassign(x, g, a, L, fc))
++
++    assert reassigned.sum() == pytest.approx(raw.sum(), rel=1e-9), (
++        "reassignment changed the total energy; it may only move it"
++    )
++    assert np.all(reassigned >= 0), "reassigned energy must be non-negative"
++
++    def _cells_for(v, frac=0.9):
++        v = np.sort(v)[::-1]
++        c = np.cumsum(v)
++        return int(np.searchsorted(c, frac * c[-1])) + 1
++
++    assert _cells_for(reassigned) < _cells_for(raw), (
++        f"reassignment did not concentrate the energy: "
++        f"{_cells_for(reassigned)} cells against {_cells_for(raw)} raw"
++    )
++
++
++@pytest.mark.requires_impl
++def test_synchrosqueezing_differs_from_full_reassignment():
++    """The two are not the same operation, and must not return the same thing.
++
++    Reassignment moves energy in both time and frequency; synchrosqueezing moves
++    it in frequency only, preserving the time spread so the transform stays
++    invertible.  A synchrosqueeze that simply delegated to reassign would look
++    entirely plausible — same shapes, same energy — which is why this asserts the
++    *difference* rather than just that each runs.
++    """
++    from cool_frames.numpy.phase import filterbankreassign, filterbanksynchrosqueeze
++
++    g, a, fc, L, x = _chirp_bank()
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        reassigned = _flat(filterbankreassign(x, g, a, L, fc))
++        squeezed = _flat(filterbanksynchrosqueeze(x, g, a, L, fc))
++
++    assert squeezed.sum() == pytest.approx(reassigned.sum(), rel=1e-9), (
++        "both operations conserve energy, so their totals should match"
++    )
++    assert not np.allclose(reassigned, squeezed), (
++        "synchrosqueezing returned the same distribution as full reassignment"
++    )
++    # Frequency-only reassignment leaves the time spread intact, so it occupies
++    # strictly more cells than the two-dimensional version.
++    assert np.count_nonzero(squeezed) > np.count_nonzero(reassigned), (
++        f"synchrosqueezing occupies {np.count_nonzero(squeezed)} cells against "
++        f"reassignment's {np.count_nonzero(reassigned)}; frequency-only "
++        f"reassignment should be the less concentrated of the two"
++    )
++
++
++@pytest.mark.requires_torch_impl
++def test_reassignment_agrees_between_backends():
++    """``torch/phase/_reassign.py`` is 180 statements at 5 % coverage.
++
++    An independent torch implementation of three exported functions, with no
++    test comparing it to the NumPy original — the same shape as the two defects
++    at the top of this file, and the reason to check it before assuming it is
++    fine.  It is: the two agree to 2.7e-12.  Pinned so it stays that way.
++    """
++    torch = pytest.importorskip("torch")
++    from cool_frames.numpy.phase import filterbankreassign as np_ra
++    from cool_frames.numpy.phase import filterbanksynchrosqueeze as np_ss
++    from cool_frames.torch.phase import filterbankreassign as t_ra
++    from cool_frames.torch.phase import filterbanksynchrosqueeze as t_ss
++
++    g, a, fc, L, x = _chirp_bank()
++    xt = torch.as_tensor(x, dtype=torch.float64)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        for name, np_fn, t_fn in (
++            ("filterbankreassign", np_ra, t_ra),
++            ("filterbanksynchrosqueeze", np_ss, t_ss),
++        ):
++            dn = _flat(np_fn(x, g, a, L, fc))
++            dt = _flat(t_fn(xt, g, a, L, fc))
++            assert dn.shape == dt.shape, f"{name}: shapes differ, {dn.shape} vs {dt.shape}"
++            assert np.allclose(dn, dt, rtol=1e-7, atol=1e-9), (
++                f"{name} differs between backends: max |diff| = {np.max(np.abs(dn - dt)):.3e}"
++            )
+diff --git a/tests/regressions/test_findgamma.py b/tests/regressions/test_findgamma.py
+new file mode 100644
+index 0000000..a81b129
+--- /dev/null
++++ b/tests/regressions/test_findgamma.py
+@@ -0,0 +1,289 @@
++"""
++test_findgamma.py
++=================
++``pghi_findgamma`` — the window constant PGHI scales its phase gradients by.
++
++This module was covered at 11.8 %: the ``_PRECOMPUTED_CG`` table was imported
++and nothing else ran.  The search path underneath it — ``_findbestgauss`` and
++``_winwidthatheight``, 60 statements — had never been executed by a test.
++
++What that hid
++-------------
++``_winwidthatheight`` is a *second copy* of a helper that lives in
++``cool_frames/numpy/filters/_gabfilters.py``.  The audit found the copy over
++there measuring every window as full-width — it scans ``g[:gl//2+1]`` for the
++threshold crossing, which only tracks the falling flank if the window peaks at
++index 0 — fixed it with a ``np.roll(g, -argmax)``, and wrote
++``test_window_width_measurement_depends_on_window_shape`` to hold it.  The copy
++in ``_findgamma.py`` kept the bug, because the two are private, near-identical,
++and nothing compared them.
++
++Measured consequence, for a 256-tap window:
++
++===========  ==========  ======================  =============
++window       table ``Cg``  numeric ``Cg`` (v0.1.1)  factor
++===========  ==========  ======================  =============
++hann            0.25645                  2.19460          8.6x
++hamming         0.29794                  2.26669          7.6x
++blackman        0.17954                  1.85417         10.3x
++bartlett        0.27561                  2.02420          7.3x
++cosine          0.41532                  2.54799          6.1x
++===========  ==========  ======================  =============
++
++The table row and the numeric row are the *same window*; the table is the
++precomputed answer to the search.  Since ``gamma = Cg * gl**2`` multiplies the
++phase gradients the heap integrator consumes, being 8.6x out does not blur the
++phase estimate, it replaces it — the same failure mode as the missing
++centre-frequency term the audit found in ``comp_filterbankphasegradfrommag``.
++
++Anything reached through the window *name* was unaffected: named windows return
++the tabulated constant and never enter the search.  Anyone who passed a numeric
++window vector — which is what ``scipy.signal.get_window`` hands you, and the
++only option for a window not in the table — got the wrong number with no
++warning.
++
++The tests below hold the fix, hold the two copies of the helper to each other,
++and pin the residual gap that the fix does *not* close (see
++``test_numeric_search_still_disagrees_with_the_table``).
++"""
++
++from __future__ import annotations
++
++import pytest
++
++import numpy as np
++from cool_frames.numpy.phase import pghi_findgamma, wpghi_findgamma
++from cool_frames.numpy.phase._findgamma import (
++    _PRECOMPUTED_CG,
++    _findbestgauss,
++    _winwidthatheight,
++)
++
++GL = 256
++TABULATED = ["hann", "hamming", "blackman", "bartlett", "cosine"]
++
++
++def _window(name, gl=GL):
++    from scipy.signal import get_window
++
++    return np.asarray(get_window(name, gl, fftbins=True), dtype=float)
++
++
++# ---------------------------------------------------------------------------
++# The defect
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("name", TABULATED)
++def test_window_width_is_independent_of_sample_ordering(name):
++    """The same window in centred and DFT ordering must measure the same width.
++
++    This is the assertion that was missing.  ``scipy.signal.get_window`` returns
++    a *centred* window (peak at ``gl//2``); LTFAT's convention is DFT ordering
++    (peak at index 0).  Both describe the same window and must yield the same
++    constant.  Before the fix the centred form measured ``w = 256.6`` against
++    the DFT form's ``w = 75.6`` for a 256-tap Hann — the scan ran up the rising
++    flank instead of down the falling one and pinned at the peak.
++    """
++    centred = _window(name)
++    wrapped = np.fft.ifftshift(centred)
++    assert int(np.argmax(centred)) != 0, "fixture assumption: centred window peaks off-zero"
++    assert int(np.argmax(wrapped)) == 0, "fixture assumption: wrapped window peaks at zero"
++
++    for atheight in (0.1, 0.5, 0.8):
++        w_c = _winwidthatheight(centred, atheight)
++        w_w = _winwidthatheight(wrapped, atheight)
++        assert abs(w_c - w_w) < 1e-9, (
++            f"{name} at height {atheight}: centred ordering measures {w_c:.3f}, "
++            f"DFT ordering measures {w_w:.3f} — the scan depends on sample order"
++        )
++        # And the width must be a fraction of the window, not the whole of it.
++        assert 0.0 < w_c < GL, f"{name}: measured width {w_c:.1f} for a {GL}-tap window"
++
++
++@pytest.mark.parametrize("name", TABULATED)
++def test_gamma_is_independent_of_sample_ordering(name):
++    """The public entry point inherits the property."""
++    centred = _window(name)
++    g_c, cg_c = pghi_findgamma(centred)
++    g_w, cg_w = pghi_findgamma(np.fft.ifftshift(centred))
++    assert abs(cg_c - cg_w) < 1e-12, f"{name}: Cg {cg_c:.6f} (centred) vs {cg_w:.6f} (DFT)"
++    assert abs(g_c - g_w) < 1e-9
++
++
++def test_the_two_copies_of_winwidthatheight_agree():
++    """``_findgamma`` and ``_gabfilters`` each carry a private copy. Hold them together.
++
++    The v0.1.1 audit fixed the ``_gabfilters`` one and left this one, which is
++    how the 8.6x error survived the release.  Duplicated private helpers are
++    fine; duplicated private helpers that nobody compares are how a fix lands in
++    one of two places.  If the copies are ever unified, this test becomes
++    trivially true rather than wrong, which is the right failure mode.
++    """
++    from cool_frames.numpy.filters._gabfilters import _winwidthatheight as gab_version
++
++    rng = np.random.default_rng(0)
++    cases = [_window(n) for n in TABULATED]
++    cases.append(np.ones(64))  # rectangle
++    cases.append(np.bartlett(101))
++    # A deliberately lumpy window: the interpolation branches should still match.
++    lumpy = np.hanning(128) * (1.0 + 0.1 * rng.standard_normal(128))
++    cases.append(np.abs(lumpy))
++
++    for i, w in enumerate(cases):
++        for atheight in (0.05, 0.25, 0.5, 0.75):
++            a = _winwidthatheight(w, atheight)
++            b = gab_version(w, atheight)
++            assert abs(a - b) < 1e-9, (
++                f"case {i} at height {atheight}: _findgamma gives {a:.6f}, "
++                f"_gabfilters gives {b:.6f} — the two copies have diverged"
++            )
++
++
++def test_measured_width_orders_by_window_concentration():
++    """A narrower window must measure narrower. The broken version did not.
++
++    With the scan pinned at the peak, a needle, a Hann and a rectangle all
++    returned ~``gl``.  A width measurement that cannot tell a three-bin spike
++    from a rectangle is not measuring width.
++    """
++    n = 129
++    needle = np.zeros(n)
++    needle[n // 2 - 1 : n // 2 + 2] = [0.5, 1.0, 0.5]
++    hann = np.hanning(n)
++    rect = np.ones(n)
++
++    w_needle, w_hann, w_rect = (_winwidthatheight(w, 0.5) for w in (needle, hann, rect))
++    assert w_needle < w_hann < w_rect, (
++        f"widths do not order by concentration: needle {w_needle:.2f}, "
++        f"hann {w_hann:.2f}, rect {w_rect:.2f}"
++    )
++
++
++# ---------------------------------------------------------------------------
++# The tabulated path
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("name", sorted(_PRECOMPUTED_CG))
++def test_named_windows_return_the_tabulated_constant(name):
++    """``gamma = Cg * gl**2`` exactly, for every name in the table."""
++    gamma, Cg = pghi_findgamma(name, gl=GL)
++    assert Cg == pytest.approx(_PRECOMPUTED_CG[name], rel=0, abs=0)
++    assert gamma == pytest.approx(_PRECOMPUTED_CG[name] * GL**2, rel=1e-12)
++    assert gamma > 0.0
++
++
++def test_named_window_lookup_is_case_insensitive_and_accepts_aliases():
++    assert pghi_findgamma("HANN", gl=GL) == pghi_findgamma("hann", gl=GL)
++    # hanning/hann, tria/triangular/bartlett, cosine/sine/sqrthann are aliases.
++    assert pghi_findgamma("hanning", gl=GL) == pghi_findgamma("hann", gl=GL)
++    assert pghi_findgamma("triangular", gl=GL) == pghi_findgamma("tria", gl=GL)
++    assert pghi_findgamma("sine", gl=GL) == pghi_findgamma("cosine", gl=GL)
++
++
++def test_gauss_uses_the_lattice_rather_than_the_table():
++    """For 'gauss', gamma is ``a*M`` exactly and ``Cg`` is undefined."""
++    gamma, Cg = pghi_findgamma("gauss", a=32, M=256)
++    assert gamma == pytest.approx(32 * 256)
++    assert np.isnan(Cg), "Cg is not defined for the true Gaussian; it should be NaN"
++
++
++def test_missing_arguments_raise_rather_than_guessing():
++    with pytest.raises(ValueError, match="requires a and M"):
++        pghi_findgamma("gauss")
++    with pytest.raises(ValueError, match="requires a and M"):
++        pghi_findgamma("gauss", a=32)
++    with pytest.raises(ValueError, match="window length"):
++        pghi_findgamma("hann")
++    with pytest.raises(ValueError, match="Unknown window name"):
++        pghi_findgamma("definitely-not-a-window", gl=GL)
++
++
++def test_M_substitutes_for_gl_when_gl_is_absent():
++    """Documented fallback: ``M`` stands in for the window length."""
++    assert pghi_findgamma("hann", M=128) == pghi_findgamma("hann", gl=128)
++
++
++def test_numeric_window_infers_its_own_length():
++    w = _window("hann", 128)
++    assert pghi_findgamma(w) == pghi_findgamma(w, gl=128)
++
++
++# ---------------------------------------------------------------------------
++# What the fix does *not* fix
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("name", TABULATED)
++def test_numeric_search_still_disagrees_with_the_table(name):
++    """Pin the residual gap, which the ordering fix narrows but does not close.
++
++    The table is the precomputed answer to this search, so in a correct port the
++    two would agree.  They do not: after the ordering fix the search comes out
++    7-45 % high (Hann 0.309 vs 0.256, cosine 0.600 vs 0.415).  The cause is
++    visible in ``_findbestgauss`` — its ``atheight`` pins at 0.8, the top of the
++    hardcoded ``atheightrange``, so the minimum is at the boundary and the
++    search has not converged to anything.  The module already flags itself a
++    "simplified port".
++
++    This test asserts the *current* accuracy, both bounds.  The lower bound is
++    the regression guard (the 6-10x error must not come back); the upper bound
++    is the improvement guard — narrowing the search will fail this test, which
++    is the intended prompt to update the numbers deliberately.  Do not relax it
++    to make an unrelated change pass.
++    """
++    _, cg_numeric = pghi_findgamma(_window(name))
++    ratio = cg_numeric / _PRECOMPUTED_CG[name]
++    assert 1.0 <= ratio < 1.5, (
++        f"{name}: numeric search gives Cg={cg_numeric:.5f} against a tabulated "
++        f"{_PRECOMPUTED_CG[name]:.5f} (ratio {ratio:.3f}). Outside [1.0, 1.5) this is "
++        "either the ordering defect returning or an improvement worth recording."
++    )
++
++
++def test_findbestgauss_pins_at_the_top_of_its_search_range():
++    """The evidence for the paragraph above, asserted rather than asserted-about.
++
++    ``_findbestgauss`` searches ``np.arange(0.01, 0.801, 0.001)`` and returns
++    0.8 — the *last element* — for four of the five tabulated windows.  An
++    interior minimum means the search converged; a boundary one means the range
++    is too narrow and the returned height is an artefact of where the loop
++    stopped.  Bartlett is the exception, minimising at 0.285, and it is no more
++    accurate for it (1.17x the table against Blackman's 1.08x), which says the
++    residual error is not only the pinning.
++
++    When someone widens the range or ports ``findbestgauss`` properly, this
++    fails and ``test_numeric_search_still_disagrees_with_the_table`` should be
++    retightened at the same time.
++    """
++    top = 0.8  # last element of the hardcoded atheightrange
++    pinned = {name: _findbestgauss(_window(name)) for name in TABULATED}
++
++    assert pinned["bartlett"] < top - 0.01, (
++        f"bartlett was the one interior minimum at 0.285; it now returns {pinned['bartlett']:.4f}"
++    )
++    for name in ("hann", "hamming", "blackman", "cosine"):
++        assert pinned[name] == pytest.approx(top, abs=1e-9), (
++            f"{name}: _findbestgauss returned {pinned[name]:.4f}, not the range boundary. "
++            "If the search now finds an interior minimum, this limitation is fixed — "
++            "update this test and test_numeric_search_still_disagrees_with_the_table."
++        )
++
++
++def test_wpghi_findgamma_ignores_its_tfr_argument():
++    """``wpghi_findgamma(g, tfr)`` accepts ``tfr`` positionally and discards it.
++
++    The signature promises a filterbank-domain variant; the body is
++    ``return pghi_findgamma(g, **kwargs)`` — ``tfr`` is never read.  A caller
++    computing a per-channel time-frequency ratio and passing it in gets the
++    plain Gabor answer and no indication that their argument went nowhere.
++
++    Pinned, not fixed: making ``tfr`` do something is a design decision about
++    what per-channel gamma should mean, not a typo.  Until then this records
++    that the parameter is inert.
++    """
++    a = wpghi_findgamma("hann", None, gl=GL)
++    b = wpghi_findgamma("hann", np.linspace(1.0, 99.0, 17), gl=GL)
++    c = pghi_findgamma("hann", gl=GL)
++    assert a == b == c, "wpghi_findgamma's tfr argument now has an effect — document it"
+diff --git a/tests/regressions/test_phase_retrieval_family.py b/tests/regressions/test_phase_retrieval_family.py
+new file mode 100644
+index 0000000..f8870f1
+--- /dev/null
++++ b/tests/regressions/test_phase_retrieval_family.py
+@@ -0,0 +1,327 @@
++"""
++test_phase_retrieval_family.py
++==============================
++The iterative phase-retrieval routines, none of which any test executed.
++
++Before this file, ``rtisila``, ``gsrtisila``, ``lertisila``, ``legla``,
++``decolbfgs`` and ``spsi`` were covered at 7–11 % in both backends — that is,
++the module docstring and the import block ran, and the algorithms did not.  All
++twelve implementations (six routines x two backends) shipped in v0.1.0 and
++v0.1.1 without a single call from the suite.  ``filterbankconstphase`` was in
++exactly that position when the audit found that its gradient estimator had been
++returning frequency *deviations* to an integrator that consumes absolute
++frequencies, so this is not a hypothetical risk: the untested phase code in
++this package has a track record.
++
++What is asserted here
++---------------------
++**Consistency, not magnitude error.**  ``magnitudeerr`` compares ``|c|`` to the
++target magnitudes, and every routine in this family ends by *assigning*
++``c = s * exp(i*phase)``.  The magnitudes therefore match by construction, and
++``magnitudeerr`` returns ~1e-16 for a result that is audibly wrong.  Zero phase
++scores a perfect ``-inf dB`` on it.  The metric that means something is
++consistency: resynthesise, re-analyse, and ask whether the magnitudes survived
++the round trip.  A coefficient set that is not in the range of the analysis
++operator cannot be produced by any signal, and the gap is what you hear.
++
++Measured consistency on the fixture below (redundancy 2.1, a chirp plus a
++steady partial), zero phase = +8.4 dB, true phase = -310 dB:
++
++===========  ==========  ==========
++routine      1 iter      10 iters
++===========  ==========  ==========
++gla            +0.6 dB    -12.0 dB
++legla          +0.5 dB    -12.0 dB
++rtisila        -7.9 dB    -13.0 dB
++gsrtisila      -7.9 dB    -13.0 dB
++lertisila      -8.6 dB    -12.1 dB
++decolbfgs      -5.1 dB    -10.3 dB
++===========  ==========  ==========
++
++The thresholds below are set well slack of these numbers.  They are regression
++guards, not accuracy claims: the point is that a routine which silently stops
++retrieving phase — the ``'pghi'`` branch of the torch recipe drew
++``rand_like`` for a release and reported ``converged: True`` — fails here.
++
++See also ``test_relres_is_not_a_convergence_measure`` at the bottom, which pins
++a reporting defect this file uncovered rather than fixing it: for the RTISIL
++family ``relres`` is computed *after* the magnitude projection and is therefore
++~1e-16 unconditionally.
++"""
++
++from __future__ import annotations
++
++import warnings
++
++import pytest
++
++import numpy as np
++
++FS = 4000
++LS = 512
++
++# Every routine in the family shares one signature:
++#   fn(s_list, g, a, *, L, Ls, real, maxit) -> (c, f, relres, niter)
++ITERATIVE = ["gla", "legla", "rtisila", "gsrtisila", "lertisila", "decolbfgs"]
++
++
++def _fixture():
++    """A redundant Gabor bank and the magnitudes of a signal with real phase structure.
++
++    Redundancy matters.  An undercomplete bank makes phase retrieval trivial —
++    an earlier draft of this file used ``M=16, a=32`` (redundancy 0.28) and
++    every routine converged to 1e-16 on the first iteration, which would have
++    made the tests pass against an implementation that did nothing at all.
++    """
++    from cool_frames.numpy.filterbanks import filterbank, filterbank_is_real
++    from cool_frames.numpy.filters import gabfilters
++
++    t = np.arange(LS) / FS
++    # A linear chirp (so the phase gradient is non-trivial) plus a steady partial.
++    sig = np.sin(2 * np.pi * (300 * t + 40 * t * t * FS / LS)) + 0.4 * np.sin(2 * np.pi * 1100 * t)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        g, a, _fc, L, _info = gabfilters(fs=FS, Ls=LS, M=32, a=8, real=True)
++
++    a_np = np.asarray(a)
++    real = bool(filterbank_is_real(g, a_np, L))
++    c = filterbank(sig, g, a_np, L)
++    mag = [np.abs(np.asarray(cm)) for cm in c]
++    return g, a_np, L, real, c, mag
++
++
++def _consistency_db(coefs, g, a_np, L, real, mag):
++    """Resynthesise, re-analyse, compare magnitudes.  Lower is better."""
++    from cool_frames.numpy.filterbanks import filterbank, filterbankdual, ifilterbank
++    from cool_frames.numpy.phase import magnitudeerrdb
++
++    coefs = [np.asarray(x.detach().cpu() if hasattr(x, "detach") else x) for x in coefs]
++    gd = filterbankdual(g, a_np, L, real=real)
++    f = ifilterbank(coefs, gd, a_np, LS, real=real)
++    c2 = filterbank(np.real(np.asarray(f)), g, a_np, L)
++    return float(magnitudeerrdb(c2, mag))
++
++
++def _to_backend(mag, backend):
++    if backend == "numpy":
++        return mag
++    import torch
++
++    return [torch.as_tensor(m) for m in mag]
++
++
++def _np(x):
++    return np.asarray(x.detach().cpu() if hasattr(x, "detach") else x)
++
++
++# ---------------------------------------------------------------------------
++# The routines run at all, and do the thing they are named for
++# ---------------------------------------------------------------------------
++
++
++@pytest.mark.parametrize("name", ITERATIVE)
++@pytest.mark.parametrize("backend", ["numpy", "torch"])
++def test_iterative_retrieval_beats_zero_phase(name, backend):
++    """Each routine must improve consistency over the zero-phase input it starts from.
++
++    Zero phase measures +8.4 dB on this fixture.  Anything that retrieves phase
++    lands far below 0 dB; anything that returns noise, returns its input, or
++    reports success without iterating lands at or above it.  The -3 dB
++    threshold is ~7 dB of slack against the worst measured routine.
++    """
++    if backend == "torch":
++        pytest.importorskip("torch")
++    import importlib
++
++    mod = importlib.import_module(f"cool_frames.{backend}.phase")
++
++    g, a_np, L, real, _c, mag = _fixture()
++
++    zero = [m.astype(complex) for m in mag]
++    baseline = _consistency_db(zero, g, a_np, L, real, mag)
++    assert baseline > 0.0, f"zero-phase baseline should be poor, got {baseline:.2f} dB"
++
++    fn = getattr(mod, name)
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        c_out, f_out, _relres, _niter = fn(
++            _to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=10
++        )
++
++    got = _consistency_db(c_out, g, a_np, L, real, mag)
++    assert got < -3.0, (
++        f"{backend}.{name} reached only {got:.2f} dB consistency "
++        f"(zero phase = {baseline:.2f} dB); it is not retrieving phase"
++    )
++    assert got < baseline - 8.0, (
++        f"{backend}.{name} improved on zero phase by only {baseline - got:.2f} dB"
++    )
++
++    # The reconstructed signal must be the length that was asked for, real-valued
++    # for a real bank, and finite.
++    f_arr = _np(f_out).ravel()
++    assert f_arr.size == LS, f"{backend}.{name} returned {f_arr.size} samples, expected {LS}"
++    assert np.all(np.isfinite(np.real(f_arr))), f"{backend}.{name} produced non-finite output"
++
++
++@pytest.mark.parametrize("name", ITERATIVE)
++@pytest.mark.parametrize("backend", ["numpy", "torch"])
++def test_more_iterations_do_not_make_it_worse(name, backend):
++    """Ten iterations must not be worse than one.
++
++    Monotone improvement is too strong a claim for alternating projections —
++    GLA is not guaranteed to decrease the consistency error at every step, and
++    L-BFGS line searches can overshoot.  But a routine that gets *worse* with
++    more work has its projection or its update sign wrong, and that is worth
++    catching.  Half a decibel of tolerance absorbs the non-monotonicity.
++    """
++    if backend == "torch":
++        pytest.importorskip("torch")
++    import importlib
++
++    mod = importlib.import_module(f"cool_frames.{backend}.phase")
++    fn = getattr(mod, name)
++    g, a_np, L, real, _c, mag = _fixture()
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        c1 = fn(_to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=1)[0]
++        c10 = fn(_to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=10)[0]
++
++    e1 = _consistency_db(c1, g, a_np, L, real, mag)
++    e10 = _consistency_db(c10, g, a_np, L, real, mag)
++    assert e10 <= e1 + 0.5, (
++        f"{backend}.{name}: 10 iterations ({e10:.2f} dB) is worse than 1 iteration ({e1:.2f} dB)"
++    )
++
++
++@pytest.mark.parametrize("name", ["gla", "legla", "rtisila", "gsrtisila", "lertisila"])
++def test_backends_agree(name):
++    """The two backends must produce the same coefficients.
++
++    ``decolbfgs`` is excluded: it runs an L-BFGS line search, and NumPy's and
++    torch's differ, so the two backends legitimately land in different local
++    minima (-10.25 dB vs -10.16 dB after 10 iterations here).  Its agreement is
++    checked by the consistency bound above rather than element-wise.
++
++    The rest are deterministic alternating projections and must agree to
++    floating-point accumulation.  This is the assertion that the v0.1.1 audit
++    needed and did not have: four separate fixes to the same defect were
++    applied one backend at a time, and torch ``ifilterbankiter`` went three
++    releases reconstructing the flagship bank with 23 % error because nothing
++    compared the two.
++    """
++    pytest.importorskip("torch")
++    import importlib
++
++    np_mod = importlib.import_module("cool_frames.numpy.phase")
++    t_mod = importlib.import_module("cool_frames.torch.phase")
++    g, a_np, L, real, _c, mag = _fixture()
++
++    kw = dict(L=L, Ls=LS, real=real, maxit=4)
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        c_np = getattr(np_mod, name)(mag, g, a_np, **kw)[0]
++        c_t = getattr(t_mod, name)(_to_backend(mag, "torch"), g, a_np, **kw)[0]
++
++    assert len(c_np) == len(c_t), f"{name}: channel count differs"
++    for m, (x, y) in enumerate(zip(c_np, c_t)):
++        x, y = np.asarray(x).ravel(), _np(y).ravel()
++        assert x.shape == y.shape, f"{name} channel {m}: shape {x.shape} vs {y.shape}"
++        scale = max(float(np.max(np.abs(x))), 1e-30)
++        err = float(np.max(np.abs(x - y))) / scale
++        assert err < 1e-8, f"{name} channel {m}: backends differ by {err:.3e} (relative)"
++
++
++@pytest.mark.parametrize("backend", ["numpy", "torch"])
++def test_spsi_is_single_pass_and_uses_centre_frequencies(backend):
++    """SPSI must produce phase from the peak structure, not from nothing.
++
++    ``spsi`` has its own signature — ``(s_list, a, fc, fs)`` — and returns
++    ``(c, phase)`` rather than the four-tuple.  Two things are asserted: the
++    returned coefficients carry the target magnitudes, and the phase actually
++    depends on the centre frequencies handed in.  The second matters because
++    the torch recipe's ``'spsi'`` branch was, until v0.1.1, a block of
++    ``rand_like`` bitwise identical to its ``'pghi'`` branch — a routine that
++    ignores its ``fc`` argument is indistinguishable from that.
++    """
++    if backend == "torch":
++        pytest.importorskip("torch")
++    import importlib
++
++    mod = importlib.import_module(f"cool_frames.{backend}.phase")
++    g, a_np, L, _real, _c, mag = _fixture()
++
++    from cool_frames.numpy.phase._centerfreq import filter_center_frequencies
++
++    fc = filter_center_frequencies(g, L)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        c_out, phase = mod.spsi(_to_backend(mag, backend), a_np, fc, 1.0)
++        # Same magnitudes, different centre frequencies.
++        _c_alt, phase_alt = mod.spsi(_to_backend(mag, backend), a_np, fc * 0.5, 1.0)
++
++    for m, cm in enumerate(c_out):
++        got, want = np.abs(_np(cm).ravel()), mag[m].ravel()
++        assert np.allclose(got, want, rtol=1e-9, atol=1e-12), (
++            f"{backend}.spsi channel {m}: returned magnitudes are not the target magnitudes"
++        )
++
++    p1 = np.concatenate([_np(p).ravel() for p in phase])
++    p2 = np.concatenate([_np(p).ravel() for p in phase_alt])
++    assert not np.allclose(p1, p2), (
++        f"{backend}.spsi produced identical phase for two different centre-frequency "
++        "vectors — it is ignoring fc"
++    )
++
++
++# ---------------------------------------------------------------------------
++# A reporting defect this file uncovered
++# ---------------------------------------------------------------------------
++
++
++def test_relres_is_not_a_convergence_measure():
++    """Pin the fact that the RTISIL family's ``relres`` is ~1e-16 by construction.
++
++    ``rtisila``, ``gsrtisila`` and ``lertisila`` all end with
++    ``c[m][n] = s[m][n] * exp(i*phase)`` and *then* compute
++    ``relres = ||abs(c) - s|| / ||s||``.  That difference is zero by
++    construction, so ``relres`` measures whether the last assignment executed,
++    not whether the algorithm converged.  On the fixture here it reports 1e-16
++    while the actual consistency is -13 dB, and GLA — which is within one
++    decibel on the metric that matters — honestly reports 0.249.
++
++    Anyone selecting a method by ``relres`` would read this as the RTISIL
++    family being fifteen orders of magnitude better than GLA.
++
++    This test does not assert the right behaviour; it records the wrong one, so
++    that the day ``relres`` is redefined to measure consistency (or the routines
++    stop reporting a number they cannot compute), this fails and the change is
++    deliberate rather than silent.
++    """
++    import cool_frames.numpy.phase as NP
++
++    g, a_np, L, real, _c, mag = _fixture()
++    kw = dict(L=L, Ls=LS, real=real, maxit=4)
++
++    with warnings.catch_warnings():
++        warnings.simplefilter("ignore")
++        _, _, relres_rtisila, niter_rtisila = NP.rtisila(mag, g, a_np, **kw)
++        _, _, relres_gla, niter_gla = NP.gla(mag, g, a_np, **kw)
++
++    r_rt = float(np.atleast_1d(np.asarray(relres_rtisila))[-1])
++    r_gla = float(np.atleast_1d(np.asarray(relres_gla))[-1])
++
++    assert r_rt < 1e-12, (
++        "rtisila's relres is no longer ~0 — if it now measures consistency, "
++        "delete this test and document the change in the return contract"
++    )
++    assert r_gla > 1e-3, "gla's relres should be an honest, non-trivial residual"
++
++    # And ``niter`` is frames x maxit, not iterations: 4 iterations is reported
++    # as 256 here.  Pinned for the same reason.
++    assert int(niter_rtisila) > int(niter_gla), (
++        "rtisila's niter counts frame-iterations, not iterations"
++    )

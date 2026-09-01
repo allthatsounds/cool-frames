@@ -174,6 +174,12 @@ def _comp_tfrfromwin(g: np.ndarray, atheight: float | None = None) -> float:
 # gabfilters – public API
 # ---------------------------------------------------------------------------
 
+def _identity_scaletofreq(u):
+    """Gabor channels are uniform in frequency itself: ``g(f) = f``."""
+    return u
+
+
+
 def gabfilters(fs: float, Ls: int, *,
                window="hann",
                window_ms: float | None = None,
@@ -393,9 +399,104 @@ def gabfilters(fs: float, Ls: int, *,
     if windowaxis == "freq":
         tfr = 1.0 / tfr if tfr != 0 else 0.0
 
+    # ── Admissibility ────────────────────────────────────────────────────
+    # Announce a non-frame geometry here, where the parameters were chosen,
+    # rather than letting it surface later as an all-zero dual.
+    #
+    # Unlike the painless designers, gabfilters builds its prototype in the
+    # TIME domain, so its realised frequency support is not a designed
+    # bandwidth but the width of the compact block it stores: every channel
+    # occupies exactly ``gl = len(gnum_compact)`` DFT bins, whatever the
+    # window shape, laid out at
+    #
+    #     A_k = k*(L/M) - gl//2,   B_k = A_k + gl - 1,   k = 0 .. Mout-1
+    #
+    # (``L = dgtlength(Ls, a, M)`` is a multiple of M, so ``k*L/M`` is exact).
+    # There are no dead endpoint bins: the truncated tails of the transformed
+    # window are generically nonzero, and where they do vanish exactly (the
+    # Dirichlet zeros at multiples of L/M) the bin carries another channel's
+    # peak.  So the bank is a frame iff L/M <= gl.
+    #
+    # gabfilters' warping coordinate is frequency itself (``g(f) = f``), so
+    # the interval is handed to the predictor through the warped hook with
+    # ``scaletofreq = identity``; that is the one route that can express an
+    # even-width interval exactly (``_interval_linear`` always builds an odd
+    # one).  The quarter-bin inset in ``bwmul`` is what makes floor()/ceil()
+    # land on A and B for both parities of gl.
+    # ``gl == M`` (a named window, or an array of length M) is what makes the
+    # "no dead bins" claim above true for *any* window shape: the transformed
+    # window vanishes exactly at L-bin offsets that are multiples of L/gl, and
+    # with gl == M that lattice is the channel lattice L/M, so every such bin
+    # carries some other channel's peak.  A window array of a different length
+    # puts the two lattices out of step -- with gl = L, for instance, a
+    # periodic Hann has a three-bin spectrum, nothing like its gl bins -- and
+    # the dead bins are then window-dependent, so we report no verdict.
+    gl = Lg_compact
+    fsupp_hz = float(gl) * fs / L
+    fsupp_all = np.full(M2, fsupp_hz, dtype=float)
+    q = L // Mfull
+    nyq_bin = L // 2
+    A_top = (M2 - 1) * q - gl // 2
+    B_top = A_top + gl - 1
+    representable = (gl == Mfull)
+    if not real:
+        # two-sided bank: no channel is the Nyquist complement.  A gap in a
+        # uniform layout repeats every L/M bins, so bin L/2 can never be the
+        # *only* hole -- a one-bin stub there is therefore exact.
+        last = M2
+        W_nyq = 1
+    elif B_top >= nyq_bin:
+        # the top channel reaches Nyquist: folded about it, it covers
+        # [min(A_top, L - B_top), L/2] -- exactly an interval centred on
+        # Nyquist, which is how the predictor models the edge.
+        last = M2 - 1
+        W_nyq = 2 * (nyq_bin - min(A_top, L - B_top)) + 1
+    elif B_top <= nyq_bin - 2:
+        # the top channel stops short of Nyquist: it is an ordinary inner
+        # channel and [B_top+1, L/2-1] is uncovered, which the one-bin stub
+        # still reports as a hole.
+        last = M2
+        W_nyq = 1
+    else:
+        # B_top == L/2 - 1: bin L/2 is uncovered but the predictor always
+        # covers it (it assumes a Nyquist complement), so this hole is
+        # invisible to it.  With gl == M that only happens for odd M at
+        # L/M = M+1 (L even) or M+2 (L odd) -- both of which have L/M > gl,
+        # so the gaps *between* the channels give the right verdict anyway.
+        last = M2
+        W_nyq = 1
+    A_inner = np.arange(1, last, dtype=float) * q - gl // 2
+    u_inner = (A_inner + gl / 2.0) * fs / L
+    bwmul = (gl / 2.0 - 0.25) * fs / L
+    fsupp_dc = fsupp_hz               # folds to [0, gl//2], the exact coverage
+    fsupp_nyq = W_nyq * fs / L
+
+    if windowaxis == "time" and representable:
+        from ..diagnostics.admissibility import check_admissible
+
+        admissible = check_admissible(
+            None, None, fs=fs, L=int(L),
+            fsupp_dc=fsupp_dc, fsupp_nyq=fsupp_nyq,
+            warped=(u_inner, _identity_scaletofreq, bwmul),
+            min_win=1, window="rect", designer="gabfilters")
+    else:
+        # Two layouts we cannot express, so we report no verdict rather than
+        # an unvalidated one: windowaxis='freq', which stores the window
+        # itself as the frequency response so the live width is gl minus
+        # however many endpoint bins that particular window zeroes out
+        # (window- and parity-dependent), and a window array whose length is
+        # not M (see above).
+        admissible = None
+
     info = {
         "fc": fc_out,
         "tfr": tfr,
+        "designer": "gabfilters",
+        "fsupp": fsupp_all,
+        "fsupp_inner": fsupp_all[1:-1],
+        "fsupp_dc": float(fsupp_dc),
+        "fsupp_nyq": float(fsupp_nyq),
+        "admissible": admissible,
     }
 
     return gout, aout, fc_out, L, info

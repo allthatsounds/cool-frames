@@ -301,6 +301,171 @@ path.
   running a transform. It now uses a local `Generator` and accepts
   `rng=<seed or Generator>` for reproducible output.
 
+### Frame admissibility is now predictable in closed form
+
+A painless bank can be handed parameters for which it is not a frame: the lower
+bound is exactly zero, a band of the spectrum is annihilated, and
+`filterbankbounds` does not notice because it is evaluated on a response that
+does not see the gap. `filterbankbounds_svd` does notice, but costs O(L^2) and
+needs the bank built first.
+
+`cool_frames.diagnostics.admissibility` answers the question before the bank
+exists, from the design parameters alone. `A = 0` iff the filters leave a DFT
+bin uncovered, and coverage is integer arithmetic: a prototype of odd length
+`W_m` centred on bin `k_m = round(L*f_m/fs)` overlaps its neighbour iff
+`k_{m+1} - k_m <= (W_m-1)/2 + (W_{m+1}-1)/2 - 1`.
+
+Because every designer places its channels uniformly in a warping coordinate
+*and* sizes its filters constant in that same coordinate, the warping
+derivative cancels and the condition reduces to one dimensionless ratio,
+`D_u < L_u - c*fs/(L*b_min)`, binding at the lowest channel. The designer
+families then reach the floor by different routes: `warpedfilters` reduces to
+the scale-independent `2*bwmul > 1/bins` and `audfilters` to
+`spacing < bwmul/winbw`, whereas for constant-Q designs `fc` cancels and the
+continuum condition `Qvar > t/(t+1)` (with `t = 2**(1/bins)`) holds for every
+`Qvar >= 2/3` — so a constant-Q bank never fails from redundancy, only from
+low-frequency resolution.
+
+Verified against the measured frame response on **8,524 of 8,524
+configurations**, no errors in either direction: `audfilters` 5400 (540 per
+scale across all ten scales), `greenwoodfilters` 540, `cqtfilters` 1916,
+`warpedfilters` 668 under two different warpings. The covering mechanism itself
+was additionally confirmed against `filterbankbounds_svd` (66/66) and against
+the measured response for `waveletfilters` and `gabfilters` (150/150).
+
+Conditioning comes with it but is weaker: `ripple_curve` gives kappa as a
+universal function of the overlap ratio alone (1 at the Hann-squared
+partition-of-unity ratios 1/4 and 1/3, 2 at half overlap, divergent as the
+ratio approaches 1), accurate to within a decade on 87 % of admissible banks.
+The `floor23` hop quantisation is not modelled, so the predictor is **exact for
+"is it a frame"** and **order-of-magnitude for "how well conditioned"**.
+
+New API: `predict_admissible`, `ripple_curve`, `max_overlap_for_kappa`,
+`min_channels`, `min_bins`. 16 regression tests pin the agreement so that a
+change to any designer's geometry which breaks it fails the build.
+
+**Every designer now runs the check itself.** `audfilters`, `cqtfilters`,
+`greenwoodfilters`, `warpedfilters`, `waveletfilters` and `gabfilters` call
+`check_admissible` before returning and publish the verdict as
+`info["admissible"]`, alongside the geometry it used (`fsupp`, `fsupp_inner`,
+`fsupp_dc`, `fsupp_nyq`; `scalevec` and `bwmul` for `warpedfilters`). A
+geometry below the floor raises `NotAFrameWarning` naming the first uncovered
+bin and its frequency. The bank is still built — analysis still works, and
+studying the gap is a legitimate thing to want — but the failure is announced
+where the parameters were chosen rather than later, when the missing band shows
+up as an all-zero dual.
+
+Extending the predictor to the two remaining designers needed a rule for each,
+since neither is a painless frequency-domain design:
+
+- `gabfilters` builds its prototype in the **time** domain, so its realised
+  support is not a designed bandwidth but the width of the block it stores:
+  every channel occupies exactly `gl = len(g)` DFT bins at
+  `A_k = k*(L/M) - gl//2`, with no dead endpoints. For a named window
+  (`gl == M`) this reduces to **frame iff `L/M <= M`**.
+- `waveletfilters` are dilations, so each support edge is a fixed multiple of
+  that channel's centre frequency — the dilation cancels — and the designer
+  reads the interval straight off `freqwavelet`'s own `foff`/`fsupp`.
+
+Validated at 100 % on 5,525 `gabfilters` and 4,259 `waveletfilters`
+configurations, including randomised hold-out grids and grids deliberately
+biased toward non-frames, plus an independent 720-configuration re-check.
+Layouts the covering test cannot express report `info["admissible"] = None`
+rather than an unvalidated verdict: `gabfilters(windowaxis='freq')`,
+`gabfilters` given a window array whose length is not `M`, and
+`waveletfilters` with `lowpass='none'`/`'repeat'`, `highpass='none'` or a
+two-sided `freqrange`.
+
+Note that this makes some existing configurations warn that did not before —
+correctly. The package's own `waveletfilters` test fixtures build banks whose
+measured lower bound is exactly zero.
+
+### The three Colab notebooks were broken, and nothing could see it
+
+`examples/colab/*.ipynb` imported `filterbankrealdual`,
+`constphase_nonuniform`, `cool_frames.numpy.phase._admm` and
+`cool_frames.numpy.phase._diff_admm` — none of which exist — unpacked the
+designers' five-element return into four names, and called
+`_causal_tgrad_tick` and `_fixed_order_phase_tick`, which no cell defines. They
+had been that way since the June 2026 consolidation moved the Diff-RTPGHI
+research code out of the package.
+
+Nothing caught it because `[tool.ruff] include` is a whitelist and carried
+`extend-exclude = ["examples/colab"]`, annotated "WIP Colab tutorial notebooks
+(cross-cell refs / placeholder helpers) are not linted as library code". A
+reviewer's first act is to open `02_reproduce_paper_results.ipynb` and press
+Run, so this was the most visible code in the repository and the least tested.
+
+All three are rebuilt against the shipped API and now execute end to end:
+
+- **01** is a PGHI tutorial: filterbank geometry, the admissibility check, the
+  signal path versus the magnitude path, heap integration, fGLA refinement.
+- **02** benchmarks every phase-retrieval method the package ships over six
+  signals on the 134-channel ERB bank. The Diff-RTPGHI, ADMM, RAAR and DM rows
+  are gone — those algorithms live with the SPL paper's code, not here, and
+  printing rows this package cannot compute was the wrong fix. The RTISI-LA
+  family and `legla` are also absent, for a measured reason stated in the
+  notebook: at 77x redundancy a two-iteration `rtisila` run takes minutes, and
+  `legla` refuses to build its kernel below `relthr = 0.5`, which truncates so
+  hard that what runs is no longer meaningfully LeGLA.
+- **03** measures which torch paths carry a gradient (analysis, synthesis and
+  `gla` do; `filterbankconstphase` and `ifilterbankiter` do not), gradchecks
+  `gla` against central finite differences, optimises through it, and then
+  shows why a waveform target is nevertheless the wrong objective downstream of
+  Griffin-Lim from zero phase — and that freezing the phase restores a monotone
+  magnitudes-to-waveform map without losing differentiability.
+
+`tests/test_example_notebooks.py` compiles every cell and resolves every
+`cool_frames` import in every notebook under `examples/`, and flags any name
+that is called but never bound. It fails on all three of the old notebooks. The
+ruff exclusion is gone and notebooks are linted (`extend-include = ["*.ipynb"]`).
+
+### Two torch docstrings said the opposite of the truth
+
+`cool_frames.torch.phase`'s module docstring claimed "every algorithm here is
+differentiable with respect to the input magnitudes", and
+`torch/phase/_constphase.py` twice directed readers to
+`constphase_nonuniform` in `_diff_constphase.py` for a differentiable
+alternative. That module does not exist anywhere in the package, and
+`filterbankconstphase` is a NumPy shim that detaches. Both now state what is
+actually differentiable and what is not, and point at `gla`, which is.
+
+### `warpedfilters` was losing the lower sideband of every filter
+
+Found by the above: the predictor was correct about the design and the
+implementation was not. `comp_warpedfreqresponse` evaluates its prototype at
+warped bin positions, producing an argument that runs symmetrically over
+[-0.5, 0.5], and passes it to `firwin_eval` — which uses the whole-point-even
+convention (`x` in [0, 1), peak at 0, even about 0.5) and returns zero for
+every negative argument. Every warped channel therefore began at its own centre
+bin instead of half a passband below it: on a log-warped bank at fs = 8 kHz,
+`bins = 1`, `bwmul = 0.6`, channel `fc = 128 Hz` occupied bins 19..26 where its
+design calls for 12..26.
+
+Wrapping the argument into [0, 1) restores the symmetric window. Realised
+supports now match the design to the bin, and the admissibility predictor's
+accuracy on `warpedfilters` goes from 70.5 % to 100 %.
+
+The same negative-argument pattern survives in the legacy `comp_zerofilt` and
+`_comp_nyquistfilt` edge builders, which are dead code (the unified complement
+is used instead) and should be deleted rather than repaired.
+
+### Also fixed here
+
+- **`comp_filterbankphasegradfrommag` below-branch time correction had the
+  wrong sign.** Both branches adjust the neighbour to the centre coefficient's
+  time instant; the upward branch forms `logs[neigh] - logs[w]` and subtracts
+  the correction, the downward branch forms the difference the other way round
+  and must therefore add it. It subtracted in both. The effect on reconstructed
+  phase is small — `dist` is usually a fraction of a frame — but it biased
+  every interior channel.
+- **The `sqtfr` convention is now documented per designer** on
+  `filterbankconstphase`: `ones(M)` for `audfilters` (and explicitly *not*
+  `compute_tfr_from_filters`, which returns L/gamma), `g[m]['tfr'](L)` for
+  `waveletfilters`, `Cg*gl**2` for `gabfilters`, and not established for
+  `cqtfilters`. None of these has been validated side by side against MATLAB
+  LTFAT; that check is what still limits magnitude-only phase retrieval.
+
 ### Also in this release
 
 - **`reconstruct` derives `real=` from the filters** instead of hardcoding
@@ -369,6 +534,256 @@ One item in the register turned out to be a **misdiagnosis**:
 but its `/8000` is a digital-frequency normalisation rather than a sampling
 rate, so the tones were always below Nyquist. The code is unchanged and the
 comment now says so.
+
+### Found by chasing the coverage number
+
+Codecov read 76 %. Executing the code no test had executed turned up two more
+defects, which is the useful thing to say about the metric: it was not hygiene,
+it was a list of places nobody had checked.
+
+- **`pghi_findgamma` returned a window constant 6-10x too large for a numeric
+  window.** A 256-tap Hann gave `Cg = 2.195` against the tabulated 0.25645 for
+  the same window — and the table *is* the precomputed answer to that search.
+  Since `gamma = Cg * gl**2` scales the phase gradients PGHI integrates, this
+  did not blur the phase estimate, it replaced it.
+
+  The cause is the fifth occurrence in this audit of one defect fixed in one of
+  two copies. `_winwidthatheight` finds the threshold crossing by scanning
+  `g[:gl//2+1]`, which only tracks the falling flank if the window peaks at
+  index 0; handed the centred ordering `scipy.signal.get_window` produces, it
+  runs up the rising flank and measures roughly `gl` for any shape. The same
+  helper in `cool_frames/numpy/filters/_gabfilters.py` had this fixed in the
+  second pass; the copy under `numpy/phase/` kept it, because the two are
+  private, near-identical and nothing compared them. Windows passed by *name*
+  were never affected — they return the tabulated constant and never enter the
+  search — so no existing caller could see it.
+
+  Fixed, and `test_findgamma.py` now holds the two copies to each other across
+  eight window shapes at four heights.
+
+  Still open, and pinned in both directions: with the ordering corrected the
+  search is 7-45 % above the table, because `_findbestgauss` returns the top of
+  its own hardcoded search range for four of the five tabulated windows. The
+  test asserts the ratio stays in `[1.0, 1.5)`, so neither a regression to the
+  6-10x error nor a genuine improvement can pass silently.
+
+- **Every regression test protecting a torch fix ran in neither CI job.** The
+  torch cases in `tests/regressions/` are guarded with
+  `pytest.importorskip("torch")`, so they skip in the numpy job for want of
+  torch — and the torch job collected only `tests/torch_backend/`. Green
+  locally, absent upstream, and their coverage reached codecov from nowhere.
+  Together with `codecov-action`'s default of `fail_ci_if_error: false`, which
+  turns a dropped upload into a warning inside a green job, that is why the
+  project read 76 % — the numpy job alone, to within a point — while the union
+  of the two jobs measures **85.04 %**. A `codecov.yml` now declares both flags
+  with carryforward and an 80 % target on project and patch.
+
+- **The iterative phase-retrieval family had no test coverage at all.**
+  `rtisila`, `gsrtisila`, `lertisila`, `legla`, `decolbfgs` and `spsi` — twelve
+  implementations across the two backends — sat at 7-11 %, meaning imports ran
+  and algorithms did not. All twelve are correct; `test_phase_retrieval_family.py`
+  now exercises them, asserting **consistency** rather than `magnitudeerr`,
+  which every routine in this family satisfies by construction and on which zero
+  phase scores a perfect `-inf dB`.
+
+- Two reporting defects found there, **pinned rather than fixed**, because both
+  are changes to a public return contract and the call is yours:
+  `relres` from the RTISIL family is computed after the magnitude projection and
+  is therefore ~1e-16 unconditionally — reported alongside an actual consistency
+  of -13 dB, while GLA honestly reports 0.249 for the same quality — and
+  `wpghi_findgamma` accepts a `tfr` argument it never reads. See
+  `DEFECT_REGISTER.md`.
+
+### `waveletfilters` shipped a bank that could not be inverted
+
+`waveletfilters` defaulted to `painless=False`. The resulting bank sat 22x
+over its painless limit, so its frame operator was not diagonal in frequency
+and the diagonal dual that `filterbankdual` returns — the only dual this
+package computes in closed form — was not a dual at all. A white-noise round
+trip lost **75 %** of the signal. `filterbanktight` failed the same way, and
+even `ifilterbankiter` left 12 % after 400 CG iterations.
+
+The bank looked healthy while doing it. `filterbankbounds` reported
+`A = 1.658`, `kappa = 2.276`; `filterbankbounds_svd`, the exact eigenvalue
+oracle, reported `A = 0`. Both were right about their own question:
+`filterbankresponse` computes the *diagonal entry* of the frame operator
+correctly, and on this bank the operator carried 45 % of its mass off the
+diagonal.
+
+Changes:
+
+- **`painless` now defaults to `True`.** The default bank round-trips at
+  4.9e-16, matching `audfilters` (5.1e-16) and `cqtfilters` (5.5e-16). It
+  costs redundancy — 1.39 to 8.98 at `fs = 8000`, `Ls = 4096`, 64 geometric
+  scales — and `painless=False` still gives you the cheap analysis-only bank,
+  now with a warning saying what it cannot do.
+
+- **`painless` is honoured by every sampling mode.** It used to apply to
+  `regsampling` only and be silently ignored by `uniform`, `fractional` and
+  `fractionaluniform`, which failed to reconstruct (0.09, 0.82, 0.80). All
+  four are now at 4.4e-16.
+
+- **The DC and Nyquist complements get their hops capped too.** They are
+  appended after the hops are chosen and simply inherited one. On a sparse
+  scale set (24 scales at 6/octave) the Nyquist complement — wide by
+  construction, because it spans everything the wavelets left uncovered —
+  arrived 1113 bins wide on a hop of 6, `aW/L = 3.87`. One channel over the
+  limit was enough to put the exact lower bound at 0 while the estimator
+  reported `kappa = 4.4`. Lowering a hop is a safe local repair; the response
+  is rescaled by `sqrt(a_new/a_old)` to keep the `scal = sqrt(a)` convention.
+
+- **`info["painless"]` and `info["painless_ratio"]`** report the condition
+  measured on the bank actually returned, after the complements are appended
+  and after `redtar` has rewritten the hops — the two places where a cap
+  applied mid-design stops being a guarantee. A violation warns at
+  construction, where the parameters were chosen.
+
+- **`info["admissible"]` no longer returns `None` for layouts the closed-form
+  predictor cannot express** (`lowpass='none'`/`'repeat'`, complex banks).
+  `lowpass='none'` leaves 79 DFT bins uncovered at the defaults and used to
+  report `None`, which reads as "fine". Those layouts now fall back to
+  measuring the realised response and report `source='measured'`.
+
+Why no test caught it: `tests/layer1_filters/unit/test_waveletfilters.py`
+had a `TestReconstruction` class whose docstring documented the defect as
+expected behaviour and then declined to test it — "waveletfilters ... does NOT
+form a painless frame. We therefore test reconstruction with cqtfilters and
+audfilters." There was no reconstruction test for `waveletfilters` at all. The
+`cqtfilters` case that stayed behind asserted `rel_err < 1.0`, so a 100 %
+relative error passed; it measures 4.7e-16. And no test anywhere compared
+`filterbankbounds` against `filterbankbounds_svd`, which is the one comparison
+that makes a non-diagonal frame operator visible. All three are now fixed:
+reconstruction tests for `waveletfilters` across all four sampling modes and
+both entry points, a `< 1e-10` bound on the `cqtfilters` case, and an
+estimator-vs-oracle test parametrised over four designers with the
+non-painless bank kept as a negative control.
+
+
+### LTFAT's `tfr` rule, recovered; and which phase-gradient path is right
+
+**`info["tfr"]` on every painless designer.** LTFAT publishes `info.tfr` as an
+opaque function handle and never states how it is built, so cool-frames'
+designers exposed no equivalent and `filterbankconstphase`'s magnitude path had
+no `sqtfr` to offer callers. Recovered from the exported references:
+
+```
+tfr[m] = 1/(2*winbw**2) * L / W[m]**2,    W[m] = fsupp[m] * L/fs
+```
+
+`W` is the channel's *designed* bandwidth in DFT bins and `winbw` the prototype
+window's equivalent-bandwidth factor (3/8 for the Hann, so the constant is
+32/9). The form is the strong part: `tfr * W**2 / L` is constant to **4.2e-16**
+across all 29 audfilters channels — over tfr values spanning 0.0298 to 719 —
+and all 78 cqtfilters channels. The formula then reproduces LTFAT's own numbers
+to a *uniform* 4.5e-5 and 2.1e-5 (median equal to max, so one scale factor, not
+a per-channel error; that residual is the small `fsupp` convention difference).
+
+This is **not** `L / comp_tfrfromwin(realised |H|)`, which gives a Hann constant
+of 3.5288 instead of 3.5556 and is off by ~1 % per channel, varying. LTFAT uses
+the design bandwidth, not the realised response.
+
+`audfilters`, `cqtfilters`, `greenwoodfilters` and `warpedfilters` now publish
+`info["tfr"]` and `info["tfr_source"]`. `warpedfilters` is the case that
+motivated this: LTFAT returns no info struct for it at all — no `fc`, no `tfr` —
+so no reference value exists and no cross-language check is possible, but it
+designs its bandwidths by the same warped rule and windows them with the same
+Hann, so the value is derived rather than left blank.
+
+**`edge_mode` now defaults to `'ltfat'` — for reference fidelity, not
+accuracy.** The DC and Nyquist complements have one frequency neighbour rather
+than two, and the two implementations scaled that case differently, so those
+channels came out exactly 2x apart.
+
+A first pass concluded `'ltfat'` was measurably better, using the
+derivative-filter path as reference. That was unsound and is retracted. The
+complements are symmetric real channels — a real bank's edge channels have to
+be — so they carry no net phase advance, and the signal path collapses to the
+channel's own centre frequency there whatever the content. "Closer to the
+signal path" on those channels means "closer to `fc`", which rewards whichever
+mode estimates smaller.
+
+Against a tone of *known* frequency inside the DC channel's band the verdict is
+mixed, and both modes are off by more than the difference between them:
+
+| designer | tone | `rescaled` | `ltfat` | closer |
+|---|---|---|---|---|
+| audfilters | 15 Hz | 3.3 (err 11.7) | 1.7 (err 13.3) | rescaled |
+| audfilters | 22 Hz | 6.5 (err 15.5) | 3.3 (err 18.7) | rescaled |
+| cqtfilters | 20 Hz | −33.7 (err 53.7) | −16.9 (err 36.9) | ltfat |
+| greenwoodfilters | 15 Hz | −329.3 (err 344.3) | −164.6 (err 179.6) | ltfat |
+
+On cqtfilters and greenwoodfilters both modes return the wrong *sign*. So the
+edge channels cannot adjudicate this, and the default rests on matching the
+reference implementation — a coherent policy for a port — not on accuracy. The
+torch backend tracks the same choice.
+
+**Fixed: the phase gradient split the Nyquist complement in half.**
+`comp_phasegradfilters` weights each filter by its signed DFT index, and it
+reduced each index mod `L` then centred it about `L/2` *independently*. That
+splits any support crossing `L/2`: the lower half keeps indices near `+L/2`,
+the upper half is thrown to near `−L/2`, and the frequency-weighted response
+nearly cancels.
+
+Every real bank has such channels — the Nyquist complement is centred exactly
+on the fold, and the topmost few ordinary channels spill their upper tails past
+it. Measured against MATLAB LTFAT's own `filterbankphasegrad` on the same
+cqtfilters bank, the complement's deviation read **−5106.8 Hz** where LTFAT
+reports **0.0**; every other channel already agreed to about 0.6 Hz. The
+partially-straddling channels were only mildly affected (most of their energy
+sits below the fold) and had always agreed to ~1 Hz.
+
+Keeping the support contiguous — shifting it by a whole multiple of `L` so its
+midpoint lands in `[−L/2, L/2]` — brings the complement to 18.0 Hz and moves
+nothing else. A tone at 3996 Hz inside audfilters' complement now reads 4000.1
+Hz where it read −105.2 Hz. The same construction appeared in
+`_phasederiv.py` in both backends, where the index is squared so the split
+largely self-cancelled; fixed there too for consistency. The torch
+`_phasegrad.py` imports the NumPy function, so it inherits the fix.
+
+Note what remains true regardless: on a symmetric real channel the phase
+gradient collapses to that channel's centre frequency, because there is no net
+phase advance to measure. That is geometry, not a defect, and it means neither
+path resolves content *within* an edge channel.
+
+**The signal/magnitude gap is a resolution effect, not a fixed bias.** This
+revises the previous "structural, not a parameter choice" framing, which was
+measured on one bank. Median inner-channel |magnitude − signal|, cqtfilters:
+
+| bins/octave | M | sweep | white noise | 3 tones |
+|---|---|---|---|---|
+| 3 | 21 | 139.03 | 36.06 | 391.07 |
+| 6 | 40 | 16.13 | 17.75 | 136.69 |
+| 12 | 78 | 1.35 | 9.33 | 3.75 |
+| 24 | 154 | 0.52 | 4.93 | 0.62 |
+| 48 | 305 | **0.44** | 2.05 | **0.44** |
+
+On a well-resolved bank the two paths agree to well under 1 Hz on tonal
+material. Broadband input converges more slowly and does not reach that floor,
+which is what an estimator assuming one dominant component per cell should do.
+Spectral crowding matters too but less, and not monotonically in spacing: at
+bins=12, one tone 0.61 Hz, two an octave apart 1.77, three semitones 0.80, one
+semitone 1.47, white noise 9.33.
+
+The same resolution story explains the `sqtfr` sensitivity documented earlier.
+On the coarse audfilters bank a global 2x beats LTFAT's own `sqrt(info.tfr(L))`
+(24.0 vs 78.4 Hz on the sweep); on the finer cqtfilters bank the two are within
+15 % (1.15 vs 1.35). Gamma matters when the bank is under-resolved and stops
+mattering when it is not — so `2x` beating the derived value on
+`greenwoodfilters` (20.6 vs 54.4) is the *same* effect seen where the tfr is
+known-correct, not evidence that the derived value is wrong. That is the closest
+thing to validation available for a designer the reference gives nothing for.
+
+**Fixed while doing this:** `tfr` came out `nan` on exactly the DC and Nyquist
+channels of `audfilters` and `greenwoodfilters`, whose complements carry their
+bandwidth in `fsupp_dc`/`fsupp_nyq` and store `0` in `fsupp`. `sqrt(info["tfr"])`
+would have poisoned every coefficient of the magnitude path. All four designers
+now return finite `tfr` on every channel.
+
+**What none of this licenses:** any claim that magnitude-only gradient
+estimation is intrinsically limited. Exactly one algorithm was tested, and two
+faithful implementations of one algorithm agreeing is evidence about the port,
+not about the method class.
+
 
 ## 0.1.0
 

@@ -324,15 +324,59 @@ def comp_filterbankphasegradfrommag(
                 if neigh >= 0:
                     numNeighBelow += 1
                     dist = (posInfo[1, neigh] - posInfo[1, w]) / a_np[m]  # type: ignore[index]
-                    tempValBelow += logs[w] - logs[neigh] - dist * fgrad[w]  # type: ignore[index]
+                    # Sign: both branches adjust the neighbour to the centre
+                    # coefficient's time instant, but they form the difference
+                    # in opposite orders.  The above branch computes
+                    # ``logs[neigh] - logs[w]`` and subtracts ``dist*fgrad[w]``;
+                    # here the difference runs the other way, so the same
+                    # correction has to be ADDED.
+                    #
+                    # This backend kept the wrong sign after the NumPy copy was
+                    # fixed -- the same asymmetry that left the centre-frequency
+                    # term behind for a whole release, and for the same reason:
+                    # nothing internal calls this function.  It cost 1.53e-02 in
+                    # tgrad on *interior* channels, which is what
+                    # test_phase_gradient_estimators_agree_between_backends
+                    # exists to catch.
+                    tempValBelow += logs[w] - logs[neigh] + dist * fgrad[w]  # type: ignore[index]
             if numNeighBelow > 0:
                 tempValBelow /= numNeighBelow
 
-            temp[n] = (tempValAbove + aboveNom) / aboveDenom + (
-                tempValBelow + belowNom
-            ) / belowDenom
+            # Each side is a one-sided difference quotient estimating the same
+            # frequency-derivative of the log-magnitude.  Interior channels have
+            # both; the DC and Nyquist complements have only one, and summing
+            # the available sides leaves those two at half the interior
+            # scaling.  That is what LTFAT does, and measuring both against the
+            # exact signal path showed it is also the more accurate choice on
+            # the DC channel (1.4-2.0x lower error, five of five probes across
+            # three designers).  This backend has no `edge_mode` switch: it
+            # tracks the NumPy default, which is now 'ltfat'.  See
+            # ``cool_frames/numpy/phase/_fbphasegradfrommag.py`` for the table.
+            sides = []
+            if m < M - 1:
+                sides.append((tempValAbove + aboveNom) / aboveDenom)
+            if m > 0:
+                sides.append((tempValBelow + belowNom) / belowDenom)
+            if sides:
+                acc = sides[0]
+                for extra in sides[1:]:
+                    acc = acc + extra
+                temp[n] = acc
+            else:
+                temp[n] = 0.0
 
-        tgrad[chanStart : chanStart + Nm] = temp / denom
+        # ``fc`` is a *normalised* centre frequency in [0, 2] (2 == fs).  The
+        # difference quotient above estimates the *deviation* of the
+        # instantaneous frequency from the channel's centre frequency, while the
+        # heap integrator consumes the absolute value.  Omitting this term left
+        # tgrad off by the centre frequency itself.
+        #
+        # This backend kept the defect for a whole release after the NumPy one
+        # was fixed, because nothing internal calls it — the torch
+        # ``filterbankconstphase`` delegates to NumPy — so no test went red.  On
+        # a 660 Hz tone at fs = 4000 it returned -0.0509 where the truth is
+        # 0.3300.  The parity test now pins the two backends together.
+        tgrad[chanStart : chanStart + Nm] = temp / denom + fc_t[m]
         chanStart += Nm
 
     # ----- Scale fgrad by tfr² / (2π) * N(m) -----

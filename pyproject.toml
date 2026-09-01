@@ -149,11 +149,16 @@ include = [
     "tests/regressions/**/*.py",
     "benchmarks/**/*.py",
     "examples/**/*.py",
+    "examples/**/*.ipynb",
 ]
 
-# WIP Colab tutorial notebooks (cross-cell refs / placeholder helpers) are not
-# linted as library code.
-extend-exclude = ["examples/colab"]
+# Notebooks are linted too.  They used to be excluded here, with a comment
+# calling them "WIP ... placeholder helpers"; what that actually bought was
+# three shipped Colab notebooks importing four modules that do not exist and
+# calling two helpers nothing defines, for months, invisibly.  Correctness is
+# covered by tests/test_example_notebooks.py; this covers style and dead
+# imports.
+extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = [
@@ -182,6 +187,10 @@ known-first-party = ["cool_frames"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011", "SIM300"]  # allow assert True, yoda comparisons in tests
+# A notebook's first cell installs the package, so its imports cannot be at the
+# top of the "module"; and a cell's last expression is its output, not a
+# useless statement.
+"*.ipynb" = ["E402", "B018"]
 
 # ---------------------------------------------------------------------------
 # Mypy – type checking

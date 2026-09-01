@@ -15,3 +15,23 @@ __all__ = [
     "filterbank_spectrogram",
     "reassigned_spectrogram",
 ]
+
+from .admissibility import (  # noqa: E402
+    NotAFrameWarning,
+    check_admissible,
+    max_overlap_for_kappa,
+    min_bins,
+    min_channels,
+    predict_admissible,
+    ripple_curve,
+)
+
+__all__ = list(__all__) + [
+    "NotAFrameWarning",
+    "check_admissible",
+    "predict_admissible",
+    "ripple_curve",
+    "max_overlap_for_kappa",
+    "min_channels",
+    "min_bins",
+]
