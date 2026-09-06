@@ -467,6 +467,43 @@ def hann_winbw(probelen: int = 10_000) -> float:
     return float(np.dot(h, h) / probelen)
 
 
+def window_winbw(name: str, probelen: int = 10_000, **kw) -> float:
+    """Equivalent noise bandwidth of any named window.
+
+    The generalisation of :func:`hann_winbw`, matching LTFAT's
+    ``audfilters.m``, which computes the constant from whichever window it was
+    given rather than from a fixed value::
+
+        winbw = norm(firwin(win, probelen, 'inf'))^2 / probelen
+
+    Returns 3/8 for ``'hann'`` and 1/2 for ``'sine'``, as LTFAT does.
+
+    Parameters
+    ----------
+    name : str
+        Window name, as accepted by :func:`firwin`.
+    probelen : int
+        Probe length. Default 10000.
+    **kw
+        Extra arguments forwarded to :func:`firwin` (``beta`` for Kaiser).
+
+    Returns
+    -------
+    float
+        Bandwidth constant (relative energy per Hz).
+
+    Examples
+    --------
+    >>> from cool_frames.numpy.filters._firwin import window_winbw
+    >>> round(window_winbw("hann"), 6)
+    0.375
+    >>> round(window_winbw("sine"), 6)
+    0.5
+    """
+    h = firwin(name, probelen, norm="inf", **kw)
+    return float(np.dot(h, h) / probelen)
+
+
 # ---------------------------------------------------------------------------
 # pgauss — periodic (sampled) Gaussian Gabor window (relocated from core)
 # ---------------------------------------------------------------------------

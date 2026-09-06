@@ -73,7 +73,7 @@ from ._edge_filters import (
     build_complement_lowpass,
     edge_params_from_geometry,
 )
-from ._firwin import hann_winbw
+from ._firwin import hann_winbw, window_winbw
 
 # ---------------------------------------------------------------------------
 # Scale-dependent parameter defaults (mirrors MATLAB audfilters.m logic)
@@ -253,7 +253,7 @@ def audfilters(fs: float, Ls: int, *,
     ind = np.arange(1, M2 - 1)   # inner channel indices
 
     # ERB bandwidth of the prototype window
-    winbw = hann_winbw()   # ≈ 0.375 for Hann
+    winbw = window_winbw(window)   # 0.375 for the default hann
 
     # Filter support in Hz for inner channels
     fsupp = np.zeros(M2)
@@ -395,7 +395,7 @@ def audfilters(fs: float, Ls: int, *,
     info = {"fc": fc, "a": a, "L": int(L), "scale": scale, "designer": "audfilters",
             "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
             "fsupp_dc": float(fsupp_lp), "fsupp_nyq": float(fsupp_hp),
-            "tfr": tfr_from_bandwidth(_bw, fs, int(L)),
+            "tfr": tfr_from_bandwidth(_bw, fs, int(L), winbw=window_winbw(window)),
             "tfr_source": "LTFAT rule (matches info.tfr(L) to 4.5e-05)",
             "admissible": admissible}
     return g_list, a, fc, int(L), info  # type: ignore[return-value]

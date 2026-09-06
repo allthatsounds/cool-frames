@@ -48,7 +48,7 @@ from ..core._core import filterbanklength, floor23
 from ._audscale import GREENWOOD_DEFAULTS, audfiltbw
 from ._cqtfilters import _make_direct_filter, _normalise_a_local
 from ._edge_filters import build_complement_highpass, build_complement_lowpass
-from ._firwin import hann_winbw
+from ._firwin import hann_winbw, window_winbw
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ def greenwoodfilters(
     ind = np.arange(1, M2 - 1)   # inner channel indices
 
     # Bandwidth: Greenwood derivative scaled by bwmul and Hann window bandwidth
-    winbw = hann_winbw()   # ≈ 0.375
+    winbw = window_winbw(window)   # 0.375 for the default hann
     fsupp = np.zeros(M2)
     fsupp[ind] = (
         _greenwood_bw(fc_arr[ind], gw_A, gw_alpha, gw_k)
@@ -396,7 +396,7 @@ def greenwoodfilters(
     info = {"fc": fc_arr, "a": a, "L": int(L), "designer": "greenwoodfilters",
             "fsupp": fsupp, "fsupp_inner": fsupp[1:-1],
             "fsupp_dc": float(fsupp_lp), "fsupp_nyq": float(fsupp_hp),
-            "tfr": tfr_from_bandwidth(_bw, fs, int(L)),
+            "tfr": tfr_from_bandwidth(_bw, fs, int(L), winbw=window_winbw(window)),
             "tfr_source": "LTFAT rule (no LTFAT export for this designer)",
             "admissible": admissible}
     return g_list, a, fc_arr, int(L), info  # type: ignore[return-value]
