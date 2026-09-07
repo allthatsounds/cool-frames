@@ -7,6 +7,20 @@ used as a training objective.
 """
 
 from ._core import filterbank, ifilterbank
+from ._dense import (
+    alias_blocks,
+    dense_analyse,
+    dense_dual,
+    dense_synthesise,
+    frame_bounds,
+    frame_condition,
+    frame_gram,
+    frame_response,
+    frame_retract,
+    is_frame,
+    mirror_bank,
+    retraction_gain,
+)
 from ._frame import (
     filterbankbounds,
     filterbankdual,
@@ -20,6 +34,10 @@ from ._frame import (
 )
 
 __all__ = [
+    "alias_blocks",
+    "dense_analyse",
+    "dense_dual",
+    "dense_synthesise",
     "filterbank",
     "filterbankbounds",
     "filterbankdual",
@@ -29,6 +47,14 @@ __all__ = [
     "filterbankresponse",
     "filterbankscale",
     "filterbanktight",
+    "frame_bounds",
+    "frame_condition",
+    "frame_gram",
+    "frame_response",
+    "frame_retract",
     "ifilterbank",
     "ifilterbankiter",
+    "is_frame",
+    "mirror_bank",
+    "retraction_gain",
 ]
