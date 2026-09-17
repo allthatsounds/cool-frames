@@ -48,7 +48,7 @@ jobs:
       # It cannot read a plain `upload-artifact` upload, so without this step
       # the deploy job fails at run time with "Unable to find artifact".
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: docs/_build/html
 
