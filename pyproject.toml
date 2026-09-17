@@ -55,7 +55,7 @@ dev = [
     "build",
     "twine",
     "ruff==0.16.4",   # pinned to match CI; see .github/workflows/ci.yml
-    "mypy==1.20.2",
+    "mypy==2.3.1",
 ]
 docs = [
     "sphinx>=7",
