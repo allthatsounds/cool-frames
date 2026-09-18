@@ -32,6 +32,12 @@ Phase Retrieval
 .. automodule:: cool_frames.numpy.phase
    :members:
 
+Gabor Transform
+---------------
+
+.. automodule:: cool_frames.numpy.gabor
+   :members:
+
 Operators
 ---------
 
