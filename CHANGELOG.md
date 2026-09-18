@@ -120,6 +120,24 @@ produce different (and correct) numbers — and two are **breaking API changes**
 
 ### Added
 
+- **`cool_frames.gabor`: the discrete Gabor transform** (NumPy backend) —
+  `dgt`, `idgt`, `dgtreal`, `idgtreal`, `gabdual`, `gabtight`,
+  `gabframebounds`, `gabframediag` and `dgtlength`, with LTFAT's definitions,
+  normalisation and default (frequency-invariant) phase convention on a
+  rectangular lattice. The engine is Søndergaard's long-window factorisation,
+  ported from the research tree (`cola_additions.dgt`, formerly
+  `3d_studio/sondergaard_dgt`). That code scaled both transforms by `1/sqrt(M)`
+  and its dual and tight windows by `M` and `sqrt(M)` relative to LTFAT; the
+  public functions rescale, and `tests/gabor/` checks each of them against the
+  explicit atom matrix and frame operator on eight lattices (integer and
+  rational oversampling, critical sampling). Not ported: LTFAT's FIR-window
+  algorithm (every window goes through the long-window path),
+  non-rectangular lattices, the time-invariant phase convention, window
+  names such as `'gauss'` and complex windows in the frame-window functions;
+  there is no torch backend and no MATLAB cross-language fixture yet. The frame-window
+  functions refuse non-frames, and refuse to return an FIR-length dual that
+  cannot be exact (even-length window with a non-zero middle sample).
+
 - **`seed` argument** for `startphase='rand'` across `gla`, `legla`,
   `decolbfgs`, `rtisila` and `lertisila` in both backends. Random starts were
   drawn from unseeded generators and so were irreproducible; the default is

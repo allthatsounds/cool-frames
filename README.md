@@ -132,13 +132,15 @@ worked examples.
 | `core`        | Low-level FFT kernels and math utilities              |
 | `filters`     | Filter design: auditory scales, windows, wavelets     |
 | `filterbanks` | Analysis, synthesis, and frame theory                 |
+| `gabor`       | Discrete Gabor transform, dual/tight windows, bounds  |
 | `operators`   | Frame multipliers and TF-domain operators             |
 | `phase`       | Phase gradients, reconstruction, and retrieval        |
 | `diagnostics` | Spectrograms, centre frequencies, designer choice     |
 | `sigproc`     | Coefficient-domain sparsity (`thresh`, `largest`)     |
 
 Each subpackage exists in both backends: `cool_frames.numpy.*` (also re-exported at
-the top level, e.g. `cool_frames.filters`) and `cool_frames.torch.*`.
+the top level, e.g. `cool_frames.filters`) and `cool_frames.torch.*` — except
+`gabor`, which is NumPy-only for now.
 
 ## Validation
 
