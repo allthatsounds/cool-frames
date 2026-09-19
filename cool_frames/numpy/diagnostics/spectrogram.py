@@ -114,7 +114,7 @@ def reassigned_spectrogram(
         - 'fc': channel center frequencies (Hz)
         - 'a': hop sizes
         - 'fs': sample rate
-        - 'instfreq_deviation': instantaneous frequency shift per channel (Hz)
+        - 'instfreq_deviation': mean instantaneous frequency minus centre frequency, per channel (Hz, energy-weighted)
         - 'groupdelay_shift': group delay shift per channel (samples)
     """
     # Design filterbank
@@ -138,7 +138,7 @@ def reassigned_spectrogram(
     #     filterbankphasegrad(f, g, a, L) -> (tgrad, fgrad, s, c)
     # with `tgrad` the normalised instantaneous frequency and `fgrad` the group
     # delay in samples — the opposite of how the two were mapped below.
-    tgrad, fgrad, _s, _c = filterbankphasegrad(f, g, a, L)
+    tgrad, fgrad, s_pow, _c = filterbankphasegrad(f, g, a, L)
 
     # Convert to dB
     mag_db_list = [20 * np.log10(np.abs(c_ch) + 1e-10) for c_ch in c]
@@ -162,8 +162,24 @@ def reassigned_spectrogram(
     mag_db_clipped = np.maximum(mag_db_stacked, floor_db)
 
     # Average phase-gradient data across time for a per-channel summary.
-    # `tgrad` is instantaneous frequency (normalised), `fgrad` group delay.
-    tgrad_summary = np.array([np.mean(tg) if len(tg) > 0 else 0.0 for tg in tgrad])
+    # `tgrad` is the *absolute* instantaneous frequency, normalised so that
+    # 2 = fs (Hz = tgrad * fs / 2); `fgrad` is the group delay in samples.
+    #
+    # The instantaneous-frequency summary used to be the plain time mean of
+    # `tgrad` times fs / (2*pi): a unit error of pi (the normalisation is
+    # 2 = fs, not 2*pi = fs), and an absolute frequency reported under a key
+    # that promises the *deviation* from the channel's centre.  It is now the
+    # energy-weighted mean instantaneous frequency minus the centre frequency,
+    # in Hz, so silent stretches of a channel do not dilute it.
+    fc_hz = np.asarray(fc, dtype=float)
+    tgrad_hz = np.zeros(len(tgrad))
+    for m, (tg, sm) in enumerate(zip(tgrad, s_pow)):
+        tg = np.asarray(tg, dtype=float).ravel()
+        w = np.asarray(sm, dtype=float).ravel()
+        if tg.size == 0:
+            continue
+        mean_if = float(np.average(tg, weights=w)) if w.sum() > 0 else float(np.mean(tg))
+        tgrad_hz[m] = mean_if * fs / 2.0 - fc_hz[m]
     fgrad_summary = np.array([np.mean(fg) if len(fg) > 0 else 0.0 for fg in fgrad])
 
     return {
@@ -171,6 +187,6 @@ def reassigned_spectrogram(
         'fc': fc,
         'a': a,
         'fs': fs,
-        'instfreq_deviation': tgrad_summary * fs / (2 * np.pi),
+        'instfreq_deviation': tgrad_hz,
         'groupdelay_shift': fgrad_summary,
     }

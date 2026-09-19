@@ -369,16 +369,25 @@ def painlessfilterbank(
     # non-painless bank got a silently approximate "dual"/"tight" — on
     # `waveletfilters` the returned "tight" frame is rank-deficient and loses
     # 72 % of the signal while `filterbankbounds` prints kappa = 1.000000.
+    from ..filters._painless import nonzero_support
+
     _violations = []
+    _supports = {}
     for m in range(M):
         gm = g_ready[m]
         H_m = gm.get("H")
         if H_m is None or len(np.asarray(H_m)) == 0:
             continue
         Nm = L / (a_norm[m, 0] / a_norm[m, 1])
-        # Strictly greater, with one bin of slack: several designers emit
-        # L/a + 1 bins by construction and are painless in practice.
-        if len(np.asarray(H_m)) > Nm + 1:
+        # Compare the *non-zero* support with N = L/a, with no slack.  Several
+        # designers store L/a + 1 bins whose end bins are exact zeros; those
+        # alias onto nothing and are painless.  A support genuinely one bin
+        # wider is not, and a one-bin allowance on the stored length used to
+        # let exactly that through without a warning:
+        # cqtfilters(sampling='fractional') had 999 non-zero Nyquist bins on
+        # N = 998 and reconstructed to 1.4e-4 in silence.
+        _supports[m] = nonzero_support(H_m)
+        if _supports[m] > Nm + 1e-9:
             _violations.append(m)
 
     if _violations:
@@ -387,7 +396,7 @@ def painlessfilterbank(
         _warnings.warn(
             f"filterbank{type_}: {len(_violations)} of {M} channels exceed the "
             f"painless limit L/a (e.g. channel {_violations[0]}: "
-            f"{len(np.asarray(g_ready[_violations[0]]['H']))} bins against "
+            f"{_supports[_violations[0]]} non-zero bins against "
             f"{L / (a_norm[_violations[0], 0] / a_norm[_violations[0], 1]):.0f}). "
             f"The diagonal {type_} is approximate for this bank; verify with "
             f"`filterbankbounds_svd`, or use `ifilterbankiter` for exact "

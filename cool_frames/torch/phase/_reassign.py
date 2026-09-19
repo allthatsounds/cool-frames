@@ -24,6 +24,47 @@ from ...numpy.filters._design import filterbanklength
 from ._phasegrad import filterbankphasegrad
 
 
+def _centre_frequencies(g, a_norm, L: int, device) -> torch.Tensor:
+    """Normalised centre frequency of every channel, in [0, 2) with 2 = fs.
+
+    The circular mean of the DFT frequency weighted by ``|H_m|``, as LTFAT's
+    ``cent_freqs`` computes it, in float64.  The arithmetic mean over [0, 2)
+    that this replaces put any channel whose support wraps around 0 -- the
+    DC complement, with bins near 0 *and* near L -- at about 1, i.e. at
+    Nyquist, so its energy was reassigned across the whole band.
+
+    The kernel expects the channels in ascending order with the wrap-around
+    after the last one.  A DC complement whose centroid lands a hair below 0
+    (just under 2 once wrapped) would put that wrap between channels 0 and 1
+    and send its energy to the Nyquist channel, so such a channel is set to 0.
+    """
+    import math
+
+    from ..filterbanks._frame import filterbankfreqz
+
+    H = filterbankfreqz(g, a_norm, L).detach().to(device="cpu", dtype=torch.complex128)
+    k = torch.arange(L, dtype=torch.float64) / L * 2.0
+    z = torch.exp(1j * math.pi * k).to(torch.complex128) @ H.abs().to(torch.complex128)
+    fc = torch.remainder(torch.angle(z) / math.pi, 2.0)
+    if fc.numel() > 1 and fc[0] > fc[1] and 2.0 - fc[0] < fc[1]:
+        fc[0] = 0.0
+    return fc.to(device=device)
+
+
+def _length_from_coefficients(s, a_norm) -> int:
+    """Transform length implied by the subband lengths and hops (L = N_m a_m)."""
+    afrac = [float(a_norm[m, 0]) / float(a_norm[m, 1]) for m in range(len(s))]
+    lengths = [int(torch.as_tensor(sm).numel()) * am for sm, am in zip(s, afrac)]
+    L = int(round(lengths[0]))
+    if any(abs(Lm - L) > 0.5 for Lm in lengths):
+        raise ValueError(
+            "filterbankreassign: the subband lengths and hops do not agree on one "
+            f"transform length (N_m * a_m ranges over {min(lengths):g}..{max(lengths):g}); "
+            "pass the normalised centre frequencies instead of the filters"
+        )
+    return L
+
+
 def comp_filterbankreassign(
     s: list[torch.Tensor],
     tgrad: list[torch.Tensor],
@@ -36,8 +77,9 @@ def comp_filterbankreassign(
 
     Each coefficient in subband m, time index n is accumulated into the
     subband whose normalised centre frequency is closest to
-    ``cfreq[m] + tgrad[m][n]`` (wrap around 2), and placed at the time
-    index closest to ``fgrad[m][n] + a[m]*n`` (mod N[target]).
+    ``tgrad[m][n]`` (the absolute normalised instantaneous frequency, wrap
+    around 2), and placed at the time index closest to
+    ``fgrad[m][n] + a[m]*n`` (mod N[target]).
 
     All operations are differentiable with respect to the magnitudes in ``s``.
 
@@ -92,11 +134,16 @@ def comp_filterbankreassign(
         am = afrac[mm]
 
         for jj in range(Lc[mm]):
-            tgradmjj = float(tg_arr[jj]) + cfreqm
+            # ``tgrad`` is the absolute normalised instantaneous frequency
+            # (as filterbankphasegrad returns it); LTFAT's kernel expects the
+            # deviation from the channel centre, wrapped to [-1, 1).  Adding
+            # ``cfreqm`` to the absolute value, as this used to, reassigned
+            # every coefficient to about twice its frequency.
+            dev = float((float(tg_arr[jj]) - cfreqm + 1.0) % 2.0 - 1.0)
+            tgradmjj = cfreqm + dev
             oldtgrad = 10.0
 
-            tg_jj_val = float(tg_arr[jj])
-            if tg_jj_val > 0:
+            if dev > 0:
                 pos = mm
                 for ii in range(mm, M):
                     pos = ii
@@ -234,10 +281,14 @@ def filterbankreassign(
 
         # fc can be frequencies or filter cell
         if isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
-            # fc is actually a filter cell g; default to normalized [0, 1, 2, ..., M-1]
-            import numpy as np
-
-            fc_arr = torch.tensor(np.arange(M, dtype=float) / M * 2.0, device=s[0].device)
+            # fc is the filter cell: take each channel's centre from its
+            # response, at the length the subbands and hops imply.  (This
+            # used to fall back to M evenly spaced frequencies, which is
+            # right for no non-uniform bank.)
+            a_norm_pc = normalise_a(a_hops, M)
+            fc_arr = _centre_frequencies(
+                list(fc), a_norm_pc, _length_from_coefficients(s, a_norm_pc), s[0].device
+            )
         elif fc is None:
             # No fc provided; default to evenly spaced
             import numpy as np
@@ -265,25 +316,10 @@ def filterbankreassign(
 
         # Compute normalised centre frequencies if not provided
         if fc is None:
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(g, a_norm, L)
-            # Centre = weighted mean frequency
-            k = torch.arange(L, dtype=torch.float32, device=f.device) / L * 2.0
-            fc_arr = torch.zeros(M, dtype=torch.float32, device=f.device)
-            for m in range(M):
-                H_m = torch.abs(H[:, m]) ** 2 + 1e-30
-                fc_arr[m] = torch.mean(k * H_m) / torch.mean(H_m)
+            fc_arr = _centre_frequencies(g, a_norm, int(L), f.device)
         elif isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
             # fc is actually a filter cell g; compute from filters
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(list(fc), a_norm, L)
-            k = torch.arange(L, dtype=torch.float32, device=f.device) / L * 2.0
-            fc_arr = torch.zeros(M, dtype=torch.float32, device=f.device)
-            for m in range(M):
-                H_m = torch.abs(H[:, m]) ** 2 + 1e-30
-                fc_arr[m] = torch.mean(k * H_m) / torch.mean(H_m)
+            fc_arr = _centre_frequencies(list(fc), a_norm, int(L), f.device)
         else:
             fc_arr = torch.as_tensor(fc, device=f.device)
 
@@ -302,7 +338,8 @@ def filterbanksynchrosqueeze(
     .. deprecated::
         ``filterbanksynchrosqueeze`` is deprecated and will be removed in a
         future release.  It is equivalent to :func:`filterbankreassign` with
-        the time gradient zeroed out.  Use :func:`filterbankreassign` directly
+        the group delay (``fgrad``) zeroed out, so coefficients move in
+        frequency only.  Use :func:`filterbankreassign` directly
         for all reassignment tasks.
 
     Can be called in two ways:
@@ -344,10 +381,14 @@ def filterbanksynchrosqueeze(
 
         # fc can be frequencies or filter cell
         if isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
-            # fc is actually a filter cell g; default to normalized [0, 1, 2, ..., M-1]
-            import numpy as np
-
-            fc_arr = torch.tensor(np.arange(M, dtype=float) / M * 2.0, device=c[0].device)
+            # fc is the filter cell: take each channel's centre from its
+            # response, at the length the subbands and hops imply.  (This
+            # used to fall back to M evenly spaced frequencies, which is
+            # right for no non-uniform bank.)
+            a_norm_pc = normalise_a(a_hops, M)
+            fc_arr = _centre_frequencies(
+                list(fc), a_norm_pc, _length_from_coefficients(c, a_norm_pc), c[0].device
+            )
         elif fc is None:
             # No fc provided; default to evenly spaced
             import numpy as np
@@ -378,22 +419,20 @@ def filterbanksynchrosqueeze(
         a_hops = a_norm
 
         if fc is None:
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(g, a_norm, L)
-            k = torch.arange(L, dtype=torch.float32, device=f.device) / L * 2.0
-            fc_arr = torch.zeros(M, dtype=torch.float32, device=f.device)
-            for m in range(M):
-                H_m = torch.abs(H[:, m]) ** 2 + 1e-30
-                fc_arr[m] = torch.mean(k * H_m) / torch.mean(H_m)
+            fc_arr = _centre_frequencies(g, a_norm, int(L), f.device)
+        elif isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
+            fc_arr = _centre_frequencies(list(fc), a_norm, int(L), f.device)
         else:
             fc_arr = torch.as_tensor(fc, device=f.device)
 
-    # Zero-out time gradient for synchrosqueeze
-    tgrad_zero = [torch.zeros_like(tg) for tg in tgrad]
+    # Synchrosqueezing is reassignment in frequency only: keep each
+    # coefficient's time position (zero group delay ``fgrad``) and move it by
+    # its instantaneous frequency ``tgrad``.  This used to zero ``tgrad``
+    # instead, which gave time-only reassignment.
+    fgrad_zero = [torch.zeros_like(fg) for fg in fgrad]
 
     result = comp_filterbankreassign(
-        s, tgrad_zero, fgrad, a_hops, fc_arr, return_repos=return_repos
+        s, tgrad, fgrad_zero, a_hops, fc_arr, return_repos=return_repos
     )
     if return_repos:
         return result  # (sr, repos, Lc)

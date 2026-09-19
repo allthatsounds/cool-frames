@@ -357,6 +357,15 @@ def cqtfilters(
         min_win=min_win,
     )
 
+    # Fractional sampling: the DC/Nyquist complements can come out a bin
+    # wider than the N their hop was computed for, which silently breaks the
+    # painless condition (and exact reconstruction).  Fit N to each channel's
+    # actual support, keeping the frame response unchanged.
+    if a.ndim == 2:
+        from ._painless import fit_fractional_lengths
+
+        fit_fractional_lengths(g, a, int(L))
+
     from ..diagnostics.admissibility import check_admissible
 
     admissible = check_admissible(

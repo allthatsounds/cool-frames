@@ -10,6 +10,7 @@ Example:
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 from ..filterbanks import filterbank
@@ -106,7 +107,7 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
         - 'fc': channel center frequencies (Hz)
         - 'a': hop sizes
         - 'fs': sample rate
-        - 'instfreq_deviation': instantaneous frequency shift per channel (Hz)
+        - 'instfreq_deviation': mean instantaneous frequency minus centre frequency, per channel (Hz, energy-weighted)
         - 'groupdelay_shift': group delay shift per channel (samples)
     """
     device = f.device
@@ -121,13 +122,11 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
     # Analyse
     c = filterbank(f, g, a)  # list of tensors
 
-    # Compute phase gradients
-    try:
-        tgrad, fgrad, _, _ = filterbankphasegrad(f, g, a)  # type: ignore[arg-type]
-    except Exception:
-        # If phase gradient computation fails, use zero gradients
-        tgrad = [torch.zeros_like(c_ch) for c_ch in c]
-        fgrad = [torch.zeros_like(c_ch) for c_ch in c]
+    # Compute phase gradients.  No fallback: a failure here used to be
+    # swallowed and replaced by zero gradients, the pattern that made the
+    # numpy version return identically zero summaries for every input
+    # (DEFECT_REGISTER #8).
+    tgrad, fgrad, s_pow, _ = filterbankphasegrad(f, g, a)  # type: ignore[arg-type]
 
     # Convert to dB and stack
     mag_db_list = []
@@ -145,37 +144,36 @@ def reassigned_spectrogram(f: torch.Tensor, fs: float, scale: str = "erb") -> di
     peak_db = torch.max(mag_db_stacked)
     mag_db_clipped = torch.maximum(mag_db_stacked, peak_db - 60)
 
-    # Average phase gradient data across time for per-channel summary
-    fgrad_vals = []
-    for fg in fgrad:
-        if len(fg) > 0:
-            mean_val = torch.mean(fg)
-            # Handle complex values by taking real part
-            if torch.is_complex(mean_val):
-                mean_val = torch.real(mean_val)
-            fgrad_vals.append(mean_val.item())
+    # Per-channel summaries.  `tgrad` is the *absolute* instantaneous
+    # frequency normalised so that 2 = fs (Hz = tgrad * fs / 2); `fgrad` is
+    # the group delay in samples.  The two used to be swapped here (the
+    # "instfreq_deviation" was built from `fgrad` and the "groupdelay_shift"
+    # from `tgrad`), with a spurious 1 / (2*pi); both now match the numpy
+    # backend: the energy-weighted mean instantaneous frequency minus the
+    # channel's centre frequency in Hz, and the mean group delay in samples.
+    fc_hz = np.asarray(fc, dtype=float)
+    if_vals = []
+    gd_vals = []
+    for ch, (tg, fg, sm) in enumerate(zip(tgrad, fgrad, s_pow)):
+        tg = torch.real(tg).reshape(-1).to(dtype)
+        fg = torch.real(fg).reshape(-1).to(dtype)
+        w = torch.real(sm).reshape(-1).to(dtype)
+        if tg.numel() == 0:
+            if_vals.append(0.0)
+        elif float(w.sum()) > 0:
+            if_vals.append(float((tg * w).sum() / w.sum()) * fs / 2.0 - float(fc_hz[ch]))
         else:
-            fgrad_vals.append(0.0)
+            if_vals.append(float(tg.mean()) * fs / 2.0 - float(fc_hz[ch]))
+        gd_vals.append(float(fg.mean()) if fg.numel() > 0 else 0.0)
 
-    tgrad_vals = []
-    for tg in tgrad:
-        if len(tg) > 0:
-            mean_val = torch.mean(tg)
-            # Handle complex values by taking real part
-            if torch.is_complex(mean_val):
-                mean_val = torch.real(mean_val)
-            tgrad_vals.append(mean_val.item())
-        else:
-            tgrad_vals.append(0.0)
-
-    fgrad_summary = torch.tensor(fgrad_vals, device=device, dtype=dtype)
-    tgrad_summary = torch.tensor(tgrad_vals, device=device, dtype=dtype)
+    ifd_summary = torch.tensor(if_vals, device=device, dtype=dtype)
+    gd_summary = torch.tensor(gd_vals, device=device, dtype=dtype)
 
     return {
         "coeff_db": mag_db_clipped,
         "fc": fc,
         "a": a,
         "fs": fs,
-        "instfreq_deviation": fgrad_summary * fs / (2 * 3.14159265358979323846),
-        "groupdelay_shift": tgrad_summary,
+        "instfreq_deviation": ifd_summary,
+        "groupdelay_shift": gd_summary,
     }

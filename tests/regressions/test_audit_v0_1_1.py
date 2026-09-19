@@ -639,7 +639,12 @@ def test_analyze_filterbank_uses_the_requested_length():
     from cool_frames.numpy.filters import audfilters
 
     g, a, _fc, _L, _info = audfilters(FS, LS)
-    report = analyze_filterbank(g, a, LS)
+    # LS = 512 is not a multiple of this bank's hops (54, 48, ...; the
+    # designer's own length is 864), so the subbands disagree on the transform
+    # length and the L x L operator at 512 is not defined -- materialising it
+    # only ever worked while channel 0's hop happened to be 12.  The defect
+    # pinned here is the coefficient count, which does not need it.
+    report = analyze_filterbank(g, a, LS, materialise=False)
 
     af = np.asarray(a)
     af = af[:, 0] / af[:, 1] if af.ndim == 2 else af.astype(float)

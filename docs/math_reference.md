@@ -566,16 +566,25 @@ filter's frequency response.
 Each coefficient (m, n) is relocated to a new position based on its
 local phase gradients:
 
-    target_freq = cfreq_m + tgrad_m[n]
+    target_freq = tgrad_m[n]
     target_time = a_m * n + fgrad_m[n]
 
-The magnitude |c_m[n]|^2 is accumulated at the nearest bin to
+`filterbankphasegrad` returns `tgrad` as the *absolute* instantaneous
+frequency, normalised so that 2 = fs. LTFAT's kernel is written for the
+deviation from the channel centre, `tgrad_m[n] - cfreq_m` (wrapped to
+[-1, 1)), and adds `cfreq_m` back, which gives the same target; adding
+`cfreq_m` to the absolute value, as the port did until 2026-09, moves every
+coefficient to about twice its frequency.
+
+The energy |c_m[n]|^2 is accumulated at the nearest bin to
 (target_freq, target_time). Centre frequencies are normalised to [0, 2)
-and wrapped.
+and wrapped; computed from the filters, `cfreq_m` is the circular mean of
+the DFT frequency weighted by |H_m| (LTFAT's `cent_freqs`), which keeps the
+DC complement, whose support wraps around 0, at 0.
 
 **Synchrosqueezing** is the frequency-only variant: reassign only along
-the frequency axis (using tgrad), keeping time position fixed. This
-preserves invertibility.
+the frequency axis (using tgrad, with fgrad set to 0), keeping the time
+position fixed, so the energy at each instant is unchanged.
 
 ---
 
