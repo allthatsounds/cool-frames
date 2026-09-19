@@ -9,7 +9,7 @@ remainder does not have to be rediscovered.
 
 Every defect the audit recorded is now fixed, as are the backend API
 divergences found afterwards. The comparative benchmark of 2026-09-19 added
-eight more, all fixed, and eight still open (mostly speed); both lists are in
+ten more, all fixed, and seven still open (mostly speed); both lists are in
 the section of that name below.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
@@ -536,7 +536,7 @@ Gnann-Spiertz variant is only a variant if you ask for one.
 The benchmark against eleven other time-frequency libraries (research paper
 W52, run at `1f581bc`) and the profiling of its slow rows. Regression tests:
 `tests/regressions/test_benchmark_findings.py` and `..._torch.py`, which fail
-on `1f581bc`.
+on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -548,6 +548,8 @@ on `1f581bc`.
 | B6 | `filters/_design.py` | `audfilters` sized the DC and Nyquist complements' hops from the whole bank's bandwidth, not their own | 5–24x oversampled (2592 coefficients for 109 non-zero bins) → within 3 bins of the support on fractional banks; 17–25 % fewer coefficients overall; 0 of 360 settings over the painless limit |
 | B7 | `gabor/_factorised.py` | `gabframebounds(g, a, M, L)` took the factorised path for every zero-padded window, painless or not | 152 ms → 0.5 ms (Hann 1024, a = 256, M = 1024, L = 2**16), values unchanged; a split middle sample still takes the general path |
 | B8 | `diagnostics/spectrogram.py`, torch equivalent | `instfreq_deviation` was an unweighted absolute frequency too small by pi; torch also swapped it with the group delay and turned any error into zero gradients (the pattern of #8) | 1000 Hz tone in the 1058 Hz channel: +257.6 Hz (torch +100.2) → −57.8 Hz on both, backends agree to 1e-11 |
+| B9 | `filters/_waveletfilters.py` | Lowpass painless caps divided `L` by `aprecise` (a hop, not a width), the single DC complement's `aprecise` was a mis-port (`0.2 * s[3] * Ls`), and the Nyquist complement inherited the smallest wavelet hop | default bank (22050 Hz, 65536): DC 124,416 coefficients for 1343 bins, Nyquist 62,208 for 3 → hops from their own support; 25-27 % fewer coefficients (median, real banks, 576 settings), frame bounds unchanged |
+| B10 | `filters/_painless.py`, `filterbanks/_frame.py`, `_utils.py`, `_waveletfilters.py` | Painless was decided by counting bins (non-zero since B5, above 1e-10 before), which cannot separate a live bin too many from negligible tails | two-sided wavelet banks: `filterbankdual` warned on 50 of 64 settings, and fractional ones at 22050 Hz / 1024 reconstructed to 8.5e-5-7.9e-4 → decided by `aliasing` (products of bins N apart, tolerance 1e-15): all 64 exact at 5.2e-16, no warning |
 
 ### Still open, from the same benchmark
 
@@ -570,11 +572,6 @@ noted.
   analysis plus synthesis 112 ms against 2.5 ms for ltfatpy.
 - **The reassignment kernel is a per-coefficient Python loop**, as ported
   from LTFAT's MATLAB reference (profiling, 2026-09-19).
-- **`waveletfilters`' complements are oversampled** in the way B6 was for
-  `audfilters`: at fs = 22050, Ls = 65536 the DC channel has hop 1
-  (65536 coefficients for 707 non-zero bins) and the Nyquist channel 32768
-  coefficients for 3 bins; redundancy 9.2 (profiling, 2026-09-19).
-
 
 ## Minor, recorded for completeness
 

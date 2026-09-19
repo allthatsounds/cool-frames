@@ -5,6 +5,15 @@ the channel's decimated length ``N = L / a``: then no two support bins alias
 onto the same coefficient, the frame operator is diagonal, and the canonical
 dual is the filter divided by that diagonal.  One bin too many breaks it --
 the dual is then only approximate.
+
+What decides it is not the support as such but whether two bins ``N`` apart
+are *both* non-negligible: the frame operator's off-diagonal entries are
+sums of ``H[k] conj(H[k + jN])``.  :func:`aliasing` measures exactly that.  A
+filter whose stored response runs past ``N`` on tails of 1e-11 of its peak
+(the wavelets of a two-sided ``waveletfilters`` bank do) is painless to
+machine precision, while a Nyquist complement one bin too wide, both of
+whose end bins are alive, is not (``cqtfilters(sampling='fractional')``
+reconstructed to 1.4e-4).  Counting non-zero bins cannot tell the two apart.
 """
 
 from __future__ import annotations
@@ -21,6 +30,53 @@ def nonzero_support(H) -> int:
     h = np.abs(np.asarray(H))
     nz = np.flatnonzero(h > 0)
     return 0 if nz.size == 0 else int(nz[-1] - nz[0] + 1)
+
+
+#: Largest ``|H[k] H[k + jN]| / max|H|^2`` still counted as painless: the
+#: frame operator is then diagonal to about this relative accuracy.
+ALIAS_TOL = 1e-15
+
+
+def aliasing(H, N) -> float:
+    """How far a channel is from painless at decimated length ``N``.
+
+    The largest ``|H[k]| |H[k + jN]|`` over ``j >= 1``, relative to
+    ``max|H|^2``, for the stored response ``H`` (contiguous bins).  0 when
+    no two bins ``N`` apart are both non-zero; the channel is painless when
+    this is at most :data:`ALIAS_TOL`.
+    """
+    h = np.abs(np.asarray(H)).ravel()
+    n = int(round(float(N)))
+    if n <= 0 or h.size <= n:
+        return 0.0
+    peak = float(h.max())
+    if peak == 0.0:
+        return 0.0
+    worst = 0.0
+    for shift in range(n, h.size, n):
+        worst = max(worst, float(np.max(h[:-shift] * h[shift:])))
+    return worst / (peak * peak)
+
+
+def painless_length(H, n_min: int = 1) -> int:
+    """Smallest decimated length ``N >= n_min`` at which ``H`` is painless.
+
+    Searched upward from the support of the bins above ``sqrt(ALIAS_TOL)`` of
+    the peak (when those bins are contiguous, as every designer's are, two
+    of them lie ``N`` apart for any shorter ``N``); the non-zero support is
+    always painless, so the search ends there at the latest.
+    """
+    h = np.abs(np.asarray(H)).ravel()
+    full = nonzero_support(h)
+    if full == 0:
+        return max(int(n_min), 1)
+    peak = float(h.max())
+    nz = np.flatnonzero(h > np.sqrt(ALIAS_TOL) * peak)
+    start = max(int(n_min), int(nz[-1] - nz[0] + 1) if nz.size else 1)
+    for n in range(start, full):
+        if aliasing(h, n) <= ALIAS_TOL:
+            return n
+    return max(full, int(n_min))
 
 
 def _evaluate(H, L: int) -> np.ndarray:
@@ -44,8 +100,9 @@ def fit_fractional_lengths(g: list[dict], a: np.ndarray, L: int) -> None:
     ``cqtfilters(..., sampling='fractional')`` reconstructed to 1.4e-4 because
     its Nyquist channel had 999 non-zero bins on ``N = 998``.
 
-    Here each channel whose non-zero support exceeds ``N_m`` gets
-    ``N_m = support``, and its filter is scaled by ``sqrt(N_old / N_new)`` so
+    Here each channel that is not painless at ``N_m`` (see :func:`aliasing`)
+    gets the smallest ``N_m`` at which it is, and its filter is scaled by
+    ``sqrt(N_old / N_new)`` so
     that its share of the frame response, ``|H|^2 N / L``, is unchanged --
     the bank's frame operator, bounds and dual stay what the designer
     intended.  Inner channels are fitted before the DC and Nyquist
@@ -68,8 +125,9 @@ def fit_fractional_lengths(g: list[dict], a: np.ndarray, L: int) -> None:
         gm = g[m]
         if gm is None or "H" not in gm:
             continue
-        support = nonzero_support(_evaluate(gm["H"], L))
+        Hm = _evaluate(gm["H"], L)
         n_old = int(a[m, 1])
-        if support > n_old:
-            gm["H"] = _scaled(gm["H"], float(np.sqrt(n_old / support)))
-            a[m, 1] = support
+        if aliasing(Hm, n_old) > ALIAS_TOL:
+            n_new = painless_length(Hm, n_old + 1)
+            gm["H"] = _scaled(gm["H"], float(np.sqrt(n_old / n_new)))
+            a[m, 1] = n_new

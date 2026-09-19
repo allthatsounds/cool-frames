@@ -209,12 +209,11 @@ def filterbankwin(g: list, a, L: int | None = None):
         if "H" in gm and len(gm["H"]) > 0:
             afrac_m = a_norm[m, 0] / a_norm[m, 1]
             Nm = L / afrac_m
-            # Non-zero support against N = L/a, the same test as the
-            # painless check in ``painlessfilterbank`` (end bins that are
-            # exact zeros alias onto nothing).
-            from ..filters._painless import nonzero_support
+            # The same test as the painless check in ``painlessfilterbank``:
+            # no two bins N = L/a apart both non-negligible.
+            from ..filters._painless import ALIAS_TOL, aliasing
 
-            if nonzero_support(gm["H"]) > Nm + 1e-9:
+            if aliasing(gm["H"], Nm) > ALIAS_TOL:
                 ispainless = False
             isfir = False
         elif "h" in gm:

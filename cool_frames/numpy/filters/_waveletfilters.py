@@ -22,6 +22,7 @@ from ._edge_filters import (
     edge_params_from_geometry,
 )
 from ._freqwavelet import freqwavelet
+from ._painless import ALIAS_TOL, aliasing, nonzero_support, painless_length
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +31,8 @@ from ._freqwavelet import freqwavelet
 
 def _painless_caps(winCell, L: int, scales, trunc_at: float, basefc: float,
                    aprecise, lp_num: int, M2: int,
-                   quantise: bool = True) -> np.ndarray:
+                   quantise: bool = True, lp_bw: float | None = None,
+                   min_win: int = 4) -> np.ndarray:
     r"""Per-channel painless hop caps :math:`a_m \le \lfloor L / W_m \rfloor`.
 
     A filterbank's frame operator is diagonal in frequency -- the *painless*
@@ -44,10 +46,16 @@ def _painless_caps(winCell, L: int, scales, trunc_at: float, basefc: float,
     leaves a bank one bin short of painless with no symptom other than a bad
     dual.
 
-    The lowpass channels have no ``freqwavelet`` realisation at this point, so
-    their bandwidth is bounded by ``aprecise`` (which is what sets it).  That
-    bound is loose; the realised bank is re-checked at the end of
-    :func:`waveletfilters` and a violation there is reported.
+    The lowpass channels have no realisation at this point, so their widths
+    are taken from how they will be built: ``lowpass='repeat'`` channels are
+    copies of the largest-scale wavelet, shifted down, and have its width;
+    the ``lowpass='single'`` DC complement is a Hann-taper prototype of
+    ``odd(max(min_win, round(L * lp_bw)))`` bins.  (This used to divide ``L``
+    by ``aprecise`` -- a hop, not a width -- which capped every lowpass hop
+    at 1 or close to it: the DC channel of the default bank at fs = 22050,
+    Ls = 65536 was sampled at every sample, 124,416 coefficients for 1343
+    non-zero bins.)  The realised
+    bank is re-checked at the end of :func:`waveletfilters`.
 
     ``quantise`` rounds each cap DOWN to a ``floor23`` (:math:`2^i 3^j`) value
     so integer hops share factors and ``lcm(a) -> L`` stays small.  Rounding
@@ -69,8 +77,13 @@ def _painless_caps(winCell, L: int, scales, trunc_at: float, basefc: float,
         widths[j] = (nz[-1] - nz[0] + 1) if nz.size else 1
 
     caps = np.empty(M2, dtype=float)
-    for k in range(lp_num):
-        caps[k] = max(1.0, math.floor(L / max(1.0, float(aprecise[k]))))
+    if lp_num:
+        if lp_bw is not None:
+            w_lp = max(int(min_win), int(round(L * lp_bw)))
+            w_lp += 1 - w_lp % 2
+        else:
+            w_lp = int(widths[int(np.argmax(scales))])
+        caps[:lp_num] = max(1, L // max(w_lp, 1))
     caps[lp_num:M2] = np.maximum(1, (L // np.maximum(widths, 1)))
     if quantise:
         caps = np.array([max(1, floor23(int(c))) for c in caps], dtype=float)
@@ -98,16 +111,17 @@ def _painless_ratio(g: list[dict], a, L: int) -> tuple[float, int]:
         H = gm.get("H")
         if H is None:
             continue
-        Hm = np.asarray(H(L) if callable(H) else H).ravel()
-        nz = np.flatnonzero(np.abs(Hm) > 1e-10)
-        if not nz.size:
+        Hm = np.abs(np.asarray(H(L) if callable(H) else H)).ravel()
+        if not Hm.size or Hm.max() == 0:
             continue
+        # The width reported in ``painless_ratio`` counts the bins above
+        # sqrt(ALIAS_TOL) of the peak; whether the channel is painless is
+        # decided by what actually aliases, as in ``filterbankdual``.
+        nz = np.flatnonzero(Hm > math.sqrt(ALIAS_TOL) * Hm.max())
         W = int(nz[-1] - nz[0] + 1)
-        r = float(a_rat[m % len(a_rat)]) * W / L
-        worst = max(worst, r)
-        # One bin of slack: several designers emit L/a + 1 bins by
-        # construction and are painless in practice.
-        if W > L / float(a_rat[m % len(a_rat)]) + 1:
+        a_m = float(a_rat[m % len(a_rat)])
+        worst = max(worst, a_m * W / L)
+        if aliasing(Hm, L / a_m) > ALIAS_TOL:
             nbad += 1
     return worst, nbad
 
@@ -146,25 +160,24 @@ def _repair_complement_hops(g: list[dict], a, L: int) -> int:
         if H is None:
             continue
         Hm = np.asarray(H(L) if callable(H) else H).ravel()
-        nz = np.flatnonzero(np.abs(Hm) > 1e-10)
-        if not nz.size:
+        if not nonzero_support(Hm):
             continue
-        W = int(nz[-1] - nz[0] + 1)
         if a_arr.ndim == 2:
             a_old = float(a_arr[m, 0]) / float(a_arr[m, 1])
-            if W <= L / a_old + 1:
+            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
                 continue
-            a_arr[m, 1] = max(int(a_arr[m, 1]), W)
-            a_new_m = float(a_arr[m, 0]) / float(a_arr[m, 1])
+            N_new = painless_length(Hm, int(math.ceil(L / a_old)) + 1)
+            a_arr[m, 0] = int(L)
+            a_arr[m, 1] = N_new
+            a_new_m = float(L) / float(N_new)
         else:
             a_old = float(a_arr[m])
-            if W <= L / a_old + 1:
+            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
                 continue
-            cap = max(1, int(L // W))
-            d = cap
-            while d > 1 and L % d:
+            d = int(a_old) - 1
+            while d > 1 and (L % d or aliasing(Hm, L // d) > ALIAS_TOL):
                 d -= 1
-            if d >= a_old:
+            if d < 1:
                 continue
             a_arr[m] = d
             a_new_m = float(d)
@@ -177,6 +190,71 @@ def _repair_complement_hops(g: list[dict], a, L: int) -> int:
             gm["H"] = Hm * s
         fixed += 1
     return fixed
+
+
+def _fit_complement_hops(g: list[dict], a, L: int, Ls: int,
+                         channels: list[tuple[int, float]],
+                         redmul: float = 1.0) -> int:
+    r"""Give the DC and Nyquist complements the largest painless hop.
+
+    The complements are built after the hops are chosen.  The Nyquist one
+    simply inherited the smallest wavelet hop, and the DC one got the hop of
+    a bandwidth it does not have (see :func:`_painless_caps`), so on the
+    default bank (fs = 22050, Ls = 65536) the DC channel had 124,416
+    coefficients for 1343 non-zero bins and the Nyquist channel 62,208 for
+    3: 16 % of all coefficients in two channels that carry almost none of
+    the signal.  :func:`_repair_complement_hops` only ever *lowers* a hop.
+
+    Each channel in ``channels`` -- ``(index, a_scaled)``, where ``a_scaled``
+    is the hop its response was scaled for (``scal = sqrt(a) / sqrt(2)``) --
+    gets ``N = ceil(N_p * max(redmul, 1))``, ``N_p`` the shortest length at
+    which it is painless (``_painless.painless_length``): a rational hop
+    directly, an integer hop as the largest divisor of ``L`` whose ``L / d``
+    is painless and at least that ``N``, and that leaves
+    ``filterbanklength(Ls, a)`` at ``L``.  The response is rescaled by
+    ``sqrt(a_new / a_scaled)``, so the complement keeps filling the gap in
+    the frame response exactly.
+
+    Returns the number of channels changed.
+    """
+    a_arr = np.asarray(a)
+    over = max(1.0, float(redmul))
+    changed = 0
+    for m, a_scaled in channels:
+        H = g[m].get("H")
+        if H is None:
+            continue
+        Hm = np.asarray(H(L) if callable(H) else H).ravel()
+        if not nonzero_support(Hm):
+            continue
+        N_min = min(int(math.ceil(painless_length(Hm) * over)), int(L))
+        if a_arr.ndim == 2:
+            N_new = N_min
+            if int(a_arr[m, 1]) == N_new and int(a_arr[m, 0]) == int(L):
+                continue
+            a_arr[m, 0] = int(L)
+            a_arr[m, 1] = N_new
+            a_new = float(L) / float(N_new)
+        else:
+            a_new = 0.0
+            trial = a_arr.copy()
+            for d in range(max(int(L // N_min), 1), 0, -1):
+                if L % d or aliasing(Hm, L // d) > ALIAS_TOL:
+                    continue
+                trial[m] = d
+                if filterbanklength(Ls, trial) == L:
+                    a_new = float(d)
+                    break
+            if not a_new or int(a_arr[m]) == int(a_new):
+                continue
+            a_arr[m] = int(a_new)
+        sc = math.sqrt(a_new / float(a_scaled))
+        if callable(H):
+            g[m]["H"] = (lambda fn, k: lambda Lq: np.asarray(fn(Lq)) * k)(H, sc)
+        else:
+            g[m]["H"] = np.asarray(H) * sc
+        changed += 1
+    return changed
 
 
 # ---------------------------------------------------------------------------
@@ -493,7 +571,7 @@ def waveletfilters(
         :func:`filterbanktight` exact.
 
         ``False`` keeps the aggressive ``floor23`` + lcm-reduction heuristic:
-        roughly 6x cheaper in coefficients, and fine for analysis-only work
+        roughly 5x cheaper in coefficients, and fine for analysis-only work
         (scalograms, feature extraction), but the resulting bank is **not**
         painless and its diagonal dual does not reconstruct.  At
         ``fs = 8000``, ``Ls = 4096``, 64 geometric scales the two settings
@@ -502,8 +580,8 @@ def waveletfilters(
         =============  ===========  =============  ==================
         ``painless``   redundancy   ``max aW/L``   round-trip error
         =============  ===========  =============  ==================
-        ``True``       8.98         0.98           4.9e-16
-        ``False``      1.39         22.8           7.5e-01
+        ``True``       7.60         0.98           4.9e-16
+        ``False``      1.45         7.01           5.6e-01
         =============  ===========  =============  ==================
 
         With ``painless=False`` use :func:`ifilterbankiter` (iterative,
@@ -636,7 +714,12 @@ def waveletfilters(
         lp_num = 1
         lowpass_at_zero = True
         M2 = M + 1
-        aprecise_lp = np.array([0.2 * scales_sorted[3] * Ls]) if len(scales_sorted) >= 4 else np.array([basea * scales_sorted[0]])  # type: ignore[assignment]
+        # The natural hop of the DC complement: it is ``lp_bw * L`` bins wide
+        # with ``lp_bw = 0.2 / scales_sorted[3]`` (see below), so ``L / W`` =
+        # ``scales_sorted[3] / 0.2``.  This was ``0.2 * scales_sorted[3] * Ls``,
+        # neither a hop nor a width (LTFAT 2.6 has ``2*scales_sorted(4)/0.2``
+        # and, commented out, the width ``(0.2./scales_sorted(4))*Ls``).
+        aprecise_lp = np.array([scales_sorted[3] / 0.2]) if len(scales_sorted) >= 4 else np.array([basea * scales_sorted[0]])  # type: ignore[assignment]
 
     else:  # 'none'
         lp_num = 0
@@ -644,6 +727,10 @@ def waveletfilters(
         aprecise_lp = np.array([])  # type: ignore[assignment]
 
     aprecise = np.concatenate([aprecise_lp, basea * scales])  # type: ignore[assignment]
+
+    # Width of the single DC complement, for the painless caps.
+    _lp_bw_single = (0.2 / scales_sorted[3]
+                     if lowpass == "single" and len(scales_sorted) >= 4 else None)
 
     if np.any(aprecise < 1):
         raise ValueError("Bandwidth of one of the filters exceeds fs")
@@ -692,7 +779,8 @@ def waveletfilters(
             # after capping converges; we iterate a couple of times for safety.
             for _ in range(3):
                 caps = _painless_caps(winCell, L, scales, trunc_at, basefc,
-                                      aprecise, lp_num, M2).astype(int)
+                                      aprecise, lp_num, M2, lp_bw=_lp_bw_single,
+                                      min_win=min_win).astype(int)
                 a_capped = np.minimum(a, caps)
                 if np.array_equal(a_capped, a) and filterbanklength(Ls, a_capped) == L:
                     a = a_capped
@@ -722,7 +810,7 @@ def waveletfilters(
             # Rational hops are exact, so the cap needs no floor23 rounding.
             a_rat = np.minimum(a_rat, _painless_caps(
                 winCell, L, scales, trunc_at, basefc, aprecise, lp_num, M2,
-                quantise=False))
+                quantise=False, lp_bw=_lp_bw_single, min_win=min_win))
         N = np.ceil(Ls / a_rat).astype(int)
         a = np.column_stack([np.full(M2, Ls, dtype=int), N])  # type: ignore[assignment]
 
@@ -735,7 +823,8 @@ def waveletfilters(
         a_rat = np.asarray(aprecise, dtype=float).copy()
         if painless:
             caps = _painless_caps(winCell, L, scales, trunc_at, basefc,
-                                  aprecise, lp_num, M2, quantise=False)
+                                  aprecise, lp_num, M2, quantise=False,
+                                  lp_bw=_lp_bw_single, min_win=min_win)
             # "uniform" is the point of this mode: one hop for every wavelet
             # channel, so the cap has to be the tightest one, not per-channel.
             if lowpass_at_zero:
@@ -757,7 +846,8 @@ def waveletfilters(
             for _ in range(3):
                 L_try = filterbanklength(Ls, a_painless)
                 caps = _painless_caps(winCell, L_try, scales, trunc_at, basefc,
-                                      aprecise, lp_num, M2)
+                                      aprecise, lp_num, M2, lp_bw=_lp_bw_single,
+                                      min_win=min_win)
                 a_next = max(1, min(a_painless, int(np.min(caps))))
                 if a_next == a_painless:
                     break
@@ -888,6 +978,7 @@ def waveletfilters(
     _ghigh = None
     _infohigh = None
     _a_hp = None
+    _a_scal_hp = 1.0
     want_highpass = (highpass != "none" and freqrange == "real"
                      and lowpass != "none" and len(gout) >= 1)
     if want_highpass:
@@ -896,6 +987,8 @@ def waveletfilters(
         jmax = int(np.argmax(wfc))
         a_wav = a_new[lp_num:, :] if a_new.ndim == 2 else a_new[lp_num:].reshape(-1, 1)
         scal_hp = float(scal[lp_num + jmax]) / math.sqrt(2.0)
+        # The hop ``scal_hp`` was computed for (scal = sqrt(a) / sqrt(2)).
+        _a_scal_hp = float(afull[lp_num + jmax, 0] / afull[lp_num + jmax, 1])
         try:
             _ghigh, _infohigh = _wavelet_highpass(
                 list(gout), a_wav, L, wfc[jmax], wfsupp[jmax], scal_hp,
@@ -1114,6 +1207,17 @@ def waveletfilters(
         # (0.5 -> 18.0, 2.0 -> 8.9, 20.0 -> 13.6).  A redundancy target and the
         # painless condition are competing requests; the explicit one wins, and
         # the check below reports what it cost.
+        #
+        # The complements first get the largest hop their own support allows
+        # (``_fit_complement_hops``); every other channel is only ever lowered
+        # to its limit.  Not on ``sampling='uniform'``, whose point is one hop.
+        _complements: list[tuple[int, float]] = []
+        if sampling != "uniform":
+            if lowpass == "single":
+                _complements.append((0, float(afull[0, 0] / afull[0, 1])))
+            if _ghigh is not None:
+                _complements.append((len(gout) - 1, _a_scal_hp))
+        _fit_complement_hops(gout, a_new, int(L), int(Ls), _complements, redmul)
         _repair_complement_hops(gout, a_new, int(L))
     _pl_ratio, _pl_bad = _painless_ratio(gout, a_new, int(L))
     info["painless"] = bool(_pl_bad == 0)
