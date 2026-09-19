@@ -661,7 +661,12 @@ def test_constphase_is_reproducible_and_leaves_the_global_rng_alone(erb):
         )
 
     # Different seeds must actually differ, or the seed is being ignored.
-    assert not np.array_equal(np.asarray(_run(rng=0)[0]), np.asarray(_run(rng=1)[0])), (
+    # Compared over every channel: a channel whose coefficients all clear the
+    # threshold draws no random phase and is legitimately seed-independent
+    # (since the DC complement is sized by its own support, channel 0 of this
+    # bank is such a channel -- 16 coefficients, all integrated).
+    c0, c1 = _run(rng=0), _run(rng=1)
+    assert any(not np.array_equal(np.asarray(u), np.asarray(v)) for u, v in zip(c0, c1)), (
         "rng=0 and rng=1 gave identical output — the seed is not reaching the draw"
     )
 

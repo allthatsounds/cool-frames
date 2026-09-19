@@ -18,6 +18,54 @@ from ..filters._design import filterbanklength
 from ._phasegrad import filterbankphasegrad
 
 # ---------------------------------------------------------------------------
+# Centre frequencies for the reassignment grid
+# ---------------------------------------------------------------------------
+
+
+def _centre_frequencies(g, a_norm, L: int) -> np.ndarray:
+    """Normalised centre frequency of every channel, in [0, 2) with 2 = fs.
+
+    The circular mean of the DFT frequency weighted by ``|H_m|``, as LTFAT's
+    ``cent_freqs`` computes it.  The arithmetic mean over [0, 2) that this
+    replaces put any channel whose support wraps around 0 -- the DC
+    complement, with bins near 0 *and* near L -- at about 1, i.e. at
+    Nyquist, so its energy was reassigned across the whole band.
+
+    The kernel expects the channels in ascending order with the wrap-around
+    after the last one.  A DC complement whose centroid lands a hair below 0
+    (just under 2 once wrapped) would put that wrap between channels 0 and 1
+    and send its energy to the Nyquist channel, so such a channel is set to 0.
+
+    Not ``_centerfreq.filter_center_frequencies``: that folds every centre
+    into [0, fs/2], which suits phase retrieval on real banks, while a
+    complex bank's channels here cover the whole of [0, 2).
+    """
+    from ..filterbanks._frame import filterbankfreqz
+
+    H = np.asarray(filterbankfreqz(g, a_norm, L))
+    k = np.arange(L) / L * 2.0
+    z = np.exp(1j * np.pi * k) @ np.abs(H)
+    fc = np.asarray(np.mod(np.angle(z) / np.pi, 2.0), dtype=float)
+    if fc.size > 1 and fc[0] > fc[1] and 2.0 - fc[0] < fc[1]:
+        fc[0] = 0.0
+    return fc
+
+
+def _length_from_coefficients(s, a_norm) -> int:
+    """Transform length implied by the subband lengths and hops (L = N_m a_m)."""
+    afrac = a_norm[:, 0] / a_norm[:, 1]
+    lengths = np.array([np.asarray(sm).size for sm in s]) * afrac
+    L = int(round(float(lengths[0])))
+    if not np.allclose(lengths, L, rtol=0, atol=0.5):
+        raise ValueError(
+            "filterbankreassign: the subband lengths and hops do not agree on one "
+            f"transform length (N_m * a_m ranges over {lengths.min():g}..{lengths.max():g}); "
+            "pass the normalised centre frequencies instead of the filters"
+        )
+    return L
+
+
+# ---------------------------------------------------------------------------
 # comp_filterbankreassign – core reassignment kernel
 # ---------------------------------------------------------------------------
 
@@ -33,14 +81,23 @@ def comp_filterbankreassign(
     """Port of ``comp_filterbankreassign.m``.
 
     Each coefficient in subband m, time index n is accumulated into the
-    subband whose normalised centre frequency is closest to
-    ``cfreq[m] + tgrad[m][n]`` (wrap around 2), and placed at the time
-    index closest to ``fgrad[m][n] + a[m]*n`` (mod N[target]).
+    subband whose normalised centre frequency is closest to its
+    instantaneous frequency ``tgrad[m][n]`` (wrap around 2), and placed at
+    the time index closest to ``fgrad[m][n] + a[m]*n`` (mod N[target]).
+
+    ``tgrad`` is the *absolute* normalised instantaneous frequency, as
+    ``filterbankphasegrad`` and ``fbphasegradfrommag`` return it (2 = fs).
+    LTFAT's kernel takes the deviation from the channel's centre frequency
+    instead and adds ``cfreq[m]`` itself; this port used to do the same, on
+    top of an already absolute ``tgrad``, so every coefficient was reassigned
+    to about twice its frequency (on ``audfilters(16000, 8000)`` a 440 Hz
+    tone landed in the 926 Hz channel).  The deviation is now formed here,
+    wrapped to [-1, 1).
 
     Parameters
     ----------
     s       : list of M energy arrays (``|c[m]|^2`` or similar)
-    tgrad   : list of M instantaneous-frequency arrays
+    tgrad   : list of M absolute instantaneous-frequency arrays (normalised)
     fgrad   : list of M group-delay arrays
     a       : hop sizes (M,) or (M,2)
     cfreq   : (M,) normalised centre frequencies in [0, 2)
@@ -79,10 +136,14 @@ def comp_filterbankreassign(
         am = afrac[mm]
 
         for jj in range(Lc[mm]):
-            tgradmjj = tg_arr[jj] + cfreqm
+            # Deviation of the (absolute) instantaneous frequency from this
+            # channel's centre, wrapped to [-1, 1): the quantity LTFAT's
+            # kernel expects in ``tgrad``.
+            dev = float(np.mod(tg_arr[jj] - cfreqm + 1.0, 2.0) - 1.0)
+            tgradmjj = cfreqm + dev
             oldtgrad = 10.0
 
-            if tg_arr[jj] > 0:
+            if dev > 0:
                 pos = mm
                 for ii in range(mm, M):
                     pos = ii
@@ -211,9 +272,14 @@ def filterbankreassign(
 
         # fc can be frequencies or filter cell
         if isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
-            # fc is actually a filter cell g; default to normalized [0, 1, 2, ..., M-1]
-            # Without L we can't compute center frequencies from filter response
-            fc_arr = np.arange(M, dtype=float) / M * 2.0
+            # fc is the filter cell: take the centre frequencies from the
+            # filters, at the transform length the subbands imply.  This used
+            # to fall back to an even grid over [0, 2), which put the channels
+            # of any non-uniform bank at the wrong frequencies.
+            a_norm_pc = normalise_a(a_hops, M)
+            fc_arr = _centre_frequencies(
+                list(fc), a_norm_pc, _length_from_coefficients(s, a_norm_pc)
+            )
         elif fc is None:
             # No fc provided; default to evenly spaced
             fc_arr = np.arange(M, dtype=float) / M * 2.0
@@ -240,23 +306,10 @@ def filterbankreassign(
 
         # Compute normalised centre frequencies if not provided
         if fc is None:
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(g, a_norm, L)
-            # Centre = weighted mean frequency
-            k = np.arange(L) / L * 2.0  # normalised [0, 2)
-            fc_arr = np.array(
-                [float(np.average(k, weights=np.abs(H[:, m]) ** 2 + 1e-30)) for m in range(M)]
-            )
+            fc_arr = _centre_frequencies(g, a_norm, L_int)
         elif isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
             # fc is actually a filter cell g; compute from filters
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(list(fc), a_norm, L)
-            k = np.arange(L) / L * 2.0
-            fc_arr = np.array(
-                [float(np.average(k, weights=np.abs(H[:, m]) ** 2 + 1e-30)) for m in range(M)]
-            )
+            fc_arr = _centre_frequencies(list(fc), a_norm, L_int)
         else:
             fc_arr = np.asarray(fc)
 
@@ -280,7 +333,8 @@ def filterbanksynchrosqueeze(
     .. deprecated::
         ``filterbanksynchrosqueeze`` is deprecated and will be removed in a
         future release.  It is equivalent to :func:`filterbankreassign` with
-        the time gradient zeroed out.  Both functions accumulate energy via
+        the group delay (``fgrad``) zeroed out, so coefficients move in
+        frequency only.  Both functions accumulate energy via
         summation when multiple coefficients map to the same bin, so neither
         is truly invertible for signals with overlapping components.  Use
         :func:`filterbankreassign` directly for all reassignment tasks.
@@ -320,8 +374,12 @@ def filterbanksynchrosqueeze(
 
         # fc can be frequencies or filter cell
         if isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
-            # fc is actually a filter cell g; default to normalized [0, 1, 2, ..., M-1]
-            fc_arr = np.arange(M, dtype=float) / M * 2.0
+            # fc is the filter cell: centre frequencies from the filters (see
+            # filterbankreassign)
+            a_norm_pc = normalise_a(a_hops, M)
+            fc_arr = _centre_frequencies(
+                list(fc), a_norm_pc, _length_from_coefficients(c, a_norm_pc)
+            )
         elif fc is None:
             # No fc provided; default to evenly spaced
             fc_arr = np.arange(M, dtype=float) / M * 2.0
@@ -351,21 +409,22 @@ def filterbanksynchrosqueeze(
         a_hops = a_norm  # type: ignore[assignment]
 
         if fc is None:
-            from ..filterbanks._frame import filterbankfreqz
-
-            H = filterbankfreqz(g, a_norm, L)
-            k = np.arange(L) / L * 2.0
-            fc_arr = np.array(
-                [float(np.average(k, weights=np.abs(H[:, m]) ** 2 + 1e-30)) for m in range(M)]
-            )
+            fc_arr = _centre_frequencies(g, a_norm, L_int)
+        elif isinstance(fc, (list, tuple)) and len(fc) > 0 and isinstance(fc[0], dict):
+            fc_arr = _centre_frequencies(list(fc), a_norm, L_int)
         else:
             fc_arr = np.asarray(fc)
 
-    # Zero-out time gradient for synchrosqueeze
-    tgrad_zero = [np.zeros_like(tg) for tg in tgrad]
+    # Synchrosqueezing is reassignment in frequency only: every coefficient
+    # keeps its time position, so the group delay (``fgrad``, the time shift)
+    # is zeroed and the instantaneous frequency (``tgrad``) is kept.  Until
+    # this was corrected the *instantaneous frequency* was zeroed instead,
+    # which -- with the kernel adding the centre frequency back -- kept every
+    # coefficient in its own channel and moved it in time only.
+    fgrad_zero = [np.zeros_like(fg) for fg in fgrad]
 
     result = comp_filterbankreassign(
-        s, tgrad_zero, fgrad, a_hops, fc_arr, return_repos=return_repos
+        s, tgrad, fgrad_zero, a_hops, fc_arr, return_repos=return_repos
     )
     if return_repos:
         return result  # (sr, repos, Lc)

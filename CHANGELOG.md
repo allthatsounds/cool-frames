@@ -803,6 +803,93 @@ faithful implementations of one algorithm agreeing is evidence about the port,
 not about the method class.
 
 
+### Found by the comparative benchmark
+
+A task-by-task benchmark against eleven other time-frequency libraries
+(research paper W52, run at commit `1f581bc`) graded every result against an
+independent reference, and profiling the slow rows turned up the following.
+Four were silently wrong numbers; `tests/regressions/test_benchmark_findings.py`
+and its `_torch` companion fail on `1f581bc` and pass now.
+
+- **`filterbankreassign` moved energy to about twice its frequency** (both
+  backends). `filterbankphasegrad` returns the *absolute* instantaneous
+  frequency (2 = fs); LTFAT's kernel expects the deviation from the channel
+  centre, and the port added the centre on top. On `audfilters(16000, 8000)`
+  a 440 Hz tone was reassigned to the 926 Hz channel, 2500 Hz to 5007 Hz and
+  6000 Hz to Nyquist. Each now lands in its own channel with 99.4-99.8 % of
+  the energy.
+
+- **`filterbanksynchrosqueeze` moved coefficients in time, not frequency.** It
+  zeroed the instantaneous frequency and kept the group delay, the opposite
+  of synchrosqueezing. It now zeroes the group delay. On a bank with every
+  hop 1, the energy at each instant is preserved to 1e-16 (it was off by
+  39 %). **Behavioural change:** same call, different (correct) output.
+
+- **Channel centres for reassignment.** When computed from the filters they
+  were the arithmetic mean of the DFT frequency over [0, 2), which puts the
+  DC complement, whose support wraps around 0, at Nyquist; an 8 Hz tone kept
+  73 % of its energy in the DC channel and now keeps 95 %. They are now the
+  circular mean weighted by `|H|`, as LTFAT's `cent_freqs` computes it. And
+  passing the filter cell in place of `fc` with pre-computed gradients
+  silently used M evenly spaced frequencies; it now uses the filters, at the
+  length the subbands and hops imply, and gives the signal path's result.
+
+- **`cqtfilters(sampling='fractional')` was not painless.** Its Nyquist
+  complement had 999 non-zero bins on a decimated length of 998, and the
+  bank reconstructed to 1.4e-4 (fs = 22050, Ls = 65536, 24 bins per octave)
+  or 1.6e-5 (16000, 16000, 12) instead of 1e-16. Fractional banks from
+  `cqtfilters`, `audfilters` and `greenwoodfilters` now fit every channel's
+  decimated length to its non-zero support, rescaling the response so the
+  frame operator is unchanged (`filters/_painless.py`). Both settings
+  reconstruct to 6e-16.
+
+- **The painless check had one bin of slack**, on the *stored* filter length,
+  which is exactly what let the case above through without a warning. It
+  now compares the non-zero support with `L/a`, with no slack, in
+  `filterbankdual`/`filterbanktight` and in `filterbankwin`'s
+  `info["ispainless"]`. Stored end bins that are exact zeros still count as
+  painless, so no default bank warns.
+
+- **`audfilters` oversampled its DC and Nyquist complements** 5-24x (2592
+  coefficients for 109 non-zero bins at fs = 16000, Ls = 4096). Their hops
+  were derived from the whole bank's bandwidth; they now come from the
+  complements' own support, plus two bins of slack for the window rounding.
+  **Behavioural change:** over 40 default-sampling settings (five sampling
+  rates, four signal lengths, ERB and mel) the coefficient count falls by
+  17-25 % (at fs = 22050, Ls = 65536 the ERB bank goes from 174,076 to
+  132,388 coefficients, redundancy 2.10 to 1.60), `a[0]` and `a[-1]`
+  change, and the transform length `L`, a multiple of the hops, can change
+  too (fs = 8000, Ls = 65536, ERB: 67392 to 72576). A 360-setting scan
+  (adding Bark, `redmul`, `M` and fractional sampling) finds no channel over
+  its painless limit, and the round trips measured are at 5e-16 to 7e-16.
+
+- **`gabframebounds(g, a, M, L)` was 300x slower than it needed to be.** A
+  window zero-padded to `L` was sent down the factorised path whatever its
+  support: 152 ms for a 1024-sample Hann window at a = 256, M = 1024,
+  L = 2**16, where the operator is diagonal and takes 0.5 ms. The numbers
+  were always right; an even window whose middle sample `middlepad` splits
+  (support M + 1) correctly stays on the general path. `gabframediag`'s
+  accumulation is vectorised as well.
+
+- **`reassigned_spectrogram`** (both backends): `instfreq_deviation` was an
+  unweighted mean of the absolute frequency, too small by a factor of pi; it
+  is now the energy-weighted
+  mean instantaneous frequency minus the channel centre, in Hz (for a
+  1000 Hz tone in the 1058 Hz channel: -57.8 Hz, was +257.6). The torch
+  version also had the instantaneous frequency and the group delay swapped,
+  and replaced any failure of `filterbankphasegrad` with zeros; it now
+  matches NumPy to 1e-11 and lets errors through.
+
+Two existing tests encoded properties of the old `audfilters` hops and were
+adjusted, not loosened: the `filterbankconstphase` seed test now looks for a
+difference in any channel (channel 0, now 16 coefficients all above
+threshold, legitimately draws no random phase), and the `analyze_filterbank`
+length test no longer materialises the frame operator at L = 512, which is
+not a multiple of that bank's hops and only ran while channel 0's hop was 12.
+The synchrosqueezing property test passed centre frequencies in Hz where the
+function takes them normalised; it now normalises them.
+
+
 ## 0.1.0
 
 First public release.

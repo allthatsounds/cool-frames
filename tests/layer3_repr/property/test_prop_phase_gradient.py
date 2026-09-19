@@ -405,7 +405,10 @@ class TestSynchrosqueezeCellStructureImpl:
         )
         g, a_ones, fc, M, c, tgrad = self._uniform_setup(seed=42)
         _, fgrad, _, _ = filterbankphasegrad(np.random.randn(1024), g, a_ones, 512)
-        cr_fc, _, _ = filterbanksynchrosqueeze(c, tgrad, fgrad, a_ones, fc)
+        # The kernel takes normalised centre frequencies (2 = fs); audfilters
+        # returns them in Hz.
+        fc_n = np.asarray(fc, dtype=float) / 8000 * 2
+        cr_fc, _, _ = filterbanksynchrosqueeze(c, tgrad, fgrad, a_ones, fc_n)
         cr_g, _, _ = filterbanksynchrosqueeze(c, tgrad, fgrad, a_ones, g)
         for m in range(M):
             cr_fc_m = np.asarray(cr_fc[m]).ravel()

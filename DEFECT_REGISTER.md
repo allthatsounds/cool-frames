@@ -8,7 +8,9 @@ This file tracks what was fixed in v0.1.1 and what is still open, so the
 remainder does not have to be rediscovered.
 
 Every defect the audit recorded is now fixed, as are the backend API
-divergences found afterwards. Nothing is open.
+divergences found afterwards. The comparative benchmark of 2026-09-19 added
+eight more, all fixed, and eight still open (mostly speed); both lists are in
+the section of that name below.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
 not yet fixed.
@@ -528,6 +530,51 @@ One observation, not a defect: `gsrtisila` at its default `startphase='zero'`
 is bit-identical to `rtisila`, because `startphase` is the only thing that
 distinguishes them and the default takes no initialisation branch. The
 Gnann-Spiertz variant is only a variant if you ask for one.
+
+## Found by the comparative benchmark, 2026-09-19
+
+The benchmark against eleven other time-frequency libraries (research paper
+W52, run at `1f581bc`) and the profiling of its slow rows. Regression tests:
+`tests/regressions/test_benchmark_findings.py` and `..._torch.py`, which fail
+on `1f581bc`.
+
+| # | Area | Defect | Was → is |
+|---|---|---|---|
+| B1 | `phase/_reassign.py`, torch equivalent | `filterbankreassign` added the channel centre to `tgrad`, which `filterbankphasegrad` already returns as the *absolute* instantaneous frequency, so every coefficient moved to about twice its frequency | 440 Hz tone reassigned to the 926 Hz channel (2500 → 5007 Hz, 6000 Hz → Nyquist) → each tone in its own channel with 99.4–99.8 % of the energy |
+| B2 | `phase/_reassign.py`, torch equivalent | `filterbanksynchrosqueeze` zeroed the instantaneous frequency and kept the group delay: time-only reassignment | per-instant energy off by 39 % on an a = 1 bank → preserved to 1e-16 |
+| B3 | `phase/_reassign.py`, torch equivalent | Centre frequencies from the filters were an arithmetic mean over [0, 2), placing the DC complement at Nyquist; a filter cell passed with pre-computed gradients fell back to M evenly spaced frequencies | circular mean weighted by `abs(H)` (LTFAT's `cent_freqs`); 8 Hz tone 73 % → 95 % in the DC channel; filter-cell path equals the signal path |
+| B4 | `filters/_cqtfilters.py` | `sampling='fractional'` built a Nyquist complement with 999 non-zero bins on N = 998 | round trip 1.4e-4 (22050 Hz, 65536, 24/oct) and 1.6e-5 (16000, 16000, 12/oct) → 6e-16; every fractional bank (also `audfilters`, `greenwoodfilters`) fitted by `filters/_painless.py` |
+| B5 | `filterbanks/_frame.py`, `_utils.py` | The painless check (#32) allowed one bin of slack on the *stored* filter length, which is how B4 passed without a warning | non-zero support against `L/a`, no slack; default banks, whose stored end bins are exact zeros, still pass silently |
+| B6 | `filters/_design.py` | `audfilters` sized the DC and Nyquist complements' hops from the whole bank's bandwidth, not their own | 5–24x oversampled (2592 coefficients for 109 non-zero bins) → within 3 bins of the support on fractional banks; 17–25 % fewer coefficients overall; 0 of 360 settings over the painless limit |
+| B7 | `gabor/_factorised.py` | `gabframebounds(g, a, M, L)` took the factorised path for every zero-padded window, painless or not | 152 ms → 0.5 ms (Hann 1024, a = 256, M = 1024, L = 2**16), values unchanged; a split middle sample still takes the general path |
+| B8 | `diagnostics/spectrogram.py`, torch equivalent | `instfreq_deviation` was an unweighted absolute frequency too small by pi; torch also swapped it with the group delay and turned any error into zero gradients (the pattern of #8) | 1000 Hz tone in the 1058 Hz channel: +257.6 Hz (torch +100.2) → −57.8 Hz on both, backends agree to 1e-11 |
+
+### Still open, from the same benchmark
+
+Verified, not fixed here. Numbers from W52's `results/t12_findings.json` unless
+noted.
+
+- **`gabfilters` is not exact** at M = 1024 (Hann): round trip 4.9e-4, Gauss
+  window 0.23, because the closed-form dual assumes band-limited filters. Known
+  in kind (#13 made it warn); `gabor.dgtreal` is exact on the same frames.
+- **The README quick-start path re-evaluates every filter on every call**:
+  `filterbank()` is 8–189x slower than with filters prepared once by
+  `filterbankwin()`, identical output.
+- **`gla` / `legla` recompute the canonical dual on every call** (635 ms for
+  `gabfilters` 1024/256, before the first iteration).
+- **RTISI-LA does not finish** a 3 s excerpt (22.05 kHz, Gabor 1024/256)
+  within 300 s.
+- **PGHI's heap integration is pure Python**: 1992 ms per excerpt against
+  40 ms for tifresi's numba version.
+- **`gabor.dgtreal` / `gabdual` lack LTFAT's short-window algorithm**:
+  analysis plus synthesis 112 ms against 2.5 ms for ltfatpy.
+- **The reassignment kernel is a per-coefficient Python loop**, as ported
+  from LTFAT's MATLAB reference (profiling, 2026-09-19).
+- **`waveletfilters`' complements are oversampled** in the way B6 was for
+  `audfilters`: at fs = 22050, Ls = 65536 the DC channel has hop 1
+  (65536 coefficients for 707 non-zero bins) and the Nyquist channel 32768
+  coefficients for 3 bins; redundancy 9.2 (profiling, 2026-09-19).
+
 
 ## Minor, recorded for completeness
 

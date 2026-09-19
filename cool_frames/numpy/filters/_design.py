@@ -268,19 +268,28 @@ def audfilters(fs: float, Ls: int, *,
     aprecise[ind] = fs / fsupp[ind] / redmul  # type: ignore[assignment]
     aprecise = np.maximum(aprecise, 1.0)  # type: ignore[assignment]
 
-    # ── Edge filter hop sizes (match MATLAB convention) ───────────────────
-    # MATLAB audfilters computes meaningful hop sizes for DC and Nyquist
-    # filters based on their bandwidth, rather than leaving them at 1.
-    fc_in1   = float(fc[1])
-    fc_inK   = float(fc[-2])
-    nf       = fs / 2.0
-    fpe_lp_  = float(audtofreq(freqtoaud(fc_in1, scale) + 4.0 * spacing, scale))
-    fsupp_lp_ = 2.0 * fpe_lp_
-    fpe_hp_  = float(audtofreq(freqtoaud(fc_inK, scale) - 4.0 * spacing, scale))
-    fsupp_hp_ = 2.0 * (nf - fpe_hp_)
+    # ── Edge filter hop sizes, from the edge filters actually built ───────
+    # The DC and Nyquist channels are complement filters whose prototype
+    # bandwidth comes from ``edge_params_from_geometry`` (twice the distance
+    # from the edge to the nearest inner centre).  Their hops used to come
+    # from MATLAB's rule instead -- a band four auditory spacings wide, sized
+    # for LTFAT's plateau edge filters, which this designer no longer builds
+    # (the complement construction replaced them on 2026-06-12).  At
+    # fs = 22050, Ls = 2**16 that sampled the 815-bin Nyquist complement at
+    # hop 2, and that one channel held 24 % of all coefficients (mel: 25 %).
+    fsupp_lp, ratio_lp = edge_params_from_geometry(
+        float(fc[1]), float(fsupp[1]), fs, target="dc")
+    fsupp_hp, ratio_hp = edge_params_from_geometry(
+        float(fc[-2]), float(fsupp[-2]), fs, target="nyquist")
 
-    aprecise[0]    = fs / max(fsupp_lp_, fsuppmin) / redmul  # type: ignore[assignment]
-    aprecise[-1]   = fs / max(fsupp_hp_, fsuppmin) / redmul  # type: ignore[assignment]
+    # The prototype is ``round(L * fsupp / fs)`` bins, made odd -- up to 1.5
+    # bins more than ``L * fsupp / fs`` -- and its taper does not end on exact
+    # zeros, so the hop keeps two bins of slack at the shortest length the
+    # bank can have (L >= Ls).  Without it, fs = 16000, Ls = 4096 put a
+    # 109-bin Nyquist complement on N = 108 (round trip 5e-4).
+    edge_slack = 2.0 * fs / Ls
+    aprecise[0]    = fs / (max(fsupp_lp, fsuppmin) + edge_slack) / redmul  # type: ignore[assignment]
+    aprecise[-1]   = fs / (max(fsupp_hp, fsuppmin) + edge_slack) / redmul  # type: ignore[assignment]
     aprecise = np.maximum(aprecise, 1.0)  # type: ignore[assignment]
 
     # ── Integer / fractional hop sizes ────────────────────────────────────
@@ -350,9 +359,7 @@ def audfilters(fs: float, Ls: int, *,
     a_inner = a[1:-1] if a.ndim == 1 else a[1:-1, :]
     g_inner = [g for g in g_list if g is not None]   # inner channels only
 
-    # DC lowpass
-    fsupp_lp, ratio_lp = edge_params_from_geometry(
-        float(fc[1]), float(fsupp[1]), fs, target="dc")
+    # DC lowpass (prototype bandwidth and taper computed with the hops above)
     g_list[0] = build_complement_lowpass(  # type: ignore[arg-type]
         g_inner, a_inner, float(fc[1]), fs,
         scal=float(scal[0]),
@@ -362,8 +369,6 @@ def audfilters(fs: float, Ls: int, *,
     )
 
     # Nyquist highpass
-    fsupp_hp, ratio_hp = edge_params_from_geometry(
-        float(fc[-2]), float(fsupp[-2]), fs, target="nyquist")
     g_list[M2 - 1] = build_complement_highpass(  # type: ignore[arg-type]
         g_inner, a_inner, float(fc[-2]), fs,
         scal=float(scal[M2 - 1]),
@@ -371,6 +376,15 @@ def audfilters(fs: float, Ls: int, *,
         taper_ratio=ratio_hp,
         min_win=min_win,
     )
+
+    # Fractional sampling: the DC/Nyquist complements can come out a bin
+    # wider than the N their hop was computed for, which silently breaks the
+    # painless condition (and exact reconstruction).  Fit N to each channel's
+    # actual support, keeping the frame response unchanged.
+    if a.ndim == 2:
+        from ._painless import fit_fractional_lengths
+
+        fit_fractional_lengths(g_list, a, int(L))
 
     # Announce a non-frame geometry here, where the parameters were chosen,
     # rather than letting it surface later as an all-zero dual.

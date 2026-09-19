@@ -125,17 +125,26 @@ def _gabframediag(
 
     g2 = np.abs(g) ** 2
 
-    # Simple, vectorised accumulation of |g(n)|² with a-periodicity
-    d: np.ndarray = np.zeros(a, dtype=np.float64)
-    for i in range(gl):
-        d[i % a] += g2[i]
+    # Accumulate |g(n)|² with a-periodicity (was a Python loop over all gl
+    # samples -- 21 ms at L = 2**16)
+    d: np.ndarray = np.bincount(np.arange(gl) % a, weights=g2, minlength=a)[:a]
 
-    d *= M
+    d = d * M
 
     if L is not None:
         d = np.tile(d, L // a)
 
     return d
+
+
+def _circular_support(g: np.ndarray) -> int:
+    """Length of the shortest circular arc that holds every non-zero sample."""
+    nz = np.flatnonzero(g != 0)
+    if nz.size == 0:
+        return 0
+    n = len(g)
+    gaps = np.diff(np.concatenate([nz, [nz[0] + n]]))
+    return int(n - int(gaps.max()) + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +203,19 @@ def _gabframebounds(
 
     if gl <= M:
         # Painless case: bounds from diagonal
+        d = _gabframediag(g, a, M)
+        return float(np.min(d)), float(np.max(d))
+
+    # A window zero-padded to L (as ``gabframebounds(g, a, M, L)`` passes it)
+    # is still painless when its *support* on the circle fits in M samples:
+    # then no two of its samples lie a multiple of M apart, and the frame
+    # operator is the diagonal.  Testing the array length instead sent every
+    # padded window down the factorised path -- 16,384 1x1 eigenvalue
+    # problems for Hann 1024 / a = 256 / M = 1024 at L = 2**16 (166 ms, where
+    # the diagonal takes well under a millisecond).  An even window whose
+    # middle sample ``middlepad`` split in two has support M + 1 and correctly
+    # stays on the general path.
+    if (L is None or L == gl) and gl % a == 0 and _circular_support(g) <= M:
         d = _gabframediag(g, a, M)
         return float(np.min(d)), float(np.max(d))
 

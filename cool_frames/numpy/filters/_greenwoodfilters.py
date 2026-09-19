@@ -375,6 +375,13 @@ def greenwoodfilters(
         min_win=min_win,
     )
 
+    # Fractional sampling: fit each channel's N to its actual support so the
+    # bank stays painless (see ``_painless.fit_fractional_lengths``).
+    if a.ndim == 2:
+        from ._painless import fit_fractional_lengths
+
+        fit_fractional_lengths(g_list, a, int(L))
+
     from ..diagnostics.admissibility import check_admissible
 
     admissible = check_admissible(
