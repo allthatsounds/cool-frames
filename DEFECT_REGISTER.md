@@ -9,8 +9,8 @@ remainder does not have to be rediscovered.
 
 Every defect the audit recorded is now fixed, as are the backend API
 divergences found afterwards. The comparative benchmark of 2026-09-19 added
-ten more, all fixed, and seven still open (mostly speed); both lists are in
-the section of that name below.
+twelve more, all fixed, and six still open (mostly speed); both lists are
+in the section of that name below.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
 not yet fixed.
@@ -536,7 +536,8 @@ Gnann-Spiertz variant is only a variant if you ask for one.
 The benchmark against eleven other time-frequency libraries (research paper
 W52, run at `1f581bc`) and the profiling of its slow rows. Regression tests:
 `tests/regressions/test_benchmark_findings.py` and `..._torch.py`, which fail
-on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8).
+on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8;
+B11 and B12 are speed, and their tests pin the results to the old code's).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -550,6 +551,8 @@ on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8).
 | B8 | `diagnostics/spectrogram.py`, torch equivalent | `instfreq_deviation` was an unweighted absolute frequency too small by pi; torch also swapped it with the group delay and turned any error into zero gradients (the pattern of #8) | 1000 Hz tone in the 1058 Hz channel: +257.6 Hz (torch +100.2) → −57.8 Hz on both, backends agree to 1e-11 |
 | B9 | `filters/_waveletfilters.py` | Lowpass painless caps divided `L` by `aprecise` (a hop, not a width), the single DC complement's `aprecise` was a mis-port (`0.2 * s[3] * Ls`), and the Nyquist complement inherited the smallest wavelet hop | default bank (22050 Hz, 65536): DC 124,416 coefficients for 1343 bins, Nyquist 62,208 for 3 → hops from their own support; 25-27 % fewer coefficients (median, real banks, 576 settings), frame bounds unchanged |
 | B10 | `filters/_painless.py`, `filterbanks/_frame.py`, `_utils.py`, `_waveletfilters.py` | Painless was decided by counting bins (non-zero since B5, above 1e-10 before), which cannot separate a live bin too many from negligible tails | two-sided wavelet banks: `filterbankdual` warned on 50 of 64 settings, and fractional ones at 22050 Hz / 1024 reconstructed to 8.5e-5-7.9e-4 → decided by `aliasing` (products of bins N apart, tolerance 1e-15): all 64 exact at 5.2e-16, no warning |
+| B11 | `phase/_reassign.py`, torch equivalent | The kernel was a per-coefficient Python loop (LTFAT's MATLAB, line by line), O(M) per coefficient; after B1 it often walked the long way round | vectorised, bit-identical to the loop: 4.1 s → 0.12 s on the benchmark's 513-channel Gabor bank |
+| B12 | `filters/_edge_filters.py` | Every evaluation of a DC or Nyquist complement re-summed the whole inner bank, several times per design | cached per length and inner-bank state: wavelet design plus dual 4.8 s → 1.2 s, constant-Q 3.6 s → 1.2 s; filters bit-identical |
 
 ### Still open, from the same benchmark
 
@@ -570,8 +573,6 @@ noted.
   40 ms for tifresi's numba version.
 - **`gabor.dgtreal` / `gabdual` lack LTFAT's short-window algorithm**:
   analysis plus synthesis 112 ms against 2.5 ms for ltfatpy.
-- **The reassignment kernel is a per-coefficient Python loop**, as ported
-  from LTFAT's MATLAB reference (profiling, 2026-09-19).
 
 ## Minor, recorded for completeness
 

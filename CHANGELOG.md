@@ -917,6 +917,33 @@ and its `_torch` companion fail on `1f581bc` and pass now.
   7.9e-4. All 64 are now exact (5.2e-16) without a warning, with about 10 %
   fewer coefficients in the `regsampling` and `fractional` modes.
 
+- **The reassignment kernel is vectorised.** It was a line-by-line port of
+  LTFAT's MATLAB loop: for every coefficient, a Python walk along the
+  channels to the one nearest its instantaneous frequency. On an ascending
+  grid of centres that walk is a binary search plus one comparison, and
+  `_reassign_targets` now does it for all coefficients at once, keeping
+  the loop's wrap-around, tie-breaking and fall-backs; the loop remains
+  for unordered centres. The result is bit-identical to the loop, `repos`
+  order included, on every bank tested (auditory, constant-Q, Gabor,
+  wavelet, with NaN gradients), in both backends, and torch gradients
+  match. `filterbankreassign` on the benchmark's three-component mix:
+  4.1 s to 0.12 s on a 513-channel Gabor bank, 0.82 s to 0.05 s on the
+  ERB bank. (The corrected kernel had become 7x slower than the defective
+  one there, because a correct walk often goes the long way round.)
+  **Behavioural change, torch only:** centre frequencies are now wrapped
+  with `mod` in float64, as in NumPy and LTFAT, instead of `fmod` in
+  float32.
+
+- **Complement responses are cached.** A DC or Nyquist complement is the
+  gap left by the whole inner bank, and every evaluation summed that bank
+  again; the designers evaluate each complement several times at one
+  length (hop fitting, painless checks, `prepare_filters`). Each
+  complement now keeps its last few responses, keyed by the length and by
+  the inner filters and hops it was computed from, so a later rescaling
+  still takes effect. Design plus dual at fs = 22050, Ls = 65536: wavelets
+  4.8 s to 1.2 s, 24-bin constant-Q 3.6 s to 1.2 s, ERB 0.27 s to 0.13 s;
+  the filters and duals are bit-identical over 84 designer settings.
+
 Two existing tests encoded properties of the old `audfilters` hops and were
 adjusted, not loosened: the `filterbankconstphase` seed test now looks for a
 difference in any channel (channel 0, now 16 coefficients all above

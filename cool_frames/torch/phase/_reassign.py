@@ -17,11 +17,16 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import torch
 
 from ...numpy.filterbanks._utils import normalise_a
 from ...numpy.filters._design import filterbanklength
+from ...numpy.phase._reassign import _reassign_targets
 from ._phasegrad import filterbankphasegrad
+
+#: Tests set this to run the reference loop instead of the vectorised search.
+_FORCE_LOOP = False
 
 
 def _centre_frequencies(g, a_norm, L: int, device) -> torch.Tensor:
@@ -103,18 +108,42 @@ def comp_filterbankreassign(
     afrac = a_norm[:, 0].astype(float) / a_norm[:, 1].astype(float)
     Lc = [s[m].numel() for m in range(M)]
 
-    # Convert cfreq to tensor if needed
-    if not isinstance(cfreq, torch.Tensor):
-        cfreq = torch.tensor(cfreq, dtype=torch.float32, device=s[0].device)
-    else:
-        cfreq = cfreq.to(device=s[0].device, dtype=torch.float32)
-
-    # Wrap cfreq to [0, 2)
-    cfreq2 = torch.fmod(cfreq, 2.0)
+    # Centre frequencies in float64, wrapped to [0, 2) as the NumPy kernel
+    # and LTFAT do (``torch.fmod`` in float32, as this used to, kept negative
+    # inputs negative and rounded the centres).
+    cfreq_np = np.asarray(
+        cfreq.detach().cpu().numpy() if isinstance(cfreq, torch.Tensor) else cfreq, dtype=float
+    )
+    cfreq2 = torch.as_tensor(np.mod(cfreq_np, 2.0), dtype=torch.float64)
 
     # Initialize output tensors with same dtype/device as input
     device = s[0].device
     dtype = s[0].dtype
+
+    # Where every coefficient goes, computed for all at once (see
+    # ``numpy.phase._reassign._reassign_targets``); only the accumulation
+    # runs in torch, so the result stays differentiable in ``s``.
+    moves = None
+    if not _FORCE_LOOP:
+        moves = _reassign_targets(
+            [t.detach().cpu().numpy().ravel() for t in tgrad],
+            [f.detach().cpu().numpy().ravel() for f in fgrad],
+            afrac,
+            cfreq2.numpy(),
+            Lc,
+        )
+    if moves is not None:
+        src, dst = moves
+        w = torch.cat([s[m].reshape(-1) for m in range(M - 1, -1, -1)])
+        flat = torch.zeros(int(sum(Lc)), dtype=w.dtype, device=device).index_add(
+            0, torch.as_tensor(dst, device=device), w
+        )
+        sr_v = list(torch.split(flat, Lc))
+        if return_repos:
+            repos_v = torch.as_tensor(src[np.argsort(dst, kind="stable")], device=device)
+            return sr_v, repos_v, Lc
+        return sr_v, Lc
+
     sr = [torch.zeros(Lc[m], dtype=dtype, device=device) for m in range(M)]
 
     if return_repos:
@@ -291,8 +320,6 @@ def filterbankreassign(
             )
         elif fc is None:
             # No fc provided; default to evenly spaced
-            import numpy as np
-
             fc_arr = torch.tensor(np.arange(M, dtype=float) / M * 2.0, device=s[0].device)
         else:
             fc_arr = torch.as_tensor(fc, device=s[0].device)
@@ -391,8 +418,6 @@ def filterbanksynchrosqueeze(
             )
         elif fc is None:
             # No fc provided; default to evenly spaced
-            import numpy as np
-
             fc_arr = torch.tensor(np.arange(M, dtype=float) / M * 2.0, device=c[0].device)
         else:
             fc_arr = torch.as_tensor(fc, device=c[0].device)

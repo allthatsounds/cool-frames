@@ -42,6 +42,42 @@ import numpy as np
 # Public API
 # ---------------------------------------------------------------------------
 
+def _inner_key(g_inner, a_inner, L: int) -> tuple:
+    """What a complement's response depends on besides its own prototype.
+
+    A complement fills the gap in the inner channels' frame response, so it
+    has to be recomputed whenever an inner filter or hop changes -- designers
+    rescale channels and fit hops after building the complements.  Callables
+    are identified by object (every rescaling makes a new one), arrays by
+    object and content.
+    """
+    parts = []
+    for gm in g_inner:
+        h = gm.get("H") if isinstance(gm, dict) else None
+        if isinstance(h, np.ndarray):
+            parts.append((id(h), h.shape, float(np.abs(h).sum())))
+        else:
+            parts.append(id(h))
+    return (int(L), tuple(parts), np.asarray(a_inner).tobytes())
+
+
+def _memoised(compute):
+    """Cache ``compute(L)`` by :func:`_inner_key`; a designer evaluates each
+    complement several times at one length (hop fitting, painless checks,
+    ``prepare_filters``), and each evaluation sums the whole inner bank."""
+    cache: dict = {}
+
+    def H(L: int) -> np.ndarray:
+        key = compute.key(L)
+        if key not in cache:
+            if len(cache) >= 4:
+                cache.pop(next(iter(cache)))
+            cache[key] = compute(L)
+        return cache[key].copy()
+
+    return H
+
+
 def build_complement_lowpass(
     g_inner: list[dict],
     a_inner,
@@ -93,7 +129,7 @@ def build_complement_lowpass(
         min_win=min_win,
     )
 
-    def H(L: int) -> np.ndarray:
+    def _H(L: int) -> np.ndarray:
         P0_full, _ = _ffr(P0, L)
         S = filterbankresponse(g_inner, a_inner, L, real=False)
         S_pos = S[:L // 2 + 1]
@@ -105,6 +141,9 @@ def build_complement_lowpass(
         foff_v = int(P0["foff"](L))
         idx = np.mod(np.arange(foff_v, foff_v + Lw), L)
         return C_full[idx] * scal  # type: ignore[no-any-return]
+
+    _H.key = lambda L: _inner_key(g_inner, a_inner, L)  # type: ignore[attr-defined]
+    H = _memoised(_H)
 
     def foff(L: int) -> int:
         return int(P0["foff"](L))
@@ -165,7 +204,7 @@ def build_complement_highpass(
         min_win=min_win,
     )
 
-    def H(L: int) -> np.ndarray:
+    def _H(L: int) -> np.ndarray:
         PK_dc_full, _ = _ffr(PK_dc, L)
         PK_nyq_full = np.roll(PK_dc_full, L // 2)
         S = filterbankresponse(g_inner, a_inner, L, real=False)
@@ -179,6 +218,9 @@ def build_complement_highpass(
         foff_hp = L // 2 + foff_dc
         idx = np.mod(np.arange(foff_hp, foff_hp + Lw), L)
         return C_full[idx] * scal  # type: ignore[no-any-return]
+
+    _H.key = lambda L: _inner_key(g_inner, a_inner, L)  # type: ignore[attr-defined]
+    H = _memoised(_H)
 
     def foff(L: int) -> int:
         Lw = len(PK_dc["H"](L))

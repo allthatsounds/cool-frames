@@ -109,3 +109,31 @@ def test_reassigned_spectrogram_matches_numpy(f0):
     np.testing.assert_allclose(
         np.asarray(out["groupdelay_shift"], float), np.asarray(ref["groupdelay_shift"]), atol=1e-9
     )
+
+
+@pytest.mark.parametrize("bank", ["erb", "cqt"])
+def test_vectorised_reassignment_is_the_loop(bank, monkeypatch):
+    """The torch kernel, vectorised, gives the loop's result and gradient."""
+    from cool_frames.torch.filters import audfilters, cqtfilters
+    from cool_frames.torch.phase import _reassign as TR
+    from cool_frames.torch.phase import filterbankphasegrad
+
+    g, a, fc, L, _ = audfilters(FS, LS) if bank == "erb" else cqtfilters(FS, LS, fmin=50, bins=12)
+    x = torch.tensor(np.random.default_rng(8).standard_normal(LS))
+    tg, fg, s, _ = filterbankphasegrad(x, g, a, L)
+    cf = np.asarray(fc, float) / FS * 2
+
+    def run():
+        sq = [si.detach().clone().requires_grad_(True) for si in s]
+        sr, repos, _ = TR.comp_filterbankreassign(sq, tg, fg, a, cf, return_repos=True)
+        sum((v**2).sum() for v in sr).backward()
+        return [v.detach() for v in sr], repos, [si.grad for si in sq]
+
+    fast = run()
+    monkeypatch.setattr(TR, "_FORCE_LOOP", True)
+    loop = run()
+    for u, v in zip(fast[0], loop[0]):
+        torch.testing.assert_close(u, v, rtol=0, atol=0)
+    assert torch.equal(fast[1], loop[1])
+    for u, v in zip(fast[2], loop[2]):
+        torch.testing.assert_close(u, v, rtol=1e-12, atol=0)

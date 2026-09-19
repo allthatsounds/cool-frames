@@ -70,6 +70,115 @@ def _length_from_coefficients(s, a_norm) -> int:
 # ---------------------------------------------------------------------------
 
 
+#: Tests set this to run the reference loop instead of the vectorised search.
+_FORCE_LOOP = False
+
+
+def _reassign_targets(tgrad, fgrad, afrac, cfreq2, Lc):
+    """Where the kernel sends every coefficient, computed for all at once.
+
+    Returns ``(src, dst)`` -- flat source and destination positions (channels
+    concatenated in order) -- listing the coefficients in the order the loop
+    kernel visits them (channels ``M-1 .. 0``, time ascending), or ``None``
+    when the centre frequencies are not in ascending order, where the loop's
+    walk is not a nearest-neighbour search and only the loop reproduces it
+    (equal neighbours are fine: a ``waveletfilters`` bank ending at Nyquist
+    has two channels centred there).
+
+    Each branch below is the closed form of one branch of the loop in
+    :func:`comp_filterbankreassign` (kept there as the fall-back, and as the
+    reference the tests compare against): the loop walks from the source
+    channel towards ``cfreq + dev`` and stops at the first centre past it,
+    then keeps whichever of the last two centres is closer; on an ascending
+    grid that is a binary search plus one comparison, with the loop's
+    wrap-around (``+-2``), its tie-breaking and its fall-backs kept.
+    Identical to the loop, which is O(M) per coefficient in Python; on
+    T8's Gabor bank (513 channels) that took 4 s.
+    """
+    M = len(Lc)
+    c = np.asarray(cfreq2, dtype=float)
+    if M < 2 or not np.all(np.diff(c) >= 0):
+        return None
+    order = range(M - 1, -1, -1)
+    Lc_arr = np.asarray(Lc, dtype=np.int64)
+    chan_pos = np.concatenate([[0], np.cumsum(Lc_arr)])
+    tg_l = [np.asarray(tgrad[m], dtype=float).ravel() for m in range(M)]
+    if any(tg_l[m].size < Lc[m] for m in range(M)):
+        return None  # the loop raises IndexError here; let it
+
+    def fitted(v, n):
+        # The loop reads the first ``n`` values; a missing group delay falls
+        # into its ``except IndexError`` and gives time index 0 (NaN here).
+        v = np.asarray(v, dtype=float).ravel()[:n]
+        return v if v.size == n else np.concatenate([v, np.full(n - v.size, np.nan)])
+
+    mm = np.concatenate([np.full(Lc[m], m, dtype=np.int64) for m in order])
+    jj = np.concatenate([np.arange(Lc[m], dtype=np.int64) for m in order])
+    tg = np.concatenate([tg_l[m][: Lc[m]] for m in order])
+    fg = np.concatenate([fitted(fgrad[m], Lc[m]) for m in order])
+
+    cm = c[mm]
+    dev = np.mod(tg - cm + 1.0, 2.0) - 1.0
+    t = cm + dev
+    idx = np.empty(mm.size, dtype=np.int64)
+
+    # dev > 0: walk up from mm to the first centre >= t, wrapping with t - 2.
+    up = dev > 0
+    tu, mu = t[up], mm[up]
+    r = np.empty(tu.size, dtype=np.int64)
+    p = np.searchsorted(c, tu, "left")
+    ok = p < M
+    q, tq = p[ok], tu[ok]
+    r[ok] = np.where(np.abs(c[q] - tq) < np.abs(c[q - 1] - tq), q, q - 1)
+    w = ~ok
+    tw, mw = tu[w], mu[w]
+    p2 = np.searchsorted(c, tw - 2.0, "left")
+    rw = np.empty(tw.size, dtype=np.int64)
+    z = p2 == 0
+    rw[z] = np.where(np.abs(c[0] - tw[z] + 2.0) < np.abs(c[M - 1] - tw[z]), 0, M - 1)
+    mid = ~z & (p2 <= mw)
+    q = p2[mid]
+    rw[mid] = np.where(np.abs(c[q] - tw[mid] + 2.0) < np.abs(c[q - 1] - tw[mid] + 2.0), q, q - 1)
+    rw[~z & (p2 > mw)] = mw[~z & (p2 > mw)]
+    r[w] = rw
+    idx[up] = r
+
+    # dev <= 0 (and NaN): walk down from mm to the first centre <= t,
+    # wrapping with t + 2.
+    dn = ~up
+    td, md = t[dn], mm[dn]
+    r = np.empty(td.size, dtype=np.int64)
+    p = np.minimum(np.searchsorted(c, td, "right") - 1, md)
+    ok = p >= 0
+    q, tq, start = p[ok], td[ok], p[ok] == md[ok]
+    nxt = np.minimum(q + 1, M - 1)
+    r[ok] = np.where(start, q, np.where(np.abs(c[q] - tq) < np.abs(c[nxt] - tq), q, q + 1))
+    w = ~ok
+    tw, mw = td[w], md[w]
+    p2 = np.searchsorted(c, tw + 2.0, "right") - 1
+    rw = np.empty(tw.size, dtype=np.int64)
+    top = p2 == M - 1
+    rw[top] = np.where(np.abs(c[M - 1] - tw[top] - 2.0) < np.abs(c[0] - tw[top]), M - 1, 0)
+    mid = ~top & (p2 >= mw)
+    q = p2[mid]
+    rw[mid] = np.where(np.abs(c[q] - tw[mid] - 2.0) < np.abs(c[q + 1] - tw[mid] - 2.0), q, q + 1)
+    rw[~top & (p2 < mw)] = mw[~top & (p2 < mw)]
+    r[w] = rw
+    idx[dn] = r
+    idx = np.clip(idx, 0, M - 1)
+
+    # Time index: round((fgrad + a_m n) / a_target) mod N_target (a
+    # non-finite group delay goes to 0, as the loop's except clause does).
+    x = (fg + afrac[mm] * jj) / afrac[idx]
+    Lt = Lc_arr[idx]
+    ft = np.zeros(x.size, dtype=np.int64)
+    fin = np.isfinite(x)
+    ft[fin] = np.mod(np.round(x[fin]), Lt[fin]).astype(np.int64)
+    ft = np.minimum(ft, Lt - 1)
+
+    return chan_pos[mm] + jj, chan_pos[idx] + ft
+
+
 def comp_filterbankreassign(
     s: list[np.ndarray],
     tgrad: list[np.ndarray],
@@ -116,6 +225,19 @@ def comp_filterbankreassign(
 
     # Wrap cfreq to [0, 2)
     cfreq2 = np.mod(cfreq, 2.0)
+
+    moves = None if _FORCE_LOOP else _reassign_targets(tgrad, fgrad, afrac, cfreq2, Lc)
+    if moves is not None:
+        src, dst = moves
+        total = int(sum(Lc))
+        # The weights in the loop's order, so the sums are the loop's sums.
+        w = np.concatenate([np.asarray(s[m]).ravel() for m in range(M - 1, -1, -1)])
+        flat = np.bincount(dst, weights=w, minlength=total)
+        pos = np.concatenate([[0], np.cumsum(Lc)])
+        sr_v = [flat[pos[m] : pos[m + 1]] for m in range(M)]
+        if return_repos:
+            return sr_v, src[np.argsort(dst, kind="stable")], Lc
+        return sr_v, Lc
 
     sr = [np.zeros(Lc[m]) for m in range(M)]
 
