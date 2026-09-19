@@ -448,3 +448,96 @@ def test_aliasing_counts_what_aliases():
     tails = np.concatenate([t, h, t])
     assert aliasing(tails, 9) <= ALIAS_TOL < aliasing(tails, 8)
     assert painless_length(tails) == 9 and painless_length(h) == 7
+
+
+# ---------------------------------------------------------------------------
+# 9. The reassignment kernel, vectorised, is the loop kernel
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bank", ["erb", "cqt24", "gabor", "wavelet"])
+def test_vectorised_reassignment_is_the_loop(bank, monkeypatch):
+    """Same channels, same time indices, same sums, same ``repos`` order."""
+    from cool_frames.numpy.filters import gabfilters, waveletfilters
+    from cool_frames.numpy.phase import _reassign as R
+
+    fs = 16000
+    make = {
+        "erb": lambda: audfilters(fs, 4096),
+        "cqt24": lambda: cqtfilters(fs, 4096, fmin=50, bins=24),
+        "gabor": lambda: gabfilters(fs, 4096, M=256, a=64),
+        "wavelet": lambda: waveletfilters(fs, 4096),
+    }[bank]
+    g, a, fc, L, _ = make()
+    rng = np.random.default_rng(7)
+    x = np.sin(2 * np.pi * 440 * np.arange(L) / fs) + 0.3 * rng.standard_normal(L)
+    tg, fg, s, _ = filterbankphasegrad(x, g, a, L)
+    tg = [t + 0.2 * rng.standard_normal(t.shape) for t in tg]  # exercise every branch
+    tg[2] = tg[2].copy()
+    tg[2][::5] = np.nan
+    fg = [f.copy() for f in fg]
+    fg[3][::4] = np.nan
+    cf = np.asarray(fc, float) / fs * 2
+    fast = R.comp_filterbankreassign(s, tg, fg, a, cf, return_repos=True)
+    monkeypatch.setattr(R, "_FORCE_LOOP", True)
+    loop = R.comp_filterbankreassign(s, tg, fg, a, cf, return_repos=True)
+    for u, v in zip(fast[0], loop[0]):
+        np.testing.assert_array_equal(u, v)
+    np.testing.assert_array_equal(fast[1], loop[1])
+
+
+def test_unordered_centres_fall_back_to_the_loop():
+    from cool_frames.numpy.phase import _reassign as R
+
+    Lc = [4, 4, 4]
+    assert (
+        R._reassign_targets(
+            [np.zeros(4)] * 3, [np.zeros(4)] * 3, np.ones(3), np.array([0.2, 0.1, 0.5]), Lc
+        )
+        is None
+    )
+    s = [np.ones(4)] * 3
+    sr, _ = R.comp_filterbankreassign(
+        s,
+        [np.full(4, 0.1)] * 3,
+        [np.zeros(4)] * 3,
+        np.ones(3, dtype=int),
+        np.array([0.2, 0.1, 0.5]),
+    )
+    assert np.isclose(sum(float(np.sum(v)) for v in sr), 12.0)
+
+
+# ---------------------------------------------------------------------------
+# 10. Complement responses are cached, and the cache follows the inner bank
+# ---------------------------------------------------------------------------
+
+
+def test_complement_cache_follows_the_inner_filters():
+    """Designers rescale inner channels and fit hops after building the
+    complements; a cached complement must see that, or the frame response
+    has a hole."""
+    from cool_frames.numpy.filters._edge_filters import build_complement_lowpass
+
+    g, a, fc, L, _ = audfilters(16000, 4096)
+    inner = [dict(gm) for gm in g[1:-1]]
+    a_inner = np.asarray(a)[1:-1].copy()
+
+    def build():
+        return build_complement_lowpass(
+            inner,
+            a_inner,
+            float(fc[1]),
+            16000,
+            scal=1.0,
+            fsupp_lp=2 * float(fc[1]),
+            taper_ratio=0.5,
+        )
+
+    lp = build()
+    h0 = lp["H"](L)
+    h0[:] = 0  # callers get a copy, not the cache
+    np.testing.assert_array_equal(lp["H"](L), build()["H"](L))
+    inner[0]["H"] = (lambda fn: lambda Lq: np.asarray(fn(Lq)) * 0.5)(inner[0]["H"])
+    np.testing.assert_array_equal(lp["H"](L), build()["H"](L))  # new inner filter
+    a_inner[0] = a_inner[0] * 2
+    np.testing.assert_array_equal(lp["H"](L), build()["H"](L))  # new hop, in place
