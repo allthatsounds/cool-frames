@@ -369,7 +369,7 @@ def painlessfilterbank(
     # non-painless bank got a silently approximate "dual"/"tight" — on
     # `waveletfilters` the returned "tight" frame is rank-deficient and loses
     # 72 % of the signal while `filterbankbounds` prints kappa = 1.000000.
-    from ..filters._painless import nonzero_support
+    from ..filters._painless import ALIAS_TOL, aliasing, nonzero_support
 
     _violations = []
     _supports = {}
@@ -379,15 +379,17 @@ def painlessfilterbank(
         if H_m is None or len(np.asarray(H_m)) == 0:
             continue
         Nm = L / (a_norm[m, 0] / a_norm[m, 1])
-        # Compare the *non-zero* support with N = L/a, with no slack.  Several
-        # designers store L/a + 1 bins whose end bins are exact zeros; those
-        # alias onto nothing and are painless.  A support genuinely one bin
-        # wider is not, and a one-bin allowance on the stored length used to
-        # let exactly that through without a warning:
-        # cqtfilters(sampling='fractional') had 999 non-zero Nyquist bins on
-        # N = 998 and reconstructed to 1.4e-4 in silence.
-        _supports[m] = nonzero_support(H_m)
-        if _supports[m] > Nm + 1e-9:
+        # Painless means no two bins N = L/a apart are both non-negligible
+        # (``_painless.aliasing``), with no slack.  Several designers store
+        # L/a + 1 bins whose end bins are exact zeros, and two-sided wavelet
+        # banks store tails of 1e-11 past N; both alias onto nothing that
+        # matters and are painless.  A support genuinely one bin wider is not,
+        # and a one-bin allowance on the stored length used to let exactly
+        # that through without a warning: cqtfilters(sampling='fractional')
+        # had 999 non-zero Nyquist bins on N = 998 and reconstructed to
+        # 1.4e-4 in silence.
+        if aliasing(H_m, Nm) > ALIAS_TOL:
+            _supports[m] = nonzero_support(H_m)
             _violations.append(m)
 
     if _violations:

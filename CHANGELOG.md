@@ -880,6 +880,43 @@ and its `_torch` companion fail on `1f581bc` and pass now.
   and replaced any failure of `filterbankphasegrad` with zeros; it now
   matches NumPy to 1e-11 and lets errors through.
 
+- **`waveletfilters` sized its lowpass and Nyquist channels by the wrong
+  quantity.** The painless cap of a lowpass channel divided `L` by its
+  `aprecise` -- a hop, not a width -- so it came out at 1 or close to it;
+  the single DC complement's `aprecise` was itself a mis-port
+  (`0.2 * s[3] * Ls`, where LTFAT has the hop `2 * s(4) / 0.2`). The Nyquist
+  complement inherited the smallest wavelet hop. On the default bank at
+  fs = 22050, Ls = 65536 the DC channel had 124,416 coefficients for 1343
+  non-zero bins and the Nyquist channel 62,208 for 3: 16 % of all
+  coefficients. The caps now use the lowpass channels' widths, and both
+  complements get the largest painless hop their own support allows, with
+  the response rescaled so the frame operator does not change (the frame
+  bounds are identical to the last digit in every mode checked).
+  **Behavioural change:** over 576 settings (four sampling modes, both
+  lowpass layouts, real and two-sided, two voice counts, two `redmul`)
+  no coefficient count grows; the median falls 25-27 % for real
+  `regsampling` and `fractional` banks (default bank: 1,197,426 to
+  1,012,341, redundancy 9.6 to 8.1),
+  `lowpass='repeat'` banks by about 21 % (their lowpass channels were
+  sampled 47x too finely), and `sampling='uniform'` banks by half (the
+  shared hop was held at 1 by the DC cap). With `painless=False` the DC hop
+  had been 384, the bank's worst violation (`aW/L = 22.8`); it is now 16.
+
+- **Painless means no aliasing, not a bin count.** What decides whether a
+  channel is painless is whether two bins `N = L/a` apart are both
+  non-negligible (the frame operator's off-diagonal terms are their
+  products), and `filters/_painless.aliasing` now measures exactly that;
+  the painless check in `filterbankdual`/`filterbanktight`,
+  `filterbankwin`'s `info["ispainless"]` and the designers' repairs all use
+  it. Counting non-zero bins, as the check has since 1d0773b, cannot tell a
+  Nyquist complement one live bin too wide (1.4e-4) from a two-sided
+  wavelet whose stored response runs past `N` on tails of 1e-11 of its peak
+  (exact). Two-sided wavelet banks had both problems: `filterbankdual`
+  warned on 50 of 64 settings, most of them spuriously, and the
+  `fractional` ones at fs = 22050, Ls = 1024 reconstructed to 8.5e-5 to
+  7.9e-4. All 64 are now exact (5.2e-16) without a warning, with about 10 %
+  fewer coefficients in the `regsampling` and `fractional` modes.
+
 Two existing tests encoded properties of the old `audfilters` hops and were
 adjusted, not loosened: the `filterbankconstphase` seed test now looks for a
 difference in any channel (channel 0, now 16 coefficients all above

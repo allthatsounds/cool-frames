@@ -34,8 +34,15 @@ one was a 300x slowdown on a path that should have been a shortcut:
    factor of pi and as an absolute frequency under a key that promises the
    deviation from the channel centre (the torch version also swapped the
    instantaneous frequency and the group delay).
+8. ``waveletfilters`` capped every lowpass hop by ``L / aprecise`` -- a hop
+   taken for a width -- and gave the Nyquist complement the smallest wavelet
+   hop: the default bank sampled a 707-bin DC channel at every sample and a
+   3-bin Nyquist channel at every other one (16 % of all coefficients), and
+   ``lowpass='repeat'`` oversampled its lowpass channels 47x.
 
-Each test below fails on commit 1f581bc and passes after the fix.
+Every defect has tests that fail on the commit before its fix (1f581bc;
+1d0773b for item 8); the others guard what a fix must not change -- exact
+reconstruction, the frame operator, agreement with a dense oracle.
 """
 
 from __future__ import annotations
@@ -346,3 +353,98 @@ def test_reassigned_spectrogram_deviation(f0):
     m = int(np.argmin(np.abs(fc - f0)))
     dev = float(np.asarray(spec["instfreq_deviation"])[m])
     assert abs(dev - (f0 - fc[m])) < 0.02 * abs(f0 - fc[m]) + 1.0
+
+
+# ---------------------------------------------------------------------------
+# 8. waveletfilters sizes its lowpass and complement hops by their own width
+# ---------------------------------------------------------------------------
+
+
+class TestWaveletEdges:
+    @pytest.mark.parametrize("sampling", ["regsampling", "fractional"])
+    @pytest.mark.parametrize("fs, Ls", [(8000, 4096), (22050, 16000)])
+    def test_complements_are_not_oversampled(self, fs, Ls, sampling):
+        """Was: DC channel N = L (hop 1), Nyquist N = L/2 for a 3-bin support."""
+        from cool_frames.numpy.filters import waveletfilters
+
+        g, a, _fc, L, info = waveletfilters(fs, Ls, sampling=sampling)
+        s, N = _supports_and_lengths(g, a, L)
+        assert info["painless"] and not np.any(s > N + 1e-9)
+        for m in (0, len(g) - 1):
+            if sampling == "fractional":
+                assert N[m] == s[m], f"channel {m}: N = {N[m]:.0f} for {s[m]} bins"
+            else:
+                # an integer hop must divide L, so N can exceed the support
+                assert N[m] <= 1.5 * s[m] + 4, f"channel {m}: N = {N[m]:.0f} for {s[m]} bins"
+
+    def test_repeat_lowpass_is_not_oversampled(self):
+        """Was: 16 lowpass channels at N = 3456 for 74 non-zero bins each."""
+        from cool_frames.numpy.filters import waveletfilters
+
+        g, a, _fc, L, info = waveletfilters(16000, 16000, lowpass="repeat")
+        s, N = _supports_and_lengths(g, a, L)
+        lp = int(info["startindex"])
+        assert lp > 1 and not np.any(s > N + 1e-9)
+        assert np.all(N[:lp] <= 2 * s[:lp]), list(zip(N[:lp], s[:lp]))
+
+    @pytest.mark.parametrize("lowpass", ["single", "repeat"])
+    def test_hops_leave_the_frame_operator_alone(self, lowpass):
+        """The response is scaled with the hop, so the frame operator does not
+        depend on the hops; ``uniform``, whose hops are not fitted, is the
+        reference.  (``regsampling`` is left out: its L differs.)"""
+        from cool_frames.numpy.filterbanks import filterbankbounds
+        from cool_frames.numpy.filters import waveletfilters
+
+        bounds = {}
+        for sampling in ("uniform", "fractional", "fractionaluniform"):
+            g, a, _fc, L, _ = waveletfilters(8000, 4096, sampling=sampling, lowpass=lowpass)
+            assert L == 4096
+            bounds[sampling] = filterbankbounds(g, a, L)
+        for sampling in ("fractional", "fractionaluniform"):
+            np.testing.assert_allclose(bounds[sampling], bounds["uniform"], rtol=1e-9)
+
+    @pytest.mark.parametrize("sampling", ["regsampling", "fractional", "fractionaluniform"])
+    def test_round_trip_exact(self, sampling):
+        from cool_frames.numpy.filters import waveletfilters
+
+        g, a, _fc, L, _ = waveletfilters(8000, 4096, sampling=sampling)
+        x = np.random.default_rng(5).standard_normal(4096)
+        y = np.real(
+            ifilterbank(filterbank(x, g, a, L=L), filterbankdual(g, a, L), a, 4096, real=True)
+        )
+        assert np.linalg.norm(x - y[:4096]) / np.linalg.norm(x) < 1e-12
+
+    def test_two_sided_bank_is_painless_without_warning(self):
+        """Its wavelets store tails of ~1e-11 past N, which alias onto nothing.
+
+        Was: ``filterbankdual`` warned that 75 of 155 channels exceed the
+        painless limit (on 1f581bc and 1d0773b alike), for a bank that
+        reconstructs to 5e-16; counting non-zero bins instead would have
+        cost 29 % more coefficients to silence it.
+        """
+        from cool_frames.numpy.filters import waveletfilters
+
+        g, a, _fc, L, info = waveletfilters(8000, 4096, freqrange="complex")
+        assert info["painless"]
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", message=".*painless.*")
+            gd = filterbankdual(g, a, L, real=False)
+        rng = np.random.default_rng(6)
+        x = rng.standard_normal(4096) + 1j * rng.standard_normal(4096)
+        y = ifilterbank(filterbank(x, g, a, L=L), gd, a, 4096, real=False)[:4096]
+        assert np.linalg.norm(x - y) / np.linalg.norm(x) < 1e-12
+
+
+def test_aliasing_counts_what_aliases():
+    """Painless is about pairs of bins N apart, not about the non-zero count."""
+    from cool_frames.numpy.filters._painless import ALIAS_TOL, aliasing, painless_length
+
+    h = np.hanning(9)[1:-1]  # 7 live bins
+    assert aliasing(h, 7) == 0.0 and aliasing(h, 6) > 1e-3
+    # Two tails of 1e-9 on each side: 11 non-zero bins.  At N = 9 every
+    # aliased pair is tail against tail (1e-18): painless.  At N = 8 a tail
+    # meets a live bin (2e-10): not.
+    t = [1e-9, 1e-9]
+    tails = np.concatenate([t, h, t])
+    assert aliasing(tails, 9) <= ALIAS_TOL < aliasing(tails, 8)
+    assert painless_length(tails) == 9 and painless_length(h) == 7
