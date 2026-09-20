@@ -942,7 +942,12 @@ and its `_torch` companion fail on `1f581bc` and pass now.
   the inner filters and hops it was computed from, so a later rescaling
   still takes effect. Design plus dual at fs = 22050, Ls = 65536: wavelets
   4.8 s to 1.2 s, 24-bin constant-Q 3.6 s to 1.2 s, ERB 0.27 s to 0.13 s;
-  the filters and duals are bit-identical over 84 designer settings.
+  the filters and duals are bit-identical over 84 designer settings. The
+  cache also removes most of the cost of the README's quick-start path,
+  which passes unprepared filters to `filterbank()` and so re-evaluates
+  them on every call: 8.8–155x slower than filters prepared once by
+  `filterbankwin()` at 1f581bc, 1.2–1.3x now (W52's constant-Q and
+  auditory banks).
 
 Two existing tests encoded properties of the old `audfilters` hops and were
 adjusted, not loosened: the `filterbankconstphase` seed test now looks for a
