@@ -134,8 +134,10 @@ Real-time phase reconstruction
 -------------------------------
 
 For streaming applications use the causal, look-ahead members of the family —
-``rtisila`` and its enhanced variants — which advance frame by frame rather
-than iterating over the whole signal:
+``rtisila`` and its variants — which advance frame by frame rather than
+iterating over the whole signal.  A frame's coefficients are updated only from
+the frames already committed and the ``lookahead`` frames after it, never from
+later ones:
 
 .. code-block:: python
 
@@ -143,11 +145,30 @@ than iterating over the whole signal:
 
    c_rt, f_rt, relres, niter = rtisila(
        s_mag, g, a, L=L, Ls=Ls, real=True,
-       maxit=5,          # inner iterations per frame
-       lookahead=None,   # None selects a default from the window length
+       maxit=5,          # updates of the window per step
+       lookahead=None,   # None: the frames an atom reaches beyond its own
    )
 
-``lertisila`` and ``gsrtisila`` take the same arguments and trade more work per
-frame for better consistency.  All three cost seconds rather than milliseconds
-on signals of a few thousand samples — they are designed for low *latency*, not
-low total cost.
+``relres`` is the consistency ``|| |A f| - s || / ||s||`` of the result, and
+``niter`` the number of updates each frame receives, ``maxit * (lookahead + 1)``.
+``gsrtisila`` adds Gnann and Spiertz's initial phase for the newest frame
+(``startphase='spsi'``, ``'unwrap'``, ``'input'``); ``lertisila`` replaces the
+exact re-analysis with Le Roux's truncated projection kernel.
+
+On a filter bank a frame is a block of ``frame_hop`` samples (a coefficient
+column for a uniform bank), and the partial reconstruction is updated and
+re-analysed exactly in the frequency domain, at a cost per update of about the
+number of non-zero bins of the bank and its dual in the frame: about 6 ms for
+the 513-channel Gabor bank of a 3 s excerpt at 22.05 kHz, 45 s in all.  With a
+Gabor window, PHASERET's own form is much cheaper -- a few FFTs of ``M``
+samples per update, 0.4 s for the same excerpt -- and also has the analysis
+windows Zhu et al. and Gnann and Spiertz designed for the newest frames:
+
+.. code-block:: python
+
+   from cool_frames.filters import firwin
+   from cool_frames.gabor import dgtreal
+
+   g = firwin("hann", 1024)
+   s = abs(dgtreal(x, g, 256, 1024))
+   c, f, relres, niter = rtisila(s, g, 256, 1024)   # PHASERET's rtisila

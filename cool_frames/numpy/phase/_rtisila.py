@@ -1,157 +1,180 @@
 """
-numpy/phaseret/_rtisila.py
-============================
-Real-Time Iterative Spectrogram Inversion with Look-Ahead (RTISILA)
-adapted for filterbanks.
+numpy/phase/_rtisila.py
+=======================
+Real-Time Iterative Spectrogram Inversion with Look-Ahead (RTISI-LA).
 
-Port of ``phaseret/gabor/rtisila.m``.
-
-RTISILA processes frames one at a time (causally), with a configurable
-look-ahead buffer.  At each frame it performs multiple analysis-synthesis
-iterations on a small window of frames to refine the phase estimate.
-
-For filterbanks, the "frame" concept is adapted to work with the
-multi-rate event schedule (same as in ``rtpghifb_nonuniform``).
+Port of PHASERET's ``gabor/rtisila.m`` [rtisila-zhu]_, on a Gabor frame
+(``rtisila(s, g, a, M)``, PHASERET's own calling convention) or on any
+filter bank (``rtisila(s, g, a)`` with ``g`` a list of filters).
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-import numpy as np
 
-from ..filterbanks._core import filterbank, ifilterbank
-from ..filterbanks._frame import filterbankdual
+def _is_window(g) -> bool:
+    """A Gabor window (array or window name) rather than a list of filters."""
+    if isinstance(g, str):
+        return True
+    if isinstance(g, (list, tuple)):
+        return len(g) > 0 and not isinstance(g[0], dict)
+    return True
+
+
+def _gabor_only(fn: str, **given) -> None:
+    bad = [k for k, (v, default) in given.items() if v is not default and v != default]
+    if bad:
+        raise ValueError(
+            f"{fn}: {', '.join(bad)} apply to a filter bank, not to a Gabor window with M channels"
+        )
+
+
+def _bank_only(fn: str, **given) -> None:
+    bad = [k for k, (v, default) in given.items() if v is not default and v != default]
+    if bad:
+        raise ValueError(
+            f"{fn}: {', '.join(bad)} apply to a Gabor window with M channels, not to a filter bank"
+        )
 
 
 def rtisila(
-    s_list: list[np.ndarray],
-    g: list[dict],
+    s_list,
+    g,
     a,
+    M: int | None = None,
     *,
     L: int | None = None,
     Ls: int | None = None,
-    real: bool = False,
+    real: bool | None = None,
     maxit: int = 5,
     lookahead: int | None = None,
-    startphase: Literal["zero", "rand"] = "zero",
+    frame_hop: int | None = None,
+    startphase: Literal["zhu", "zero", "rand"] = "zhu",
     seed: int | None = None,
-) -> tuple[list[np.ndarray], np.ndarray, float, int]:
-    """RTISILA for filterbanks.
+    phase: Literal["freqinv", "timeinv"] = "freqinv",
+):
+    """Real-Time Iterative Spectrogram Inversion with Look-Ahead.
 
-    Real-time iterative spectrogram inversion with look-ahead [rtisila-gnann]_
-    and improved signal modeling [rtisila-zhu]_.
+    Zhu, Beauregard and Wyse's RTISI-LA [rtisila-zhu]_: frames of
+    coefficients enter one at a time; the ``lookahead + 1`` newest are
+    updated ``maxit`` times, newest first, each update re-analysing the
+    partial reconstruction -- the frames already committed and those in the
+    look-ahead, never a later one -- and imposing the target magnitude; then
+    the oldest is committed.  An offline simulation of the real-time
+    algorithm.
 
-    Processes frames left-to-right with a look-ahead buffer, performing
-    ``maxit`` iterations per frame.  This is an offline simulation of
-    the real-time algorithm.
+    Two forms:
+
+    ``rtisila(s, g, a, M)``, with ``g`` a window (array or ``firwin`` name,
+        at most ``M`` samples) and ``s`` the ``(M // 2 + 1, N)`` magnitudes of
+        ``gabor.dgtreal(f, g, a, M)``: PHASERET's ``rtisila``, including the
+        modified analysis windows of the newest frame, checked against
+        PHASERET.  Returns ``c`` as an array.
+    ``rtisila(s_list, g, a)``, with ``g`` a list of filters: the same
+        algorithm on a filter bank, where a frame is a block of ``frame_hop``
+        samples of time (a coefficient column for a uniform bank).  The
+        partial reconstruction is kept and re-analysed exactly, in the
+        frequency domain, one frame at a time.  The newest frame is analysed
+        with Zhu's windows built from the bank's own atoms: for each channel
+        the sum of its synthesis atoms at this and the following hops, cut
+        to the main lobe of its analysis atom, which is PHASERET's window
+        when the bank is a Gabor frame (and then the result is PHASERET's,
+        up to the end of the signal).  Channels with fractional hops are
+        analysed with their own filters.
 
     Parameters
     ----------
-    s_list : list of M arrays — target magnitudes
-    g : list of M filter dicts
-    a : hop sizes
-    L : DFT length
-    Ls : output signal length
-    real : use real (single-sided) synthesis
-    maxit : iterations per frame
-    lookahead : number of look-ahead frames (default: 2)
-    startphase : initial phase strategy
+    s_list : ``(M // 2 + 1, N)`` array (Gabor), or list of per-channel arrays
+        Target magnitudes (the modulus is taken).
+    g : window, or list of filter dicts
+    a : hop size(s)
+    M : int, Gabor form only -- number of channels.
+    L : transform length (filter bank; default from ``s_list`` and ``a``).
+    Ls : length of the returned signal.
+    real : filter bank only.  ``True`` synthesises real signals
+        (``ifilterbank(..., real=True)``, for a single-sided bank of a real
+        signal); default ``False``.  The Gabor form is always real.
+    maxit : int, default 5 -- iterations per step.
+    lookahead : int -- frames after the committed one in the window.
+        Default: PHASERET's ``ceil(M/a) - 1`` (capped at ``N - 1``); on a
+        filter bank, the number of frames an atom reaches beyond its own,
+        from the longest atom's duration (the shortest interval holding all
+        but 1e-3 of its energy) -- which gives PHASERET's value on a
+        Gabor-type bank.
+    frame_hop : int, filter bank only -- the frame length in samples.
+        Default: the hop of a uniform bank, else the largest hop.  Channels
+        containing DC or Nyquist are left out of both defaults: the DC and
+        Nyquist complements of auditory and wavelet banks are narrow, with
+        atoms and hops that can be as long as the signal.
+    startphase : filter bank only.  What a frame enters the window with:
+        ``'zhu'`` (default, PHASERET's) nothing, its first phase coming from
+        the frames it overlaps; ``'zero'`` its magnitude with zero phase;
+        ``'rand'`` its magnitude with a random phase (``seed``).
+    phase : Gabor form only.  ``'freqinv'`` (default) returns ``c`` in
+        cool-frames' (LTFAT's default) convention, so ``|c|`` and
+        ``gabor.dgtreal(f, g, a, M)`` agree; ``'timeinv'`` in PHASERET's.
 
     Returns
     -------
-    c : list of M complex arrays
-    f : reconstructed signal
-    relres : final residual
-    niter : total iterations (maxit × N)
+    c : coefficients with the reconstructed phase (array, or list per channel)
+    f : reconstructed signal (``Ls`` samples if given, else ``L``)
+    relres : float -- ``|| |T f| - s || / ||s||`` for the full-length signal
+        the coefficients synthesise, ``T`` the analysis.  Until v0.1.1 this
+        was ``|| |c| - s || / ||s||``, which is zero by construction; PHASERET's
+        own ``rtisila`` takes the modulus of the complex difference instead,
+        which measures the phase.
+    niter : int -- updates a frame receives while it crosses the window,
+        ``maxit * (lookahead + 1)`` (fewer for the first ``lookahead``
+        frames).  PHASERET documents this and returns ``maxit * lookahead``.
+
+    Notes
+    -----
+    Near the end of the signal the window shrinks; PHASERET's simulation
+    wraps round and reads the first frames again as look-ahead.  The Gabor
+    form reproduces PHASERET, wrap included.
 
     References
     ----------
-    .. [rtisila-gnann] D. Gnann and M. Spiertz, "Improving PGHI-based phase reconstruction by using a
-           stronger signal model," DAFx-19, 2019.
-    .. [rtisila-zhu] N. Zhu, K. Müller, and H. Liebig, "Real-time iterative spectrogram inversion with
-           look ahead," IEEE/ACM Trans. Audio, Speech, Lang. Process., vol. 29,
-           pp. 2601–2609, 2021.
+    .. [rtisila-zhu] X. Zhu, G. T. Beauregard, and L. L. Wyse, "Real-time
+           signal estimation from modified short-time Fourier transform
+           magnitude spectra," IEEE Trans. Audio, Speech, Lang. Process.,
+           vol. 15, no. 5, pp. 1645-1653, 2007.
     """
-    M = len(g)
-    s_abs = [np.abs(np.asarray(s)).ravel() for s in s_list]
+    if _is_window(g):
+        if M is None:
+            raise TypeError(
+                "rtisila: a window needs the number of channels M "
+                "(rtisila(s, g, a, M)); pass a list of filters for a filter bank"
+            )
+        _gabor_only(
+            "rtisila",
+            L=(L, None),
+            real=(real, None),
+            frame_hop=(frame_hop, None),
+            startphase=(startphase, "zhu"),
+            seed=(seed, None),
+        )
+        from ._rtisila_gabor import rtisila_gabor
 
-    from ..filterbanks._utils import normalise_a
+        return rtisila_gabor(s_list, g, a, M, Ls=Ls, maxit=maxit, lookahead=lookahead, phase=phase)
+    if M is not None:
+        raise TypeError(
+            "rtisila: M is the number of channels of a Gabor window; a filter bank has its own"
+        )
+    _bank_only("rtisila", phase=(phase, "freqinv"))
+    from ._rtisila_fb import rtisila_fb
 
-    a_norm = normalise_a(a, M)
-
-    N = [len(s) for s in s_abs]
-    if L is None:
-        afrac = a_norm[:, 0] / a_norm[:, 1]
-        L = int(round(N[0] * afrac[0]))
-
-    if real:
-        gd = filterbankdual(g, a_norm, L)
-    else:
-        gd = filterbankdual(g, a_norm, L, real=False)
-
-    if lookahead is None:
-        lookahead = 2
-
-    # Initialise coefficients
-    if startphase == "rand":
-        rng = np.random.default_rng(seed)
-        c = [s * np.exp(2j * np.pi * rng.random(len(s))) for s in s_abs]
-    else:
-        c = [s.copy().astype(complex) for s in s_abs]
-
-    # For uniform filterbanks, process frame-by-frame.
-    # For non-uniform, we process by time step.
-    a_int = a_norm[:, 0].astype(int)
-
-    # Build time-sorted events
-    events = []
-    for m in range(M):
-        for n in range(N[m]):
-            events.append((n * a_int[m], m, n))
-    events.sort(key=lambda x: (x[0], x[1]))
-
-    # Group by time
-    time_groups = []
-    i = 0
-    while i < len(events):
-        t = events[i][0]
-        group = []
-        while i < len(events) and events[i][0] == t:
-            group.append(events[i])
-            i += 1
-        time_groups.append((t, group))
-
-    n_groups = len(time_groups)
-
-    # Process each time group with look-ahead
-    for gi in range(n_groups):
-        la_end = min(gi + lookahead + 1, n_groups)
-
-        for _it in range(maxit):
-            # Synthesise from current coefficients
-            f_iter = ifilterbank(c, gd, a_norm, Ls=L, real=real)
-
-            # Re-analyse
-            c_new = filterbank(np.real(f_iter) if real else f_iter, g, a_norm, L=L)
-
-            # Phase update: only for frames in [gi, la_end)
-            for gj in range(gi, la_end):
-                _, group = time_groups[gj]
-                for _t, m, n in group:
-                    cn = np.asarray(c_new[m]).ravel()
-                    phase = np.angle(cn[n])
-                    c[m][n] = s_abs[m][n] * np.exp(1j * phase)
-
-    # Final synthesis
-    f = ifilterbank(c, gd, a_norm, Ls=Ls or L, real=real)
-    if real:
-        f = np.real(f)
-
-    # Compute final residual
-    s_flat = np.concatenate(s_abs)
-    c_flat = np.concatenate([np.abs(np.asarray(cm).ravel()) for cm in c])
-    norm_s = np.linalg.norm(s_flat)
-    relres = float(np.linalg.norm(c_flat - s_flat) / norm_s) if norm_s > 0 else 0.0
-
-    return c, f, relres, maxit * n_groups
+    return rtisila_fb(
+        list(s_list),
+        g,
+        a,
+        L=L,
+        Ls=Ls,
+        real=bool(real),
+        maxit=maxit,
+        lookahead=lookahead,
+        frame_hop=frame_hop,
+        startphase=startphase,
+        seed=seed,
+    )

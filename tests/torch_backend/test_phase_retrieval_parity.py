@@ -23,11 +23,12 @@ The regression section at the bottom covers the v0.1.1 torch fixes: ``legla``
 reported ``|Re(c)|`` as its residual, ``decolbfgs`` could not be placed in an
 autograd graph at all, and the whole backend upcast float32 to float64.
 
-Cost note: the RTISI family costs seconds per call even on this deliberately
-tiny fixture (``FS=4000``, ``Ls=512``, 23 channels), and each parity test runs
-both backends — about 15 s for the three of them.  They are not marked ``slow``
-on purpose: CI runs ``-m "not slow"``, and marking them would leave those
-modules untested.
+The RTISI-LA family is the exception to axes 1-3: its torch functions run
+the NumPy implementation and convert (``torch/phase/_rtisila_delegate.py``),
+so parity holds by construction and the tests here guard the conversion --
+the channel layout, the device, and the caller's dtype on the way out.  (The
+torch port they replaced carried no gradient either: its phase updates were
+in-place assignments.)
 """
 
 from __future__ import annotations
@@ -110,11 +111,10 @@ def test_legla_reconstructed_signal_matches_numpy(method, fbp):
 
 @pytest.mark.parametrize("name", ["rtisila", "lertisila", "gsrtisila"])
 def test_rtisi_family_matches_numpy(name, fbp):
-    """The real-time family is bit-comparable across backends.
+    """The real-time family is the same across backends.
 
-    These are the most intricate members — per-frame loops with lookahead — and
-    the most likely to drift between two hand-written implementations, so parity
-    here is worth the seconds it costs.
+    The torch functions run the NumPy implementation, so this guards the
+    conversion of the arguments and results rather than a second algorithm.
     """
     import cool_frames.numpy.phase as NP
     import cool_frames.torch.phase as TP

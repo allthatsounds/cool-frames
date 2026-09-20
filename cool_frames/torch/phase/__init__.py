@@ -14,8 +14,9 @@ putting a phase step inside a training graph:
   **not** differentiable: the traversal order is a discrete function of the
   magnitudes. Its output can still be frozen as a constant phase, with the
   gradient flowing through the magnitude factor into ``ifilterbank``.
-* :func:`decolbfgs` runs its inner LBFGS under ``torch.no_grad()``, and
-  :func:`gsrtisila` drops to NumPy internally; neither carries a gradient.
+* :func:`decolbfgs` runs its inner LBFGS under ``torch.no_grad()``, and the
+  RTISI-LA family (:func:`rtisila`, :func:`gsrtisila`, :func:`lertisila`) runs
+  the NumPy implementation; none of them carries a gradient.
 
 Analysis and synthesis themselves (``cool_frames.torch.filterbanks``) are fully
 differentiable, with the exception of ``ifilterbankiter``.

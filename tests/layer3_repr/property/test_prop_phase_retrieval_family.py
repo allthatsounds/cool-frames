@@ -39,9 +39,13 @@ Properties verified
 
 Cost
 ----
-``rtisila``, ``lertisila`` and ``gsrtisila`` are two to three orders of
-magnitude slower than the rest of the family (seconds per call, versus tens of
-milliseconds), and their cost grows with signal length.  The fixture is
+``rtisila``, ``lertisila`` and ``gsrtisila`` update each frame ``maxit`` times
+in each of the ``lookahead + 1`` steps it spends in their window, so at equal
+``maxit`` they do several times the work of the rest of the family: on this
+fixture 0.04 s at ``maxit=1`` and 0.6 s at 20, against 0.05 s for 20 GLA
+iterations (``lertisila`` also builds its kernel on the first call, 0.3 s).
+Until they were rewritten as PHASERET's algorithm they took seconds per call,
+re-synthesising the whole signal on every update.  The fixture is
 deliberately tiny — ``FS=4000``, ``Ls=512``, 23 channels — and those three
 appear only in the cheap structural properties.  Do not enlarge the fixture
 without re-timing.
@@ -67,7 +71,7 @@ PROJECTING_METHODS = ["gla", "fgla", "legla", "flegla", "lertisila", "gsrtisila"
 # The subset that is cheap enough to call several times per test.
 FAST_METHODS = ["gla", "fgla", "legla", "flegla", "decolbfgs"]
 
-# Seconds-per-call methods; kept out of the repeated-call properties, but
+# The costlier methods; kept out of the repeated-call properties, but
 # deliberately NOT marked ``slow``: CI runs ``-m "not slow"``, and marking them
 # would leave three whole modules at their pre-existing ~8 % coverage.
 RTISI_METHODS = ["rtisila", "lertisila", "gsrtisila"]
@@ -167,7 +171,7 @@ def test_output_structure_matches_analysis(method, fb):
 @pytest.mark.requires_impl
 @pytest.mark.parametrize("method", RTISI_METHODS)
 def test_output_structure_matches_analysis_rtisi_family(method, fb):
-    """Same structural contract for the RTISI family (~2 s per call).
+    """Same structural contract for the RTISI family.
 
     These three get one structural test and one constraint test each rather than
     appearing throughout the file — enough to exercise the module end to end
