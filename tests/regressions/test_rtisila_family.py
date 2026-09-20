@@ -6,8 +6,10 @@ rewrite as PHASERET's algorithm.
 
 What was wrong
 --------------
-The W52 benchmark could not finish ``rtisila`` on a 3 s excerpt (22.05 kHz,
-Gabor bank 1024/256) in 300 s.  Reading the code showed why, and more:
+The W52 benchmark recorded ``rtisila`` as not finishing a 3 s excerpt
+(22.05 kHz, Gabor bank 1024/256) in 300 s.  That was the benchmark's
+timeout helper deadlocking on the returned signal (it took about a minute),
+but reading the code showed it was not RTISI-LA:
 
 - every update of every frame re-synthesised and re-analysed the *whole*
   signal, ``maxit`` times per time instant;
@@ -152,8 +154,8 @@ def test_gabor_relres_is_the_consistency_and_niter_counts_updates():
 
 def test_gabor_form_is_fast_at_benchmark_scale():
     """W52's T6 case: 65536 samples, Hann 1024, a = 256.  The filter-bank
-    code this replaced did not finish in 300 s; PHASERET's algorithm on a
-    Gabor frame costs a few FFTs of M samples per update."""
+    code this replaced took about a minute; PHASERET's algorithm on a Gabor
+    frame costs a few FFTs of M samples per update."""
     from cool_frames.filters import firwin
     from cool_frames.numpy.gabor import dgtreal
     from cool_frames.numpy.phase import rtisila
