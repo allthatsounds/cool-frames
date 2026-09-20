@@ -959,6 +959,109 @@ The synchrosqueezing property test passed centre frequencies in Hz where the
 function takes them normalised; it now normalises them.
 
 
+### The benchmark's open items, and three pinned ones, closed
+
+Five things W52 measured and left open, and three reporting defects the
+coverage pass pinned rather than fixed. PGHI's pure-Python heap integration
+(49x tifresi's numba) is still open.
+
+- **`gabfilters` is exact.** Its filters are uniform but not painless at the
+  default lattice (support M bins against L/a), so the closed-form dual was
+  an approximation: round trip 4.9e-4 with a Hann window, 0.23 with a
+  Gaussian. `filterbankdual`, `filterbanktight` and `filterbankbounds` now
+  treat any uniform bank that is not painless as LTFAT's
+  `filterbank(real)dual/tight/bounds` do: the frame operator splits into
+  `L/a` blocks of `a x a` over the bins `w - jN`, each inverted (or its
+  inverse square root taken, or its eigenvalues read) exactly, with the
+  real-signal mirror folded in for `real=True`. Round trips 5.9e-16 (Hann)
+  and 7.7e-16 (Gauss), tight frames 3.6e-15, bounds equal to the SVD's.
+  The blocks are sparse and are accumulated from the non-zero bins alone:
+  3 s for the dual of the benchmark's 513-channel bank, 6 s for the tight
+  frame, 2.6 s for the bounds. The exact dual is wider than the
+  approximation (4817 bins per channel against 1024, down to 1e-16 of its
+  peak), so `ifilterbank` with it costs 73 ms on that bank against 30 ms:
+  exactness makes each GLA iteration slower. Uniform FIR banks get their
+  exact dual the same way, and a uniform bank that is not a frame (a
+  single-sided bank with `real=False`) gets a pseudo-inverse, as in LTFAT,
+  instead of an error, eigenvalues below 1e-10 of the frame operator's scale
+  counting as zero: kept, the 1e-17 tails such a bank has at negative
+  frequencies made its synthesis followed by analysis wrong by 31 % where
+  it should be a projection. `gabfilters` no longer warns. **Behavioural change:** the dual,
+  tight frame and bounds of every uniform non-painless bank change (the
+  bounds of the default `gabfilters` bank were those of the diagonal
+  approximation, kappa 1.0001 against the exact 1.0222 on the test bank).
+
+- **The canonical dual is cached**, as are LEGLA's kernels. Both are keyed by
+  the content of the evaluated filters (a bank changed in place, or rebuilt
+  with equal content, is looked up correctly) and returned as copies. `gla`
+  and `legla` had recomputed the dual on every call (675 ms per call for the
+  benchmark's bank, before the exact dual made it 3 s); a cached one takes
+  35 ms, and a repeated `legla` on the default ERB bank goes from 6.9 s to
+  0.1 s.
+
+- **`cool_frames.gabor` has LTFAT's short-window algorithm.** `dgt`, `idgt`,
+  `dgtreal` and `idgtreal` use the filter-bank DGT (`comp_dgt_fb` /
+  `comp_idgt_fb`) whenever the window's support is shorter than the signal,
+  as LTFAT does, and the long-window factorisation only otherwise:
+  analysis plus synthesis at 65536 / 1024 / 256 from 121 ms to 7-14 ms
+  (ltfatpy 3.0 ms), identical to the factorisation to 1e-16 over 300 random
+  lattices and to LTFAT in Octave. `gabdual` and `gabtight` of a painless
+  window are now `g / d` and `g / sqrt(d)` exactly, zero where `g` is, which
+  keeps a dual computed at length `L` on the fast path.
+
+- **RTISI-LA is PHASERET's algorithm, and finishes.** W52 could not run
+  `rtisila` on a 3 s excerpt in 300 s. Every update of every frame
+  re-synthesised and re-analysed the whole signal, future frames included
+  with zero phase (so it was not causal), frames were grouped by the
+  numerator of a fractional hop, `lertisila` used full transforms instead
+  of Le Roux's kernel and `gsrtisila` had none of Gnann and Spiertz's
+  windows. The family is rewritten:
+  - `rtisila(s, g, a, M)`, `gsrtisila(...)` and `lertisila(...)` with a
+    window run line-by-line ports of PHASERET's algorithms, with Zhu's and
+    Gnann and Spiertz's windows and Le Roux's kernels, checked against
+    PHASERET in Octave (`tests/phaseret_reference/`): the benchmark's
+    excerpt in 0.3 s. Where PHASERET's MATLAB fallback and its C library
+    differ, the C library is followed.
+  - With a filter bank the same schedule runs over frames of `frame_hop`
+    samples, the partial reconstruction held as its spectrum and updated
+    and re-analysed exactly, and the newest frame analysed with Zhu's
+    windows built from the bank's atoms; on a bank that is a Gabor frame
+    this reproduces PHASERET. The benchmark's 513-channel bank takes about
+    a minute (6 ms an update, most of it the exact dual's 4800 bins per
+    channel). `lookahead` defaults to PHASERET's `ceil(M/a) - 1` with the
+    window length replaced by the longest atom's duration (DC and Nyquist
+    complements left out); `frame_hop` to the bank's hop.
+  - The torch functions run the NumPy implementation.
+  **Behavioural change:** different (better) results, `startphase`
+  defaulting to PHASERET's (the newest frame starts empty), and
+  `lookahead`'s default derived from the bank rather than 2.
+
+- **`relres` of the RTISI-LA family is the consistency**
+  `|| |A f| - s || / ||s||` of the returned signal; it was zero by
+  construction. (PHASERET's own `rtisila` and `gsrtisila` take the norm of
+  the complex difference, a phase measure.) `niter` is the number of updates
+  a frame receives, `maxit * (lookahead + 1)`; it counted time instants.
+
+- **`findbestgauss` exists, and is now ported.** It is a local function in
+  PHASERET's `pghi_findgamma.m`. The port built its candidate Gaussians as
+  `ah**pi` at the measured half-width instead of `ah`, and skipped cutting
+  the window to its width at 1e-10 of the peak, so the search pinned at the
+  top of its range and came out 7-45 % above the table. It now gives
+  PHASERET's constants (to 1e-15, with LTFAT's windows) and converges to the
+  table (0.1-0.2 % at 1024 taps). A numeric window with a different `gl` is
+  refused.
+
+- **`wpghi_findgamma` converts a time-frequency ratio**: with `tfr` (a
+  scalar, one per channel, or a callable of `L`) and `L` it returns
+  `gamma = tfr * L`, PHASERET's conversion for `{'gauss', tfr}`. It used to
+  accept `tfr` and ignore it.
+
+Found along the way and recorded as open in `DEFECT_REGISTER.md`: `firwin`
+keeps the sample at `+-gl/2` of an even-length window whose edge is not
+zero (Hamming, Blackman2, Nuttall01), where LTFAT 2.6 sets it to zero, and
+`middlepad` splits that sample when extending, where LTFAT's `fir2long` does
+not.
+
 ## 0.1.0
 
 First public release.

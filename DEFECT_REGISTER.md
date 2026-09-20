@@ -9,8 +9,10 @@ remainder does not have to be rediscovered.
 
 Every defect the audit recorded is now fixed, as are the backend API
 divergences found afterwards. The comparative benchmark of 2026-09-19 added
-thirteen more, all fixed, and five still open (mostly speed); both lists are
-in the section of that name below.
+seventeen more, all fixed, and one still open (PGHI's heap integration, a
+speed item); both lists are in the section of that name below, with two
+LTFAT discrepancies found while fixing them. The three reporting defects the
+coverage pass pinned rather than fixed are fixed too.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
 not yet fixed.
@@ -23,7 +25,7 @@ not yet fixed.
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
-| 1 | `filterbanks/_frame.py` | `filterbankdual`/`filterbanktight` returned an **all-zero bank** for any FIR filterbank (the `else` fallback emitted the zero filter), so `ifilterbank` reconstructed exactly `0.0` while `filterbankbounds` still reported a valid frame | silent 100 % error → explicit `ValueError` naming the channel, explaining that a time-limited filter is full-band and so can never satisfy the painless condition, and pointing at `ifilterbankiter` |
+| 1 | `filterbanks/_frame.py` | `filterbankdual`/`filterbanktight` returned an **all-zero bank** for any FIR filterbank (the `else` fallback emitted the zero filter), so `ifilterbank` reconstructed exactly `0.0` while `filterbankbounds` still reported a valid frame | silent 100 % error → explicit `ValueError` naming the channel, explaining that a time-limited filter is full-band and so can never satisfy the painless condition, and pointing at `ifilterbankiter`. Since B14 a *uniform* FIR bank gets its exact dual instead (round trip < 1e-13); a non-uniform one is still refused |
 | 2 | `filterbanks/_utils.py` | FIR synthesis read the filter `offset` into `skip` and **never used it**, so synthesis was not the adjoint of analysis. The "frame operator" came out non-symmetric (symmetry error 1.33) with negative eigenvalues, and CG diverged (relres 4.6e12) | adjointness error 8e-15; CG on a κ=99 FIR bank now converges to 2e-4 |
 | 3 | `filterbanks/_utils.py` | Same block: `np.atleast_2d` turned a 1-D `(N,)` coefficient array into a `(1, N)` **row**, so one scalar was broadcast across every bin | 1-D and 2-D input now agree exactly (was 59.3 apart) |
 | 4 | `torch/filterbanks/_core.py` | `ifilterbank` **returned early** whenever any FIR channel was present, discarding every band-limited and full-length channel and skipping the real-mode fold | 125 % error vs NumPy → 5.4e-16 |
@@ -438,10 +440,22 @@ minimum at 0.285 and is no more accurate for it, so the pinning is not the whole
 story. The module already calls itself a "simplified port".
 
 Left as-is and **pinned in both directions**:
-`test_numeric_search_still_disagrees_with_the_table` asserts the ratio is in
-`[1.0, 1.5)`, so the 6-10x error cannot return *and* a genuine improvement fails
-the test rather than passing silently. Closing this properly needs reference
-values from `findbestgauss.m`, which is a porting job, not a patch.
+`test_numeric_search_still_disagrees_with_the_table` asserted the ratio was in
+`[1.0, 1.5)`, so the 6-10x error could not return *and* a genuine improvement
+would fail the test rather than pass silently.
+
+**FIXED (2026-09-20).** `findbestgauss` is not a file of its own but a local
+function in PHASERET's `pghi_findgamma.m`. The port had built its candidate
+Gaussians as `exp(-pi l^2 / ((w/2)^2 / -ln ah))`, which is `ah**pi` at half
+the measured width instead of `ah` (PHASERET uses
+`pgauss(L, 'inf', 'width', w, 'atheight', ah)`), and had skipped the first
+step, cutting the window to its width at 1e-10 of its peak (the `gl` the
+constant is scaled by). Ported line by line it gives PHASERET's `gamma` to
+1.7e-15 for 40 windows in Octave (given LTFAT's windows; see the `firwin`
+discrepancy below), finds interior heights (0.27-0.52), and converges to the
+table: 0.1-0.2 % above it at 1024 taps, 0.5-1.4 % at 256. The pinned tests are
+replaced by `test_numeric_search_is_phaserets` and
+`test_numeric_search_converges_to_the_table`.
 
 ### `relres` from the RTISIL family is not a convergence measure
 
@@ -455,10 +469,17 @@ decibel of them on the metric that matters — honestly reports 0.249. Selecting
 method by `relres` reads the RTISIL family as fifteen orders of magnitude
 better. `niter` is likewise `maxit * n_frames`, so four iterations report as 256.
 
-Not fixed: redefining `relres` changes a public return contract, and the choice
-of what it should measure is yours. Pinned by
-`test_relres_is_not_a_convergence_measure`, which asserts the *current* wrong
-behaviour so that changing it is deliberate and visible.
+Not fixed then: redefining `relres` changes a public return contract, and the
+choice of what it should measure was yours. It was pinned by
+`test_relres_is_not_a_convergence_measure`.
+
+**FIXED (2026-09-20)**, with the rewrite of the family (B16): `relres` is
+`|| |A f| - s || / ||s||` for the signal the returned coefficients synthesise,
+and `niter` is `maxit * (lookahead + 1)`, the updates a frame receives.
+PHASERET's own `rtisila` and `gsrtisila` compute `norm(dgtreal(f) - s)`, the
+complex difference (1.41 for noise), so they measure the phase rather than
+the consistency; its `lertisila` gets it right. Held by
+`test_relres_is_the_consistency` (both backends, all three routines).
 
 ### `wpghi_findgamma` ignores its `tfr` argument
 
@@ -467,6 +488,12 @@ time-frequency ratio; the body is `return pghi_findgamma(g, **kwargs)` and
 `tfr` is never read. A caller who computes one and passes it in gets the plain
 Gabor answer with no indication. Pinned rather than fixed — making `tfr` mean
 something is a design decision about per-channel gamma, not a typo.
+
+**FIXED (2026-09-20).** `wpghi_findgamma(tfr=tfr, L=L)` returns
+`gamma = tfr * L` (a scalar, one per channel, or from a callable of `L`) and
+`Cg = NaN`: the Gaussian `pgauss(L, tfr)` is `exp(-pi l^2 / (tfr L))`, and
+PHASERET converts `{'gauss', tfr}` the same way. A window and a `tfr` together
+are refused.
 
 ### Why codecov read 76 % when the library measures 85 %
 
@@ -540,6 +567,12 @@ profiling of its slow rows. Regression tests:
 on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8;
 B11 to B13 are speed: the tests of B11 and B12 pin the results to the old
 code's, and B13 needs no test of its own, B12's cache test covering it).
+B14-B17 were fixed after the published run (at `f5edebe`); their tests are
+at the end of `test_benchmark_findings.py` (B14,
+B15: the dual is the pseudo-inverse of the analysis for arbitrary
+coefficients, the tight frame and bounds match the dense operator, the cache
+recomputes only on new content), in `test_rtisila_family.py` (B16, against
+PHASERET) and at the end of `tests/gabor/test_gabor.py` (B17).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -556,24 +589,39 @@ code's, and B13 needs no test of its own, B12's cache test covering it).
 | B11 | `phase/_reassign.py`, torch equivalent | The kernel was a per-coefficient Python loop (LTFAT's MATLAB, line by line), O(M) per coefficient; after B1 it often walked the long way round | vectorised, bit-identical to the loop: 4.1 s → 0.12 s on the benchmark's 513-channel Gabor bank |
 | B12 | `filters/_edge_filters.py` | Every evaluation of a DC or Nyquist complement re-summed the whole inner bank, several times per design | cached per length and inner-bank state: wavelet design plus dual 4.8 s → 1.2 s, constant-Q 3.6 s → 1.2 s; filters bit-identical |
 | B13 | `filterbanks/_core.py`, via `filters/_edge_filters.py` | The README quick-start path, `filterbank()` with filters that are not prepared by `filterbankwin()`, re-evaluates every filter on every call, and each evaluation of a DC or Nyquist complement re-summed the whole bank | 8.8–155x slower than prepared filters at `1f581bc` (W52's T2 constant-Q and T3 auditory banks, paired timing) → 1.2–1.3x at `f5edebe`, the cost of evaluating the filters at all; identical output. No code change of its own: B12's cache removed it |
+| B14 | `filterbanks/_frame.py` | A uniform bank that is not painless -- `gabfilters` at its default lattice, any uniform FIR bank -- got the painless formula's diagonal approximation for its dual, tight frame and bounds | `gabfilters` round trip 4.9e-4 (Hann), 0.23 (Gauss) → 5.9e-16, 7.7e-16 by LTFAT's polyphase construction (per coset of bins `w - jN`, an `a x a` block inverted, square-rooted or diagonalised exactly); tight frames 3.6e-15; bounds equal to the SVD's. A singular block (not a frame, e.g. a single-sided bank with `real=False`) gets a pseudo-inverse, eigenvalues below 1e-10 of the operator's scale counting as zero. `gabfilters`' warning removed. Cost: the exact dual has 4817 bins per channel against 1024, so `ifilterbank` takes 73 ms against 30 ms on that bank |
+| B15 | `filterbanks/_frame.py`, `phase/_leglakernel.py` | `gla`/`legla` recomputed the canonical dual on every call; `legla` rebuilt its kernel too | cached by the content of the evaluated filters, returned as copies: a repeated call on the benchmark's bank 35 ms for the dual (3 s to compute exactly); `legla` on the ERB bank 6.9 s → 0.1 s |
+| B16 | `phase/_rtisila.py`, `_gsrtisila.py`, `_lertisila.py`, torch equivalents | RTISI-LA did not finish a 3 s excerpt in 300 s: every update re-synthesised and re-analysed the whole signal, *future frames included* (not causal); frames were grouped by the numerator of a fractional hop; `lertisila` had no kernel and `gsrtisila` no windows; the references cited other papers | rewritten as PHASERET's algorithm. With a window (`rtisila(s, g, a, M)`): line-by-line ports of all three, checked against PHASERET in Octave (1e-9), 0.3 s for the excerpt. With a filter bank: frames of `frame_hop` samples, the partial reconstruction held as its spectrum and updated exactly, Zhu's windows from the bank's atoms (reproduces PHASERET on a bank that is a Gabor frame); about a minute on the benchmark's 513-channel bank. Torch runs the NumPy code |
+| B17 | `gabor/_dgt.py`, `gabor/_fb.py` | `gabor.dgtreal`/`idgtreal` used the long-window factorisation for every window, where LTFAT uses the filter-bank algorithm for any window shorter than the signal | analysis + synthesis at 65536/1024/256: 121 ms → 7-14 ms (ltfatpy 3.0 ms); equal to the factorisation to 1e-16 on 300 random lattices, and to LTFAT. `gabdual`/`gabtight` of a painless window are `g/d`, `g/sqrt(d)` exactly |
 
 ### Still open, from the same benchmark
 
 Verified, not fixed here. Numbers from W52's `results/t12_findings.json`
 (the published run, at `f5edebe`) unless noted.
 
-- **`gabfilters` is not exact** at M = 1024 (Hann): round trip 4.9e-4, Gauss
-  window 0.23, because the closed-form dual assumes band-limited filters. Known
-  in kind (#13 made it warn); `gabor.dgtreal` is exact on the same frames.
-- **`gla` / `legla` recompute the canonical dual on every call** (675 ms for
-  `gabfilters` 1024/256 in the median of nine calls, before the first
-  iteration; in some runs the median was 1.9 s).
-- **RTISI-LA does not finish** a 3 s excerpt (22.05 kHz, Gabor 1024/256)
-  within 300 s.
 - **PGHI's heap integration is pure Python**: 2075 ms per excerpt against
   42 ms for tifresi's numba version (49x).
-- **`gabor.dgtreal` / `gabdual` lack LTFAT's short-window algorithm**:
-  analysis plus synthesis 122 ms against 3.0 ms for ltfatpy.
+
+Fixed since (B14-B17 above): `gabfilters` exactness, the dual recomputed on
+every call, RTISI-LA not finishing, the short-window DGT.
+
+### LTFAT discrepancies found while fixing them
+
+Verified against LTFAT 2.6.0 in Octave, not fixed here.
+
+- **`firwin` keeps the sample at `+-gl/2` of an even-length window**, where
+  LTFAT sets it to zero (its `long2fir` convention, which makes the window
+  whole-point symmetric). The windows whose edge is not zero differ there:
+  Hamming by 0.08, Nuttall01 by 0.0767, Blackman2 by 0.0069 (of a peak of
+  1), at every even length. Everything computed from such a window differs
+  accordingly -- `pghi_findgamma` of a 256-tap Hamming by 0.07 %, and
+  `gabdual` refuses to return its FIR dual (an even-length window with a
+  non-zero middle sample has none), which LTFAT's zeroed window has. Hann,
+  Blackman, the triangular, cosine, Nuttall and itersine windows agree.
+- **`middlepad` splits the middle sample of an even-length window when
+  extending it** (LTFAT's behaviour before 2.x); LTFAT 2.6's `fir2long` uses
+  `middlepad(..., 'hp')`, which does not. 5 % on a random 96-tap window;
+  none on `firwin` windows whose middle sample is zero.
 
 ## Minor, recorded for completeness
 
