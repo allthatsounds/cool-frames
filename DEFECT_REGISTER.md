@@ -9,7 +9,7 @@ remainder does not have to be rediscovered.
 
 Every defect the audit recorded is now fixed, as are the backend API
 divergences found afterwards. The comparative benchmark of 2026-09-19 added
-twelve more, all fixed, and six still open (mostly speed); both lists are
+thirteen more, all fixed, and five still open (mostly speed); both lists are
 in the section of that name below.
 
 Legend: **FIXED** — corrected and covered by the test suite · **OPEN** — verified,
@@ -534,10 +534,12 @@ Gnann-Spiertz variant is only a variant if you ask for one.
 ## Found by the comparative benchmark, 2026-09-19
 
 The benchmark against eleven other time-frequency libraries (research paper
-W52, run at `1f581bc`) and the profiling of its slow rows. Regression tests:
+W52, first run at `1f581bc`; the published run is at `f5edebe`) and the
+profiling of its slow rows. Regression tests:
 `tests/regressions/test_benchmark_findings.py` and `..._torch.py`, which fail
 on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8;
-B11 and B12 are speed, and their tests pin the results to the old code's).
+B11 to B13 are speed: the tests of B11 and B12 pin the results to the old
+code's, and B13 needs no test of its own, B12's cache test covering it).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -553,26 +555,25 @@ B11 and B12 are speed, and their tests pin the results to the old code's).
 | B10 | `filters/_painless.py`, `filterbanks/_frame.py`, `_utils.py`, `_waveletfilters.py` | Painless was decided by counting bins (non-zero since B5, above 1e-10 before), which cannot separate a live bin too many from negligible tails | two-sided wavelet banks: `filterbankdual` warned on 50 of 64 settings, and fractional ones at 22050 Hz / 1024 reconstructed to 8.5e-5-7.9e-4 → decided by `aliasing` (products of bins N apart, tolerance 1e-15): all 64 exact at 5.2e-16, no warning |
 | B11 | `phase/_reassign.py`, torch equivalent | The kernel was a per-coefficient Python loop (LTFAT's MATLAB, line by line), O(M) per coefficient; after B1 it often walked the long way round | vectorised, bit-identical to the loop: 4.1 s → 0.12 s on the benchmark's 513-channel Gabor bank |
 | B12 | `filters/_edge_filters.py` | Every evaluation of a DC or Nyquist complement re-summed the whole inner bank, several times per design | cached per length and inner-bank state: wavelet design plus dual 4.8 s → 1.2 s, constant-Q 3.6 s → 1.2 s; filters bit-identical |
+| B13 | `filterbanks/_core.py`, via `filters/_edge_filters.py` | The README quick-start path, `filterbank()` with filters that are not prepared by `filterbankwin()`, re-evaluates every filter on every call, and each evaluation of a DC or Nyquist complement re-summed the whole bank | 8.8–155x slower than prepared filters at `1f581bc` (W52's T2 constant-Q and T3 auditory banks, paired timing) → 1.2–1.3x at `f5edebe`, the cost of evaluating the filters at all; identical output. No code change of its own: B12's cache removed it |
 
 ### Still open, from the same benchmark
 
-Verified, not fixed here. Numbers from W52's `results/t12_findings.json` unless
-noted.
+Verified, not fixed here. Numbers from W52's `results/t12_findings.json`
+(the published run, at `f5edebe`) unless noted.
 
 - **`gabfilters` is not exact** at M = 1024 (Hann): round trip 4.9e-4, Gauss
   window 0.23, because the closed-form dual assumes band-limited filters. Known
   in kind (#13 made it warn); `gabor.dgtreal` is exact on the same frames.
-- **The README quick-start path re-evaluates every filter on every call**:
-  `filterbank()` is 8–189x slower than with filters prepared once by
-  `filterbankwin()`, identical output.
-- **`gla` / `legla` recompute the canonical dual on every call** (635 ms for
-  `gabfilters` 1024/256, before the first iteration).
+- **`gla` / `legla` recompute the canonical dual on every call** (675 ms for
+  `gabfilters` 1024/256 in the median of nine calls, before the first
+  iteration; in some runs the median was 1.9 s).
 - **RTISI-LA does not finish** a 3 s excerpt (22.05 kHz, Gabor 1024/256)
   within 300 s.
-- **PGHI's heap integration is pure Python**: 1992 ms per excerpt against
-  40 ms for tifresi's numba version.
+- **PGHI's heap integration is pure Python**: 2075 ms per excerpt against
+  42 ms for tifresi's numba version (49x).
 - **`gabor.dgtreal` / `gabdual` lack LTFAT's short-window algorithm**:
-  analysis plus synthesis 112 ms against 2.5 ms for ltfatpy.
+  analysis plus synthesis 122 ms against 3.0 ms for ltfatpy.
 
 ## Minor, recorded for completeness
 
