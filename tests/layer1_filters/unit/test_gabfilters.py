@@ -107,17 +107,31 @@ class TestFilterDescriptors:
 
 
     def test_edge_channels_carry_the_real_mode_scaling(self):
-        """The edge scaling is what makes the bank tight.
+        """The edge scaling is what flattens the frame response.
 
-        Without it a 4x-overlap Hann DGT — an exactly tight frame — read
-        kappa = 1.667, with a 67 % response spike at DC and Nyquist.
+        Without it a 4x-overlap Hann bank read a 67 % response spike at DC and
+        Nyquist (kappa = 1.667 from the diagonal response).  With it the
+        diagonal response is flat to 1e-3.  The bank itself is not tight: its
+        filters are the Hann DGT's truncated to M bins, which is not painless
+        at this lattice, and its exact condition number -- from the polyphase
+        blocks, equal to the dense SVD -- is 1.022.  Until the uniform branch
+        of ``filterbankbounds`` existed the diagonal formula reported 1.0001
+        for it, which is what this test used to assert.
         """
-        from cool_frames.numpy.filterbanks import filterbankbounds
+        from cool_frames.numpy.filterbanks import (
+            filterbankbounds,
+            filterbankbounds_svd,
+            filterbankresponse,
+        )
 
         gout, a, _fc, L, _info = gabfilters(16000, _LS, window='hann', a=_A, M=_M)
+        resp = filterbankresponse(gout, a, L, real=True)
+        assert resp.min() > 0
+        assert resp.max() / resp.min() - 1.0 < 1e-3, (
+            f"diagonal response not flat: {resp.max() / resp.min():.4f}")
         A, B = filterbankbounds(gout, a, L)
-        assert A > 0
-        assert abs(B / A - 1.0) < 1e-3, f"expected a tight frame, got kappa = {B / A:.4f}"
+        As, Bs = filterbankbounds_svd(gout, a, L)
+        assert abs(B / A - Bs / As) < 1e-12
 
 
 # ---------------------------------------------------------------------------

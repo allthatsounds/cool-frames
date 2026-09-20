@@ -39,17 +39,36 @@ class TestIterativeInverseImpl:
         assert relres < 1e-9       # honest residual, not a hardcoded 0
         assert niter == 1          # one-step fast path
 
-    def test_nonpainless_gabor_reconstructs_via_cg(self, needs_impl):
-        """A non-painless Gabor frame must reconstruct via CG, not silently fail."""
+    def test_nonpainless_uniform_gabor_takes_the_exact_fast_path(self, needs_impl):
+        """A uniform bank that is not painless now has an exact dual.
+
+        a=64 with M=128 -> filter support (128 bins) > L/a (32): not painless.
+        Until ``filterbankdual`` had LTFAT's uniform (polyphase) branch its
+        dual was the approximate diagonal one and this fell through to CG.
+        """
         from cool_frames.filterbanks import filterbank, ifilterbankiter
         from cool_frames.filters import gabfilters
         Ls = 2048
-        # a=64 with M=128 -> filter freq support (128) > L/a (32): non-painless.
         g, a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
         x = np.random.default_rng(1).standard_normal(Ls)
         xr, relres, niter = ifilterbankiter(filterbank(x, g, a, L), g, a,
                                             Ls=Ls, real=True, maxit=300, tol=1e-9)
-        assert _rel(xr, x) < 1e-6, "non-painless Gabor frame failed to reconstruct"
+        assert _rel(xr, x) < 1e-13
+        assert relres < 1e-13
+        assert niter == 1
+
+    def test_nonpainless_nonuniform_bank_reconstructs_via_cg(self, needs_impl):
+        """A bank that is neither painless nor uniform must reconstruct via CG,
+        not silently fail: the same Gabor filters with alternating hops."""
+        from cool_frames.filterbanks import filterbank, ifilterbankiter
+        from cool_frames.filters import gabfilters
+        Ls = 2048
+        g, _a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
+        a = np.array([64 if m % 2 == 0 else 32 for m in range(len(g))])
+        x = np.random.default_rng(1).standard_normal(Ls)
+        xr, relres, niter = ifilterbankiter(filterbank(x, g, a, L), g, a,
+                                            Ls=Ls, real=True, maxit=300, tol=1e-9)
+        assert _rel(xr, x) < 1e-6, "non-painless frame failed to reconstruct"
         assert relres < 1e-6
         assert niter > 1, "should have fallen through to CG, not the fast path"
 
@@ -58,7 +77,8 @@ class TestIterativeInverseImpl:
         from cool_frames.filterbanks import filterbank, ifilterbankiter
         from cool_frames.filters import gabfilters
         Ls = 2048
-        g, a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
+        g, _a, fc, L, _ = gabfilters(16_000, Ls, window="hann", a=64, M=128)
+        a = np.array([64 if m % 2 == 0 else 32 for m in range(len(g))])
         x = np.random.default_rng(2).standard_normal(Ls)
         # Too few iterations: relres should be reported LARGE, not 0.0.
         xr, relres, niter = ifilterbankiter(filterbank(x, g, a, L), g, a,

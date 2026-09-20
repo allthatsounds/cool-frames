@@ -152,9 +152,9 @@ def legla(
     use_kernel = relthr >= 0 and np.allclose(a_norm[:, 0] / a_norm[:, 1], hops)
 
     if use_kernel:
-        from ...numpy.phase._leglakernel import LeglaKernel
+        from ...numpy.phase._leglakernel import cached_kernel
 
-        _kernel = LeglaKernel(
+        _kernel = cached_kernel(
             g,
             gd,
             hops,

@@ -334,8 +334,9 @@ def gabfilters(fs: float, Ls: int, *,
     # NOTE: this does *not* establish the painless condition, contrary to what
     # this comment claimed before v0.1.1.  Painlessness needs support <= N =
     # L/a, i.e. M <= L/a, which the default lattice (a = M//4) never satisfies:
-    # it needs M**2 <= 4L.  A warning is emitted below when it is violated, in
-    # line with the other designers.
+    # it needs M**2 <= 4L.  It does not need to: the bank is uniform, and
+    # `filterbankdual`/`filterbanktight`/`filterbankbounds` treat a uniform
+    # bank that is not painless exactly, by LTFAT's polyphase construction.
     #
     # We keep Lg_compact = M bins centred on the peak of gnum (which sits
     # at index Lg//2 after the fftshift above).
@@ -377,21 +378,11 @@ def gabfilters(fs: float, Ls: int, *,
     # Hop sizes: uniform, a for every channel (1-D integer array)
     aout = np.full(M2, a, dtype=int)
 
-    # Painless check.  Every other designer warns when its lattice exceeds the
-    # painless limit; gabfilters used to claim (in a comment) that it always
-    # satisfied it, and warned only when redundancy dropped below 1.
-    _support = len(gnum_compact)
-    _N = L / float(a)
-    if _support > _N:
-        warnings.warn(
-            f"gabfilters: filter support ({_support} bins) exceeds the painless "
-            f"limit N = L/a = {_N:.0f}, so `filterbankdual`/`filterbanktight` "
-            f"return an approximate dual (relative reconstruction error ~1e-4 "
-            f"at the defaults, larger for wider windows). The bank is still a "
-            f"well-conditioned frame — use `ifilterbankiter(c, g, a, L)` for "
-            f"exact reconstruction, or choose a <= L/M for a painless lattice.",
-            stacklevel=2,
-        )
+    # No painless warning.  Every other designer warns when its lattice
+    # exceeds the painless limit, because a non-uniform bank's dual is then
+    # approximate; until the uniform branch of `filterbankdual` existed this
+    # one did too (round trip 4.9e-4 at the defaults).  A uniform bank gets
+    # its exact canonical dual whatever its lattice.
 
     # Time-frequency ratio
     gamma = _comp_tfrfromwin(g0)
