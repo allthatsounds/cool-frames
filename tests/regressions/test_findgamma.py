@@ -42,9 +42,22 @@ window vector — which is what ``scipy.signal.get_window`` hands you, and the
 only option for a window not in the table — got the wrong number with no
 warning.
 
-The tests below hold the fix, hold the two copies of the helper to each other,
-and pin the residual gap that the fix does *not* close (see
-``test_numeric_search_still_disagrees_with_the_table``).
+The tests below hold the fix and hold the two copies of the helper to each
+other.
+
+The second defect: ``findbestgauss``
+------------------------------------
+With the ordering fixed the search was still 7-45 % above the table, and its
+best height pinned at 0.8, the top of the range, for four of five windows.
+``findbestgauss`` exists -- a local function in PHASERET's
+``pghi_findgamma.m``, not a file of its own -- and the "simplified port" had
+built its candidate Gaussians as ``exp(-pi l^2 / ((w/2)^2 / -ln ah))``, which
+is ``ah**pi`` at half the measured width instead of ``ah``, and skipped
+PHASERET's first step (cut the window to its width at 1e-10 of the peak, the
+``gl`` the constant is scaled by).  Ported line by line it reproduces
+PHASERET's constants to 1e-15 given LTFAT's windows, finds interior heights,
+and is within 0.2 % of the table at 1024 taps (the table was evidently
+computed at some large length; the search converges to it as ``gl`` grows).
 """
 
 from __future__ import annotations
@@ -211,79 +224,106 @@ def test_numeric_window_infers_its_own_length():
 
 
 # ---------------------------------------------------------------------------
-# What the fix does *not* fix
+# The search is PHASERET's
 # ---------------------------------------------------------------------------
+
+# PHASERET's pghi_findgamma(firwin(name, gl)) in Octave (LTFAT 2.6.0,
+# PHASERET 0.2.5): gamma.  Only windows cool-frames' firwin produces
+# identically to LTFAT's; its even-length Hamming, Blackman2 and Nuttall01
+# keep a non-zero sample at +-gl/2 that LTFAT zeroes (recorded in
+# DEFECT_REGISTER.md), which changes the window and so the constant.
+_PHASERET_GAMMA = {
+    ("hann", 256): 16924.434359588988,
+    ("hann", 255): 16793.275261037976,
+    ("hann", 1024): 269200.23939710855,
+    ("hann", 100): 2613.3068807951104,
+    ("blackman", 256): 11846.872794250598,
+    ("blackman", 1024): 188431.7814448479,
+    ("tria", 256): 18187.524663545588,
+    ("tria", 255): 18046.267198722799,
+    ("sqrthann", 256): 27421.793551177281,
+    ("nuttall", 1024): 134422.71282238577,
+    ("itersine", 100): 3643.3914241262464,
+    ("sqrttria", 255): 31474.519362240248,
+    ("hamming", 255): 19506.118275918707,
+}
+
+
+@pytest.mark.parametrize("key", sorted(_PHASERET_GAMMA))
+def test_numeric_search_is_phaserets(key):
+    """``pghi_findgamma(numeric window)`` gives PHASERET's constant."""
+    from cool_frames.filters import firwin
+
+    name, gl = key
+    gamma, _Cg = pghi_findgamma(firwin(name, gl))
+    assert gamma == pytest.approx(_PHASERET_GAMMA[key], rel=1e-9)
+
+
+@pytest.mark.parametrize("name", ["hann", "blackman", "tria", "sqrthann"])
+def test_numeric_search_converges_to_the_table(name):
+    """The table is the search's answer for a long window: within 0.2 % at
+    1024 taps (was 7-45 % above it at 256 before the port, 0.5-1.6 % now)."""
+    from cool_frames.filters import firwin
+
+    _, cg = pghi_findgamma(firwin(name, 1024))
+    ratio = cg / _PRECOMPUTED_CG[name]
+    assert 1.0 <= ratio < 1.002, f"{name}: Cg {cg:.6f} vs table {_PRECOMPUTED_CG[name]}"
 
 
 @pytest.mark.parametrize("name", TABULATED)
-def test_numeric_search_still_disagrees_with_the_table(name):
-    """Pin the residual gap, which the ordering fix narrows but does not close.
-
-    The table is the precomputed answer to this search, so in a correct port the
-    two would agree.  They do not: after the ordering fix the search comes out
-    7-45 % high (Hann 0.309 vs 0.256, cosine 0.600 vs 0.415).  The cause is
-    visible in ``_findbestgauss`` — its ``atheight`` pins at 0.8, the top of the
-    hardcoded ``atheightrange``, so the minimum is at the boundary and the
-    search has not converged to anything.  The module already flags itself a
-    "simplified port".
-
-    This test asserts the *current* accuracy, both bounds.  The lower bound is
-    the regression guard (the 6-10x error must not come back); the upper bound
-    is the improvement guard — narrowing the search will fail this test, which
-    is the intended prompt to update the numbers deliberately.  Do not relax it
-    to make an unrelated change pass.
-    """
-    _, cg_numeric = pghi_findgamma(_window(name))
-    ratio = cg_numeric / _PRECOMPUTED_CG[name]
-    assert 1.0 <= ratio < 1.5, (
-        f"{name}: numeric search gives Cg={cg_numeric:.5f} against a tabulated "
-        f"{_PRECOMPUTED_CG[name]:.5f} (ratio {ratio:.3f}). Outside [1.0, 1.5) this is "
-        "either the ordering defect returning or an improvement worth recording."
-    )
+def test_findbestgauss_finds_an_interior_minimum(name):
+    """The best height is inside the search range, not pinned at its top
+    (0.8, where the broken Gaussian put four of these five windows)."""
+    ah = _findbestgauss(np.fft.ifftshift(_window(name)))
+    assert 0.02 < ah < 0.79, f"{name}: best height {ah}"
 
 
-def test_findbestgauss_pins_at_the_top_of_its_search_range():
-    """The evidence for the paragraph above, asserted rather than asserted-about.
+def test_findbestgauss_candidates_have_the_measured_width_at_the_height():
+    """The candidate for height ``ah`` and width ``w`` is ``ah`` at ``+-w/2``
+    (``pgauss(..., 'width', w, 'atheight', ah)``); the old one was ``ah**pi``."""
+    from cool_frames.filters import pgauss
 
-    ``_findbestgauss`` searches ``np.arange(0.01, 0.801, 0.001)`` and returns
-    0.8 — the *last element* — for four of the five tabulated windows.  An
-    interior minimum means the search converged; a boundary one means the range
-    is too narrow and the returned height is an artefact of where the loop
-    stopped.  Bartlett is the exception, minimising at 0.285, and it is no more
-    accurate for it (1.17x the table against Blackman's 1.08x), which says the
-    residual error is not only the pinning.
-
-    When someone widens the range or ports ``findbestgauss`` properly, this
-    fails and ``test_numeric_search_still_disagrees_with_the_table`` should be
-    retightened at the same time.
-    """
-    top = 0.8  # last element of the hardcoded atheightrange
-    pinned = {name: _findbestgauss(_window(name)) for name in TABULATED}
-
-    assert pinned["bartlett"] < top - 0.01, (
-        f"bartlett was the one interior minimum at 0.285; it now returns {pinned['bartlett']:.4f}"
-    )
-    for name in ("hann", "hamming", "blackman", "cosine"):
-        assert pinned[name] == pytest.approx(top, abs=1e-9), (
-            f"{name}: _findbestgauss returned {pinned[name]:.4f}, not the range boundary. "
-            "If the search now finds an interior minimum, this limitation is fixed — "
-            "update this test and test_numeric_search_still_disagrees_with_the_table."
-        )
+    L, w, ah = 2560, 100.0, 0.3
+    g = pgauss(L, width=w, atheight=ah, norm="inf")
+    x = np.arange(L, dtype=float)
+    val = np.interp(w / 2, x[:200], g[:200])
+    assert val == pytest.approx(ah, rel=1e-3)
 
 
-def test_wpghi_findgamma_ignores_its_tfr_argument():
-    """``wpghi_findgamma(g, tfr)`` accepts ``tfr`` positionally and discards it.
+def test_numeric_window_refuses_a_different_gl():
+    with pytest.raises(ValueError, match="numeric window"):
+        pghi_findgamma(_window("hann", 128), gl=256)
 
-    The signature promises a filterbank-domain variant; the body is
-    ``return pghi_findgamma(g, **kwargs)`` — ``tfr`` is never read.  A caller
-    computing a per-channel time-frequency ratio and passing it in gets the
-    plain Gabor answer and no indication that their argument went nowhere.
 
-    Pinned, not fixed: making ``tfr`` do something is a design decision about
-    what per-channel gamma should mean, not a typo.  Until then this records
-    that the parameter is inert.
-    """
-    a = wpghi_findgamma("hann", None, gl=GL)
-    b = wpghi_findgamma("hann", np.linspace(1.0, 99.0, 17), gl=GL)
-    c = pghi_findgamma("hann", gl=GL)
-    assert a == b == c, "wpghi_findgamma's tfr argument now has an effect — document it"
+# ---------------------------------------------------------------------------
+# wpghi_findgamma: the time-frequency ratio
+# ---------------------------------------------------------------------------
+
+
+def test_wpghi_findgamma_converts_a_time_frequency_ratio():
+    """``tfr`` used to be accepted and ignored.  It is now converted:
+    the Gaussian ``pgauss(L, tfr)`` is ``exp(-pi l^2 / (tfr L))``, so its
+    constant is ``tfr * L`` -- PHASERET's conversion for ``{'gauss', tfr}``,
+    and what ``pghi_findgamma`` finds for that Gaussian."""
+    from cool_frames.filters import pgauss
+
+    L = 4096
+    gamma, Cg = wpghi_findgamma(tfr=2.5, L=L)
+    assert gamma == pytest.approx(2.5 * L)
+    assert np.isnan(Cg)
+    per_channel, _ = wpghi_findgamma(tfr=np.array([1.0, 2.0, 4.0]), L=L)
+    np.testing.assert_allclose(per_channel, [L, 2 * L, 4 * L])
+    from_callable, _ = wpghi_findgamma(tfr=lambda n: 3.0 / n * 1000, L=L)
+    assert from_callable == pytest.approx(3000.0)
+
+    # The window path agrees with it for the Gaussian itself.
+    g = pgauss(L, 2.5)
+    g_search, _ = pghi_findgamma(g)
+    assert g_search == pytest.approx(2.5 * L, rel=0.02)
+
+    # The window path is unchanged, and the two cannot be mixed.
+    assert wpghi_findgamma("hann", gl=GL) == pghi_findgamma("hann", gl=GL)
+    with pytest.raises(ValueError, match="not both"):
+        wpghi_findgamma("hann", 2.0, L=L)
+    with pytest.raises(ValueError, match="length L"):
+        wpghi_findgamma(tfr=2.0)

@@ -1,13 +1,12 @@
 """
-numpy/phaseret/_findgamma.py
-==============================
+numpy/phase/_findgamma.py
+=========================
 Find the window constant gamma for PGHI / RTPGHI.
 
-Port of ``phaseret/gabor/pghi_findgamma.m`` (Gabor domain) and
-``filterbank/utils/legacy/gabor/wpghi_findalpha.m`` (filterbank domain).
-
-The gamma parameter relates a given analysis window to the closest
-Gaussian:  g(l) ≈ exp(-π l² / γ),  with  γ = Cg · gl².
+Port of PHASERET's ``gabor/pghi_findgamma.m``, including its local function
+``findbestgauss``: the Gaussian ``exp(-pi l^2 / gamma)`` closest to a
+window, with ``gamma = Cg * gl^2``.  ``wpghi_findgamma`` converts a filter
+bank's time-frequency ratio to the same constant.
 """
 
 from __future__ import annotations
@@ -109,57 +108,56 @@ def _winwidthatheight(g: np.ndarray, atheight: float) -> float:
     return 2.0 * (ind1 + rest)  # type: ignore[no-any-return]
 
 
+def _fir2long(g: np.ndarray, L: int) -> np.ndarray:
+    """LTFAT 2.6 ``fir2long``: the first ``ceil(gl/2)`` samples at the start,
+    the rest at the end, zeros between (no split middle sample)."""
+    out = np.zeros(L)
+    h = -(-g.size // 2)
+    out[:h] = g[:h]
+    out[L - (g.size - h) :] = g[h:]
+    return out
+
+
+def _long2fir(g: np.ndarray, gl: int) -> np.ndarray:
+    """LTFAT 2.6 ``long2fir`` (``'unsymmetric'``): the first ``ceil(gl/2)``
+    and the last ``floor(gl/2)`` samples."""
+    h = -(-gl // 2)
+    return np.concatenate([g[:h], g[g.size - (gl - h) :]])
+
+
 def _findbestgauss(gnum: np.ndarray, atheightrange: np.ndarray | None = None) -> float:
-    """Find the relative height at which a Gaussian best matches *gnum*.
+    """PHASERET's ``findbestgauss`` (local to ``pghi_findgamma.m``): the
+    height ``ah`` at which a Gaussian best matches the window.
 
-    Simplified port — uses a brute-force search over atheight values.
+    For every ``ah`` in the range, the window's width ``w`` at that height is
+    measured and the Gaussian with the same width at the same height --
+    ``pgauss(L, 'inf', 'width', w, 'atheight', ah)``, which is ``ah`` at
+    ``+-w/2`` -- is compared with the peak-normalised window on ``L = 10 gl``
+    samples; the closest one wins.
 
-    Like :func:`_winwidthatheight`, this works in DFT ordering: the zero-pad
-    below splits *gnum* at its midpoint and wraps the second half to the end of
-    ``glong``, and the reference Gaussian is built on the wrap-around distance
-    ``min(l, L-l)``.  Both only line up if the window peaks at index 0, so the
-    peak is rolled there first.
-
-    Known limitation: the returned ``atheight`` regularly pins at the top of
-    ``atheightrange`` (0.8) for the standard windows, which means the minimum is
-    at the boundary rather than interior and the search has not actually found
-    the best Gaussian.  With the ordering fixed, the resulting ``Cg`` is 7-45 %
-    above the tabulated constant for the same window (Hann 0.309 vs 0.256;
-    cosine 0.600 vs 0.415).  Pass the window *name* when you have it —
-    :func:`pghi_findgamma` then returns the exact tabulated value and never
-    reaches this search.  ``test_findgamma.py`` pins the gap so that narrowing
-    it is a visible change.
+    The port this replaces built ``exp(-pi l^2 / ((w/2)^2 / -ln ah))``, which
+    is ``ah**pi`` at ``+-w/2`` rather than ``ah``: every candidate was too
+    narrow, the error decreased towards the widest one, and the search
+    returned the top of its range (0.8) for four of the five tabulated
+    windows.  Like :func:`_winwidthatheight` it expects the peak at index 0
+    (LTFAT's FIR layout); a window with its peak elsewhere is rolled there.
     """
+    from ..filters import pgauss
+
     if atheightrange is None:
-        atheightrange = np.arange(0.01, 0.801, 0.001)
-
-    gl = len(gnum)
-    L = 10 * gl
-
-    # Peak-normalise, then roll the peak to index 0 (see docstring).
+        atheightrange = np.arange(0.01, 0.8005, 0.001)
     gnum = np.asarray(gnum, dtype=float).ravel()
-    gnum = gnum / np.max(np.abs(gnum))
     peak = int(np.argmax(gnum))
     if peak != 0:
         gnum = np.roll(gnum, -peak)
-    glong = np.zeros(L)
-    half = (gl + 1) // 2
-    glong[:half] = gnum[:half]
-    glong[L - (gl - half) :] = gnum[half:]
-
-    norms = np.zeros(len(atheightrange))
+    L = 10 * gnum.size
+    glong = _fir2long(gnum / np.max(np.abs(gnum)), L)
+    norms = np.empty(len(atheightrange))
     for ii, ah in enumerate(atheightrange):
-        w = _winwidthatheight(gnum, ah)
-        # Build matching Gaussian: g(l) = exp(-π (l/σ)²) where σ = w/(2√(-ln(ah)))
-        sigma_sq = (w / 2.0) ** 2 / (-math.log(ah)) if ah > 0 else 1.0
-        l = np.arange(L)
-        l = np.minimum(l, L - l)  # wrap-around distance
-        gauss = np.exp(-math.pi * l**2 / sigma_sq) if sigma_sq > 0 else np.zeros(L)
-        gauss /= np.max(gauss) if np.max(gauss) > 0 else 1.0
+        w = _winwidthatheight(gnum, float(ah))
+        gauss = pgauss(L, width=w, atheight=float(ah), norm="inf")
         norms[ii] = np.linalg.norm(glong - gauss)
-
-    best_idx = int(np.argmin(norms))
-    return float(atheightrange[best_idx])
+    return float(atheightrange[int(np.argmin(norms))])
 
 
 def pghi_findgamma(
@@ -167,13 +165,21 @@ def pghi_findgamma(
 ) -> tuple[float, float]:
     """Find the gamma constant for PGHI / RTPGHI.
 
+    A window name gives PHASERET's tabulated constant.  A numeric window
+    (peak at index 0, as LTFAT stores FIR windows, or anywhere -- it is
+    rolled there) gives PHASERET's search: the window is cut to its width at
+    1e-10 of its peak, which is the ``gl`` of the result, and ``Cg`` comes
+    from the Gaussian that best matches it (``findbestgauss``).  The two
+    agree to 0.2 % at 1024 taps and to about 1 % at 256.
+
     Parameters
     ----------
     g : str or ndarray
         Window name (e.g. ``'hann'``) or numeric window vector.
     gl : int, optional
-        Window support length. Required for named windows without
-        precomputed constants.
+        Window length for a named window (required unless ``M`` is given).
+        A numeric window has its own length; passing a different ``gl`` is
+        an error.
     a : int, optional
         Hop size (required only for ``'gauss'`` window).
     M : int, optional
@@ -210,10 +216,19 @@ def pghi_findgamma(
             f"Unknown window name '{g}'. Pass a numeric window vector for search-based gamma."
         )
 
-    # Numeric window — search
+    # Numeric window: PHASERET's search.  The window is first cut to its
+    # width at 1e-10 of its peak, which is also the ``gl`` of the result.
     g = np.asarray(g, dtype=float).ravel()
-    if gl is None:
-        gl = len(g)
+    if gl is not None and gl != g.size:
+        raise ValueError(
+            f"gl={gl} was given for a numeric window of {g.size} samples; a numeric "
+            "window's length is its own (pass the window at the length you mean)"
+        )
+    peak = int(np.argmax(g))
+    if peak != 0:
+        g = np.roll(g, -peak)
+    gl = int(math.floor(_winwidthatheight(g, 1e-10) + 0.5))  # MATLAB round
+    g = _long2fir(g, gl)
 
     atheight = _findbestgauss(g)
     w = _winwidthatheight(g, atheight)
@@ -224,11 +239,39 @@ def pghi_findgamma(
     return gamma, Cg
 
 
-def wpghi_findgamma(g, tfr: np.ndarray | None = None, **kwargs) -> tuple[float, float]:
-    """Alias for ``pghi_findgamma`` — for filterbank WPGHI compatibility.
+def wpghi_findgamma(
+    g=None, tfr=None, *, L: int | None = None, **kwargs
+) -> tuple[float | np.ndarray, float]:
+    """PGHI's window constant from a window, or from a time-frequency ratio.
 
-    For filterbank-based PGHI, gamma is typically computed per-channel
-    and stored in the filter info dict.  This function is a convenience
-    wrapper.
+    ``wpghi_findgamma(g, **kwargs)`` is :func:`pghi_findgamma`.
+
+    ``wpghi_findgamma(tfr=tfr, L=L)`` converts the time-frequency ratio a
+    filter bank's phase functions take (``filterbankconstphase``'s ``tfr``,
+    the designers' ``info['tfr']``) to the Gabor constant: the Gaussian with
+    ratio ``tfr`` at length ``L``, ``pgauss(L, tfr) ~ exp(-pi l^2 / (tfr L))``,
+    has ``gamma = tfr * L`` -- PHASERET's own conversion for a window
+    ``{'gauss', tfr}``.  ``tfr`` may be a scalar, one value per channel, or a
+    callable of ``L``; ``gamma`` has the same shape, and ``Cg`` is NaN, as
+    for ``pghi_findgamma('gauss', ...)``.
+
+    Until this was fixed, ``tfr`` was accepted and ignored.
     """
-    return pghi_findgamma(g, **kwargs)
+    if tfr is None:
+        if g is None:
+            raise ValueError("wpghi_findgamma needs a window g or a time-frequency ratio tfr")
+        return pghi_findgamma(g, **kwargs)
+    if g is not None:
+        raise ValueError(
+            "wpghi_findgamma takes a window g or a time-frequency ratio tfr, not both"
+        )
+    if kwargs:
+        raise TypeError(f"wpghi_findgamma(tfr=...) takes only L; got {sorted(kwargs)}")
+    if L is None:
+        raise ValueError("wpghi_findgamma(tfr=...) needs the transform length L")
+    t = tfr(L) if callable(tfr) else tfr
+    t = np.asarray(t, dtype=float)
+    if np.any(~np.isfinite(t)) or np.any(t <= 0):
+        raise ValueError("tfr must be positive and finite")
+    gamma = t * float(L)
+    return (float(gamma) if gamma.ndim == 0 else gamma), float("nan")
