@@ -527,19 +527,39 @@ def test_spsi_rejects_frequencies_above_nyquist(fb):
 
 @pytest.mark.unit
 @pytest.mark.requires_impl
-def test_gsrtisila_spsi_start_beats_a_zero_start(fb):
+def test_gsrtisila_spsi_start_beats_a_zero_start():
     """``startphase='spsi'`` must be worth choosing over ``'zero'``.
 
     It reads centre frequencies from the filters themselves.  Before v0.1.1 it
-    used ``fc[m] = m / M`` — a ramp reaching ~0.96 cycles/sample, nearly twice
-    Nyquist — which made the "smarter" starts worse than the naive one.
-    """
-    from cool_frames.numpy.phase import gsrtisila
+    used ``fc[m] = m / M`` -- a ramp reaching ~0.96 cycles/sample, nearly twice
+    Nyquist -- which made the "smarter" starts worse than the naive one.
 
-    kw = dict(L=fb["L"], Ls=fb["Ls"], real=True, maxit=1)
-    zero = _consistency(gsrtisila(fb["s"], fb["g"], fb["a"], **kw, startphase="zero")[0], fb)
-    spsi_start = _consistency(gsrtisila(fb["s"], fb["g"], fb["a"], **kw, startphase="spsi")[0], fb)
-    assert spsi_start < zero, (
+    On a Gabor-type bank, where SPSI's peak interpolation has the frequency
+    resolution it needs: one pass of GSRTISI-LA from SPSI, continued frame by
+    frame from the refined phase (PHASERET's scheme), against a start from
+    zero phase.  (On a 29-channel auditory bank SPSI has too few channels
+    per partial to be reliably better, and the old version of this test,
+    which used one, passed only because the old code re-synthesised every
+    frame from the precomputed SPSI phase.)
+    """
+    from cool_frames.numpy.filterbanks import filterbank, filterbankdual, ifilterbank
+    from cool_frames.numpy.filters import gabfilters
+    from cool_frames.numpy.phase import gsrtisila, magnitudeerr
+
+    t = np.arange(LS) / FS
+    x = np.sin(2 * np.pi * 440 * t) + 0.5 * np.sin(2 * np.pi * 1320 * t)
+    g, a, _fc, L, _info = gabfilters(FS, LS, M=64, a=16)
+    gd = filterbankdual(g, a, L)
+    s = [np.abs(ci) for ci in filterbank(x, g, a, L=L)]
+
+    def consistency(c_hat):
+        f = np.real(ifilterbank(c_hat, gd, a, Ls=LS, real=True))
+        return magnitudeerr(s, [np.abs(ci) for ci in filterbank(f, g, a, L=L)])
+
+    kw = dict(L=L, Ls=LS, real=True, maxit=1)
+    zero = consistency(gsrtisila(s, g, a, **kw, startphase="zero")[0])
+    spsi_start = consistency(gsrtisila(s, g, a, **kw, startphase="spsi")[0])
+    assert spsi_start < 0.5 * zero, (
         f"startphase='spsi' ({spsi_start:.4f}) is no better than 'zero' ({zero:.4f})"
     )
 

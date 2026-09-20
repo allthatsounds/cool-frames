@@ -1,191 +1,125 @@
 """
-numpy/phaseret/_gsrtisila.py
-==============================
-Gnann and Spiertz's Real-Time Iterative Spectrogram Inversion with
-Look-Ahead (GSRTISILA) adapted for filterbanks.
+numpy/phase/_gsrtisila.py
+=========================
+Gnann and Spiertz's RTISI-LA (GSRTISI-LA).
 
-Port of ``phaseret/gabor/gsrtisila.m``.
-
-GSRTISILA extends RTISILA with configurable phase initialization
-strategies for the newest look-ahead frame.  In addition to the
-standard zero-phase initialization, it supports:
-
-  - ``'input'``  : use the phase of the input coefficients
-  - ``'unwrap'`` : phase-vocoder-style phase unwrapping
-  - ``'spsi'``   : Single-Pass Spectrogram Inversion
-  - ``'rtpghi'`` : Real-Time Phase Gradient Heap Integration
-
-For filterbanks, the "frame" concept is adapted to work with the
-multi-rate event schedule.
-
-References: Gnann & Spiertz, 2008/2010.
+Port of PHASERET's ``gabor/gsrtisila.m`` [gsrtisila-gs08]_ [gsrtisila-gs10]_,
+on a Gabor frame (``gsrtisila(s, g, a, M)``) or on any filter bank.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-import numpy as np
-
-from ..filterbanks._core import filterbank, ifilterbank
-from ..filterbanks._frame import filterbankdual
+from ._rtisila import _bank_only, _gabor_only, _is_window
 
 
 def gsrtisila(
-    s_list: list[np.ndarray],
-    g: list[dict],
+    s_list,
+    g,
     a,
+    M: int | None = None,
     *,
     L: int | None = None,
     Ls: int | None = None,
-    real: bool = False,
+    real: bool | None = None,
     maxit: int = 5,
     lookahead: int | None = None,
-    startphase: Literal["zero", "input", "unwrap", "spsi"] = "zero",
+    frame_hop: int | None = None,
+    startphase: Literal["zhu", "zeros", "zero", "input", "unwrap", "spsi"] = "zhu",
     unwrappar: float = 0.3,
-) -> tuple[list[np.ndarray], np.ndarray, float, int]:
-    """GSRTISILA for filterbanks.
+    phase: Literal["freqinv", "timeinv"] = "freqinv",
+):
+    """Gnann and Spiertz's Real-Time Iterative Spectrogram Inversion.
 
-    Gnann and Spiertz's variant of RTISILA, with configurable phase
-    initialization for the newest look-ahead frame.
+    RTISI-LA (see :func:`rtisila`) with two changes by Gnann and Spiertz:
+    each look-ahead frame is analysed with the window divided by the overlap
+    of the analysis-synthesis window products of the frames present around
+    it [gsrtisila-gs08]_, and the newest frame can start from an estimated
+    phase rather than from nothing [gsrtisila-gs10]_.
+
+    ``gsrtisila(s, g, a, M)`` (a Gabor window) is PHASERET's ``gsrtisila``,
+    checked against PHASERET, with the initial phase of the newest frame
+    used as in PHASERET's C library (its MATLAB fallback never reads it).
+    On a filter bank (``g`` a list of filters) the frames are as in
+    :func:`rtisila`.  The normalised windows divide by the overlap of the
+    window products of the frames present, which for a filter bank is not a
+    function of time alone; the newest frame is analysed with
+    :func:`rtisila`'s windows instead, so what differs is the
+    initialisation, and with ``startphase='zhu'`` the result is
+    :func:`rtisila`'s.
 
     Parameters
     ----------
-    s_list : list of M arrays — target magnitudes
-    g : list of M filter dicts
-    a : hop sizes
-    L : DFT length
-    Ls : output signal length
-    real : use real (single-sided) synthesis
-    maxit : iterations per frame
-    lookahead : number of look-ahead frames (default: 2)
-    startphase : phase initialization strategy for new frames:
+    s_list, g, a, M, L, Ls, real, maxit, lookahead, frame_hop, phase :
+        As for :func:`rtisila`.
+    startphase : what the newest frame starts from.
 
-        - ``'zero'``   : zero phase (default)
-        - ``'input'``  : use phase from input ``s_list``
-        - ``'unwrap'`` : phase-vocoder unwrapping
-        - ``'spsi'``   : single-pass spectrogram inversion
+        - ``'zhu'`` (default; ``'zeros'`` is PHASERET's name) : nothing, the
+          phase coming from the frames it overlaps;
+        - ``'zero'`` (filter bank only) : its magnitude, zero phase;
+        - ``'input'`` : the phase of the complex ``s``;
+        - ``'unwrap'`` : phase-vocoder unwrapping from the two frames
+          before, magnitude scaled by ``unwrappar``;
+        - ``'spsi'`` : one step of single-pass spectrogram inversion from
+          the refined phase of the frame before, as in PHASERET (on a filter
+          bank, :func:`spsi`'s step at each time instant of the frame, from
+          each channel's previous coefficient).
 
-    unwrappar : blending parameter for unwrap mode (default: 0.3)
+        PHASERET's ``'rtpghi'`` is not ported.
+    unwrappar : float, default 0.3
 
     Returns
     -------
-    c : list of M complex arrays
-    f : reconstructed signal
-    relres : final residual
-    niter : total iterations
+    c, f, relres, niter : as for :func:`rtisila`.
+
+    References
+    ----------
+    .. [gsrtisila-gs08] V. Gnann and M. Spiertz, "Comb-filter free audio
+           mixing using STFT magnitude spectra and phase estimation," Proc.
+           11th Int. Conf. on Digital Audio Effects (DAFx-08), 2008.
+    .. [gsrtisila-gs10] V. Gnann and M. Spiertz, "Improving RTISI phase
+           estimation with energy order and phase unwrapping," Proc. 13th
+           Int. Conf. on Digital Audio Effects (DAFx-10), 2010.
     """
-    M = len(g)
-    s_abs = [np.abs(np.asarray(s)).ravel() for s in s_list]
+    if _is_window(g):
+        if M is None:
+            raise TypeError(
+                "gsrtisila: a window needs the number of channels M "
+                "(gsrtisila(s, g, a, M)); pass a list of filters for a filter bank"
+            )
+        _gabor_only("gsrtisila", L=(L, None), real=(real, None), frame_hop=(frame_hop, None))
+        from ._rtisila_gabor import gsrtisila_gabor
 
-    from ..filterbanks._utils import normalise_a
+        return gsrtisila_gabor(
+            s_list,
+            g,
+            a,
+            M,
+            Ls=Ls,
+            maxit=maxit,
+            lookahead=lookahead,
+            startphase=startphase,
+            unwrappar=unwrappar,
+            phase=phase,
+        )
+    if M is not None:
+        raise TypeError(
+            "gsrtisila: M is the number of channels of a Gabor window; a filter bank has its own"
+        )
+    _bank_only("gsrtisila", phase=(phase, "freqinv"))
+    from ._rtisila_fb import gsrtisila_fb
 
-    a_norm = normalise_a(a, M)
-
-    N = [len(s) for s in s_abs]
-    if L is None:
-        afrac = a_norm[:, 0] / a_norm[:, 1]
-        L = int(round(N[0] * afrac[0]))
-
-    if real:
-        gd = filterbankdual(g, a_norm, L)
-    else:
-        gd = filterbankdual(g, a_norm, L, real=False)
-
-    if lookahead is None:
-        lookahead = 2
-
-    # Initialise coefficients
-    if startphase == "input":
-        c = [np.asarray(s, dtype=complex).ravel().copy() for s in s_list]
-    else:
-        c = [s.copy().astype(complex) for s in s_abs]
-
-    a_int = a_norm[:, 0].astype(int)
-
-    # Build time-sorted events
-    events = []
-    for m in range(M):
-        for n in range(N[m]):
-            events.append((n * a_int[m], m, n))
-    events.sort(key=lambda x: (x[0], x[1]))
-
-    # Group by time
-    time_groups = []
-    i = 0
-    while i < len(events):
-        t = events[i][0]
-        group = []
-        while i < len(events) and events[i][0] == t:
-            group.append(events[i])
-            i += 1
-        time_groups.append((t, group))
-
-    n_groups = len(time_groups)
-
-    # Normalised centre frequencies, recovered from the filters themselves.
-    # (Before v0.1.1 both branches below used `m / M`, a linear ramp reaching
-    # ~0.96 cycles/sample — nearly twice Nyquist — irrespective of the actual
-    # filter layout.)
-    if startphase in ("spsi", "unwrap"):
-        from ._centerfreq import filter_center_frequencies
-
-        fc_norm = filter_center_frequencies(g, L)
-
-    # SPSI pre-initialization
-    if startphase == "spsi":
-        from ._spsi import spsi
-
-        # fs=1.0: fc_norm is already in cycles per sample.
-        c_spsi, _ = spsi(s_abs, a_int, fc_norm, 1.0)
-        c = [np.asarray(ci, dtype=complex).ravel().copy() for ci in c_spsi]
-
-    # Phase accumulator for unwrap mode
-    if startphase == "unwrap":
-        omega = np.array([2.0 * np.pi * a_int[m] * fc_norm[m] for m in range(M)])
-
-    # Process each time group with look-ahead
-    for gi in range(n_groups):
-        la_end = min(gi + lookahead + 1, n_groups)
-
-        # Initialise phase for the newest look-ahead frame
-        if gi + lookahead < n_groups and startphase == "unwrap":
-            _, la_group = time_groups[min(gi + lookahead, n_groups - 1)]
-            for _t, m, n in la_group:
-                if n >= 2:
-                    phase_prev2 = np.angle(c[m][n - 2])
-                    phase_prev1 = np.angle(c[m][n - 1])
-                    # Phase vocoder unwrapping
-                    om = omega[m]
-                    delta = phase_prev1 - phase_prev2 - om
-                    delta -= 2.0 * np.pi * np.round(delta / (2.0 * np.pi))
-                    phase_new = phase_prev1 + om + delta
-                    c[m][n] = unwrappar * s_abs[m][n] * np.exp(1j * phase_new)
-
-        for _it in range(maxit):
-            # Synthesise from current coefficients
-            f_iter = ifilterbank(c, gd, a_norm, Ls=L, real=real)
-
-            # Re-analyse
-            c_new = filterbank(np.real(f_iter) if real else f_iter, g, a_norm, L=L)
-
-            # Phase update: only for frames in [gi, la_end)
-            for gj in range(gi, la_end):
-                _, group = time_groups[gj]
-                for _t, m, n in group:
-                    cn = np.asarray(c_new[m]).ravel()
-                    phase = np.angle(cn[n])
-                    c[m][n] = s_abs[m][n] * np.exp(1j * phase)
-
-    # Final synthesis
-    f = ifilterbank(c, gd, a_norm, Ls=Ls or L, real=real)
-    if real:
-        f = np.real(f)
-
-    # Compute final residual
-    s_flat = np.concatenate(s_abs)
-    c_flat = np.concatenate([np.abs(np.asarray(cm).ravel()) for cm in c])
-    norm_s = np.linalg.norm(s_flat)
-    relres = float(np.linalg.norm(c_flat - s_flat) / norm_s) if norm_s > 0 else 0.0
-
-    return c, f, relres, maxit * n_groups
+    return gsrtisila_fb(
+        list(s_list),
+        g,
+        a,
+        L=L,
+        Ls=Ls,
+        real=bool(real),
+        maxit=maxit,
+        lookahead=lookahead,
+        frame_hop=frame_hop,
+        startphase=startphase,
+        unwrappar=unwrappar,
+    )

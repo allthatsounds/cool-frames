@@ -32,21 +32,28 @@ routine      1 iter      10 iters
 ===========  ==========  ==========
 gla            +0.6 dB    -12.0 dB
 legla          +0.5 dB    -12.0 dB
-rtisila        -7.9 dB    -13.0 dB
-gsrtisila      -7.9 dB    -13.0 dB
-lertisila      -8.6 dB    -12.1 dB
-decolbfgs      -5.1 dB    -10.3 dB
+rtisila       -16.6 dB    -19.2 dB
+gsrtisila     -16.6 dB    -19.2 dB
+lertisila     -16.6 dB    -19.2 dB
+decolbfgs      -5.1 dB    -10.2 dB
 ===========  ==========  ==========
+
+(The RTISI-LA rows were -7.9 / -13.0 dB, and -8.6 / -12.1 dB for
+``lertisila``, before the family was rewritten as PHASERET's algorithm: the
+old code re-synthesised every frame, future ones included, on every update.
+Here each frame gets ``maxit`` updates in each of the ``lookahead + 1``
+steps it spends in the window -- 53 on this bank, whose atoms span most of
+the signal -- so "1 iter" is not one pass.)
 
 The thresholds below are set well slack of these numbers.  They are regression
 guards, not accuracy claims: the point is that a routine which silently stops
 retrieving phase — the ``'pghi'`` branch of the torch recipe drew
 ``rand_like`` for a release and reported ``converged: True`` — fails here.
 
-See also ``test_relres_is_not_a_convergence_measure`` at the bottom, which pins
-a reporting defect this file uncovered rather than fixing it: for the RTISIL
-family ``relres`` is computed *after* the magnitude projection and is therefore
-~1e-16 unconditionally.
+This file also uncovered a reporting defect: the RTISI-LA family computed
+``relres`` *after* the magnitude projection, so it was ~1e-16 unconditionally.
+It now measures consistency; ``test_relres_is_the_consistency`` at the bottom
+holds that.
 """
 
 from __future__ import annotations
@@ -278,50 +285,44 @@ def test_spsi_is_single_pass_and_uses_centre_frequencies(backend):
 
 
 # ---------------------------------------------------------------------------
-# A reporting defect this file uncovered
+# A reporting defect this file uncovered, fixed
 # ---------------------------------------------------------------------------
 
 
-def test_relres_is_not_a_convergence_measure():
-    """Pin the fact that the RTISIL family's ``relres`` is ~1e-16 by construction.
+@pytest.mark.parametrize("name", ["rtisila", "gsrtisila", "lertisila"])
+@pytest.mark.parametrize("backend", ["numpy", "torch"])
+def test_relres_is_the_consistency(name, backend):
+    """``relres`` is ``|| |A f| - s || / ||s||``, and ``niter`` counts updates.
 
-    ``rtisila``, ``gsrtisila`` and ``lertisila`` all end with
-    ``c[m][n] = s[m][n] * exp(i*phase)`` and *then* compute
-    ``relres = ||abs(c) - s|| / ||s||``.  That difference is zero by
-    construction, so ``relres`` measures whether the last assignment executed,
-    not whether the algorithm converged.  On the fixture here it reports 1e-16
-    while the actual consistency is -13 dB, and GLA — which is within one
-    decibel on the metric that matters — honestly reports 0.249.
-
-    Anyone selecting a method by ``relres`` would read this as the RTISIL
-    family being fifteen orders of magnitude better than GLA.
-
-    This test does not assert the right behaviour; it records the wrong one, so
-    that the day ``relres`` is redefined to measure consistency (or the routines
-    stop reporting a number they cannot compute), this fails and the change is
-    deliberate rather than silent.
+    Until this was fixed, ``relres`` was ``|| |c| - s || / ||s||`` computed
+    after ``c = s * exp(i*phase)`` -- zero by construction, 1e-16 here while
+    the consistency was -13 dB and GLA honestly reported 0.249, so selecting a
+    method by ``relres`` read the RTISI-LA family as fifteen orders of
+    magnitude better.  (PHASERET's own ``rtisila`` and ``gsrtisila`` get it
+    wrong the other way: the norm of the complex difference, a phase
+    measure.)  ``niter`` was ``maxit`` times the number of time instants;
+    it is now the updates a frame receives, ``maxit * (lookahead + 1)``.
     """
-    import cool_frames.numpy.phase as NP
+    if backend == "torch":
+        pytest.importorskip("torch")
+    import importlib
 
+    from cool_frames.numpy.filterbanks import filterbank, filterbankdual, ifilterbank
+
+    mod = importlib.import_module(f"cool_frames.{backend}.phase")
     g, a_np, L, real, _c, mag = _fixture()
-    kw = dict(L=L, Ls=LS, real=real, maxit=4)
-
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        _, _, relres_rtisila, niter_rtisila = NP.rtisila(mag, g, a_np, **kw)
-        _, _, relres_gla, niter_gla = NP.gla(mag, g, a_np, **kw)
-
-    r_rt = float(np.atleast_1d(np.asarray(relres_rtisila))[-1])
-    r_gla = float(np.atleast_1d(np.asarray(relres_gla))[-1])
-
-    assert r_rt < 1e-12, (
-        "rtisila's relres is no longer ~0 — if it now measures consistency, "
-        "delete this test and document the change in the return contract"
+        c, _f, relres, niter = getattr(mod, name)(
+            _to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=4, lookahead=3
+        )
+        c = [_np(x) for x in c]
+        f = ifilterbank(c, filterbankdual(g, a_np, L, real=real), a_np, L, real=real)
+        re = filterbank(np.real(f) if real else f, g, a_np, L)
+    num = np.sqrt(sum(np.sum((np.abs(r) - m) ** 2) for r, m in zip(re, mag)))
+    den = np.sqrt(sum(np.sum(m**2) for m in mag))
+    assert relres == pytest.approx(num / den, rel=1e-9), (
+        f"{backend}.{name}: relres {relres} is not the consistency {num / den}"
     )
-    assert r_gla > 1e-3, "gla's relres should be an honest, non-trivial residual"
-
-    # And ``niter`` is frames x maxit, not iterations: 4 iterations is reported
-    # as 256 here.  Pinned for the same reason.
-    assert int(niter_rtisila) > int(niter_gla), (
-        "rtisila's niter counts frame-iterations, not iterations"
-    )
+    assert 1e-3 < relres < 0.5, f"{backend}.{name}: relres {relres} is implausible"
+    assert niter == 4 * (3 + 1), f"{backend}.{name}: niter {niter}, expected 16"
