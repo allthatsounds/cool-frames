@@ -12,11 +12,15 @@ adjoint, ``f = sum_{m,n} c[m, n] * g_{m,n}``.  ``gabdual``, ``gabtight``,
 ``idgt(dgt(f, g, a, M), gabdual(g, a, M, L), a)`` returns ``f``.
 
 A window shorter than the transform length is extended with ``middlepad``
-(LTFAT's ``fir2long``).  Every window goes through the long-window
-factorisation of Søndergaard (``_walnut.py``).
+(LTFAT's ``fir2long``).  As in LTFAT, a window whose support is shorter than
+the transform goes through the filter-bank algorithm (``comp_dgt_fb`` /
+``comp_idgt_fb``, ``_fb.py``), and only a window of full length through the
+long-window factorisation of Søndergaard (``_walnut.py``).  The support is
+read off the extended window, so a length-``L`` window that is zero outside a
+short interval -- the painless dual ``gabdual`` returns at a given ``L`` --
+takes the fast path too.
 
-Not ported from LTFAT: the filter-bank algorithm for short windows
-(``comp_dgt_fb``, a speed optimisation), non-rectangular lattices (``lt``),
+Not ported from LTFAT: non-rectangular lattices (``lt``),
 the time-invariant phase convention, window specifications by name (such as
 ``'gauss'``; pass an array, e.g. from ``cool_frames.filters.pgauss``), and
 complex windows in the frame-window functions.
@@ -35,6 +39,7 @@ from ._factorised import (
     _gabframediag,
     _gabtight_normalised,
 )
+from ._fb import dgt_fb, idgt_fb, window_support
 from ._walnut import _dgt_long, _idgt_long
 
 __all__ = [
@@ -146,6 +151,22 @@ def _require_frame(g: np.ndarray, a: int, M: int, L: int) -> None:
         )
 
 
+def _painless_diag(gw: np.ndarray, a: int, M: int, L: int) -> np.ndarray | None:
+    """The frame operator's diagonal when the window's support is at most
+    ``M`` (the painless case, where it is the whole operator), else ``None``.
+
+    Then the dual and tight windows are ``g / d`` and ``g / sqrt(d)``, zero
+    wherever ``g`` is (LTFAT's ``gabdual``/``gabtight`` compute them so).  The
+    factorisation gives the same values to rounding but no exact zeros, and
+    without them a dual at a given ``L`` would look full-length to the DGT's
+    filter-bank path.
+    """
+    _first, sup = window_support(gw)
+    if sup.shape[0] > M:
+        return None
+    return np.asarray(_gabframediag(gw, a, M, L), dtype=np.float64)
+
+
 # ---------------------------------------------------------------------------
 # Transform length
 # ---------------------------------------------------------------------------
@@ -203,7 +224,11 @@ def dgt(
     g = np.asarray(g)
     L = dgtlength(max(f.shape[0], g.shape[0]), a, M) if L is None else _check_length(L, a, M)
     f = postpad(f, L)
-    c: np.ndarray = np.asarray(_dgt_long(f, _as_window(g, L), a, M)) * np.sqrt(M)
+    gl_long = _as_window(g, L)
+    first, wv = window_support(gl_long)
+    if wv.shape[0] < L:
+        return dgt_fb(f, wv, first, a, M)
+    c: np.ndarray = np.asarray(_dgt_long(f, gl_long, a, M)) * np.sqrt(M)
     return c
 
 
@@ -239,7 +264,14 @@ def idgt(
     M, N = c.shape[0], c.shape[1]
     a, M = _check_lattice(a, M)
     L = _check_length(N * a, a, M)
-    f = _idgt_long(c, _as_window(g, L), L, a, M) * np.sqrt(M)
+    gl_long = _as_window(g, L)
+    first, wv = window_support(gl_long)
+    if wv.shape[0] < L:
+        f = idgt_fb(c, wv, first, L, a, M)
+        if not np.iscomplexobj(f):
+            f = f.astype(complex)
+    else:
+        f = _idgt_long(c, gl_long, L, a, M) * np.sqrt(M)
     return f if Ls is None else postpad(f, int(Ls))
 
 
@@ -262,7 +294,16 @@ def dgtreal(
     f = np.asarray(f)
     if np.iscomplexobj(f):
         raise ValueError("dgtreal needs a real signal; use dgt for complex input")
-    return dgt(f, _real_window(g), a, M, L)[: int(M) // 2 + 1]
+    a, M = _check_lattice(a, M)
+    g = _real_window(g)
+    if f.ndim not in (1, 2):
+        raise ValueError(f"f must be one- or two-dimensional, got shape {f.shape}")
+    L = dgtlength(max(f.shape[0], g.shape[0]), a, M) if L is None else _check_length(L, a, M)
+    first, wv = window_support(_as_window(g, L))
+    if wv.shape[0] < L:
+        return dgt_fb(postpad(np.asarray(f, dtype=np.float64), L), wv, first, a, M,
+                      onesided=True)
+    return dgt(f, g, a, M, L)[: M // 2 + 1]
 
 
 def idgtreal(
@@ -281,6 +322,12 @@ def idgtreal(
     M2 = M // 2 + 1
     if c.ndim not in (2, 3) or c.shape[0] != M2:
         raise ValueError(f"c must have M // 2 + 1 = {M2} rows for M={M}, got shape {c.shape}")
+    L = _check_length(c.shape[1] * a, a, M)
+    g = _real_window(g)
+    first, wv = window_support(_as_window(g, L))
+    if wv.shape[0] < L:
+        f = idgt_fb(c, wv, first, L, a, M, onesided=True)
+        return f if Ls is None else postpad(f, int(Ls))
     full = np.empty((M, *c.shape[1:]), dtype=complex)
     full[:M2] = c
     m = np.arange(1, (M + 1) // 2)
@@ -326,7 +373,13 @@ def gabdual(
     if crop:
         _check_fir_crop(g, "dual")
     _require_frame(gw, a, M, Lw)
-    gd = np.real_if_close(_gabdual_normalised(gw, a, M, Lw), tol=1e6) / M
+    d = _painless_diag(gw, a, M, Lw)
+    if d is not None:
+        gd = np.zeros_like(gw)
+        nz = gw != 0
+        gd[nz] = gw[nz] / d[nz]
+    else:
+        gd = np.real_if_close(_gabdual_normalised(gw, a, M, Lw), tol=1e6) / M
     return middlepad(gd, g.shape[0]) if crop else gd
 
 
@@ -347,7 +400,13 @@ def gabtight(
     if crop:
         _check_fir_crop(g, "tight")
     _require_frame(gw, a, M, Lw)
-    gt = np.real_if_close(_gabtight_normalised(gw, a, M, Lw), tol=1e6) / np.sqrt(M)
+    d = _painless_diag(gw, a, M, Lw)
+    if d is not None:
+        gt = np.zeros_like(gw)
+        nz = gw != 0
+        gt[nz] = gw[nz] / np.sqrt(d[nz])
+    else:
+        gt = np.real_if_close(_gabtight_normalised(gw, a, M, Lw), tol=1e6) / np.sqrt(M)
     return middlepad(gt, g.shape[0]) if crop else gt
 
 

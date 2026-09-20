@@ -4,8 +4,9 @@
 rectangular lattice, the canonical dual and tight windows (``gabdual``,
 ``gabtight``), the frame bounds and frame-operator diagonal
 (``gabframebounds``, ``gabframediag``) and ``dgtlength``.  Definitions,
-normalisation and phase convention are LTFAT's defaults; the algorithm is
-Søndergaard's long-window factorisation for every window.
+normalisation and phase convention are LTFAT's defaults, and so is the choice
+of algorithm: the filter-bank algorithm for a window shorter than the signal,
+Søndergaard's long-window factorisation for a full-length one.
 
 Example
 -------

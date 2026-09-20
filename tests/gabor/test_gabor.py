@@ -239,3 +239,90 @@ def test_invalid_arguments_are_refused():
         dgtreal(np.ones(12) + 1j, np.ones(12), 4, 6)
     with pytest.raises(ValueError, match="rows"):
         idgtreal(np.ones((6, 3)), np.ones(12), 4, 6)
+
+
+# ---------------------------------------------------------------------------
+# LTFAT's filter-bank algorithm for windows shorter than the signal
+# ---------------------------------------------------------------------------
+def _short_window_case(seed):
+    """A random lattice and a window that is zero outside a circular run of
+    ``gl < L`` samples starting anywhere (wrapping included)."""
+    from math import lcm
+
+    rng = np.random.default_rng(seed)
+    a, M = int(rng.integers(1, 9)), int(rng.integers(2, 14))
+    L = lcm(a, M) * int(rng.integers(1, 5))
+    while L < 8:
+        L *= 2
+    gl = int(rng.integers(1, L))
+    first = int(rng.integers(0, L))
+    g = np.zeros(L)
+    g[(first + np.arange(gl)) % L] = rng.standard_normal(gl)
+    return rng, a, M, L, g
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_short_windows_are_the_definition(seed):
+    """``dgt``, ``idgt``, ``dgtreal`` and ``idgtreal`` with a window whose
+    support is shorter than ``L`` go through the filter-bank algorithm
+    (LTFAT's ``comp_dgt_fb`` / ``comp_idgt_fb``); they must still be the
+    definition, including a support that wraps round and multichannel input."""
+    rng, a, M, L, g = _short_window_case(seed)
+    N = L // a
+    G = _atoms(g, a, M)
+    F = rng.standard_normal((L, 2))
+    for w in range(2):
+        ref = (G.conj().T @ F[:, w]).reshape(N, M).T
+        assert _relerr(dgt(F, g, a, M)[:, :, w], ref) < TOL
+        assert _relerr(dgtreal(F, g, a, M)[:, :, w], ref[: M // 2 + 1]) < TOL
+    c = rng.standard_normal((M, N)) + 1j * rng.standard_normal((M, N))
+    assert _relerr(idgt(c, g, a), G @ c.T.reshape(-1)) < TOL
+    # idgtreal: the Hermitian completion of the non-negative channels
+    cr = c[: M // 2 + 1].copy()
+    full = np.empty((M, N), dtype=complex)
+    full[: M // 2 + 1] = cr
+    m = np.arange(1, (M + 1) // 2)
+    full[M - m] = np.conj(cr[m])
+    if M % 2 == 0:
+        full[M // 2] = full[M // 2].real
+        cr[M // 2] = cr[M // 2].real
+    full[0] = full[0].real
+    cr[0] = cr[0].real
+    assert _relerr(idgtreal(cr, g, a, M), (G @ full.T.reshape(-1)).real) < TOL
+
+
+def test_short_windows_do_not_use_the_factorisation(monkeypatch):
+    """The point of the port: a short window never reaches the long-window
+    factorisation, which cost 121 ms for analysis plus synthesis at
+    65536 / 1024 / 256 against 14 ms (ltfatpy: 3.0 ms)."""
+    import cool_frames.numpy.gabor._dgt as D
+    from cool_frames.filters import firwin
+
+    def boom(*args, **kwargs):
+        raise AssertionError("the long-window factorisation was used")
+
+    monkeypatch.setattr(D, "_dgt_long", boom)
+    monkeypatch.setattr(D, "_idgt_long", boom)
+    L, a, M = 4096, 64, 256
+    g = firwin("hann", M)
+    f = np.random.default_rng(0).standard_normal(L)
+    c = dgtreal(f, g, a, M)
+    assert _relerr(idgtreal(c, gabdual(g, a, M, L), a, M), f) < 1e-12
+
+
+def test_painless_dual_is_zero_where_the_window_is():
+    """``gabdual``/``gabtight`` of a painless window at a given ``L`` are
+    ``g / d`` and ``g / sqrt(d)`` exactly: zero outside the window's support
+    (the factorisation leaves rounding there, which would make the dual look
+    full-length and send it down the slow path)."""
+    from cool_frames.filters import firwin
+
+    L, a, M = 512, 16, 64
+    g = firwin("hann", M)
+    gw = middlepad(g, L)
+    d = gabframediag(g, a, M, L)
+    gd, gt = gabdual(g, a, M, L), gabtight(g, a, M, L)
+    zero = gw == 0
+    assert np.all(gd[zero] == 0) and np.all(gt[zero] == 0)
+    np.testing.assert_allclose(gd[~zero], gw[~zero] / d[~zero], rtol=1e-15)
+    np.testing.assert_allclose(gt[~zero], gw[~zero] / np.sqrt(d[~zero]), rtol=1e-15)
