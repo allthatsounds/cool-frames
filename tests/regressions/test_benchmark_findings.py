@@ -541,3 +541,157 @@ def test_complement_cache_follows_the_inner_filters():
     np.testing.assert_array_equal(lp["H"](L), build()["H"](L))  # new inner filter
     a_inner[0] = a_inner[0] * 2
     np.testing.assert_array_equal(lp["H"](L), build()["H"](L))  # new hop, in place
+
+
+# ---------------------------------------------------------------------------
+# B14-B15: uniform banks that are not painless get their exact canonical
+# frames, computed once
+# ---------------------------------------------------------------------------
+
+
+def _dense_analysis(g, a, L):
+    """The analysis operator as a matrix (rows: coefficients)."""
+    c = filterbank(np.eye(L), g, a, L)
+    return np.concatenate([np.asarray(cm).reshape(-1, L) for cm in c], axis=0)
+
+
+def _nonpainless_gabor_bank(real=True):
+    """A uniform ``gabfilters`` bank that is not painless (support 64 bins
+    against L/a = 32); single-sided for real signals, or two-sided."""
+    from cool_frames.numpy.filters import gabfilters
+
+    g, a, _fc, L, _ = gabfilters(8000, 512, M=64, a=16, real=real)
+    return g, int(np.asarray(a).ravel()[0]), L
+
+
+def _random_coefficients(g, a, L, seed=5):
+    rng = np.random.default_rng(seed)
+    return [rng.standard_normal(L // a) + 1j * rng.standard_normal(L // a) for _ in g]
+
+
+@pytest.mark.parametrize("real", [False, True])
+def test_uniform_dual_is_the_pseudo_inverse(real):
+    """Synthesis with the dual of a uniform non-painless bank is the
+    pseudo-inverse of the analysis -- for *any* coefficients, not only
+    consistent ones, which is what makes it the canonical dual.  For real
+    signals (a single-sided bank, ``real=True``) the analysis is the
+    real-linear map ``x -> [Re A x; Im A x]``; otherwise a two-sided bank."""
+    g, a, L = _nonpainless_gabor_bank(real=real)
+    A = _dense_analysis(g, a, L)
+    c = _random_coefficients(g, a, L)
+    cv = np.concatenate(c)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        f = ifilterbank(c, filterbankdual(g, a, L, real=real), a, L, real=real)
+    if real:
+        want = np.linalg.pinv(np.vstack([A.real, A.imag])) @ np.concatenate([cv.real, cv.imag])
+    else:
+        want = np.linalg.pinv(A) @ cv
+    assert np.linalg.norm(f - want) / np.linalg.norm(want) < 1e-10
+
+
+def test_a_single_sided_bank_with_real_false_gets_a_projection():
+    """Not a frame of C^L (it sees no negative frequencies, apart from tails
+    of 1e-17 of the peak): the uniform branch raised "not a frame".  It now
+    returns the pseudo-inverse on the part of the space the bank covers
+    (eigenvalues below 1e-10 of the frame operator's scale count as zero), so
+    synthesis followed by analysis is an orthogonal projection: idempotent
+    and never longer than its input."""
+    g, a, L = _nonpainless_gabor_bank(real=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gd = filterbankdual(g, a, L, real=False)
+
+        def P(c):
+            return filterbank(ifilterbank(c, gd, a, L, real=False), g, a, L)
+
+        c0 = _random_coefficients(g, a, L)
+        c1 = P(c0)
+        c2 = P(c1)
+    v0, v1, v2 = (np.concatenate(c) for c in (c0, c1, c2))
+    assert np.linalg.norm(v2 - v1) / np.linalg.norm(v1) < 1e-6
+    assert np.linalg.norm(v1) <= np.linalg.norm(v0) * (1 + 1e-9)
+    assert np.linalg.norm(v1) > 0.25 * np.linalg.norm(v0)  # and does not vanish
+
+
+@pytest.mark.parametrize("real", [False, True])
+def test_uniform_tight_frame_and_bounds_are_exact(real):
+    """The tight frame is ``A S^{-1/2}`` with ``S`` the frame operator (for
+    real signals, of the real-linear map, and scaled by ``1/sqrt(2)``: the
+    real-signal synthesis is ``2 Re(...)``), and the bounds are the extreme
+    eigenvalues of ``S``."""
+    from cool_frames.numpy.filterbanks import filterbankbounds, filterbanktight
+
+    g, a, L = _nonpainless_gabor_bank(real=real)
+    A = _dense_analysis(g, a, L)
+    Ar = np.vstack([A.real, A.imag]) if real else A
+    lam, V = np.linalg.eigh(Ar.conj().T @ Ar)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gt = filterbanktight(g, a, L, real=real)
+        At = _dense_analysis(gt, a, L)
+        Atr = np.vstack([At.real, At.imag]) if real else At
+        want = Ar @ (V * lam**-0.5) @ V.conj().T
+        if real:
+            want = want / np.sqrt(2)
+        assert np.linalg.norm(Atr - want) / np.linalg.norm(want) < 1e-10
+        A_b, B_b = filterbankbounds(g, a, L, real=real)
+    scale = 2.0 if real else 1.0
+    assert A_b == pytest.approx(scale * lam[0], rel=1e-9)
+    assert B_b == pytest.approx(scale * lam[-1], rel=1e-9)
+
+
+def test_the_dual_is_computed_once_per_content(monkeypatch):
+    """``gla`` asks for the same dual on every call; it is cached by the
+    content of the evaluated filters and handed out as a copy."""
+    import cool_frames.numpy.filterbanks._frame as fr
+
+    g, a, L = _nonpainless_gabor_bank()
+    calls = []
+    real_uniform = fr._uniform_frame
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real_uniform(*args, **kwargs)
+
+    monkeypatch.setattr(fr, "_uniform_frame", counting)
+    fr._FRAME_CACHE.clear()
+    d1 = filterbankdual(g, a, L)
+    d2 = filterbankdual(g, a, L)
+    assert len(calls) == 1
+    for u, v in zip(d1, d2):
+        np.testing.assert_array_equal(u["H"], v["H"])
+    d1[0]["H"][:] = 0  # the caller's copy, not the cache
+    assert np.any(filterbankdual(g, a, L)[0]["H"] != 0)
+    assert len(calls) == 1
+    g2 = [dict(gm) for gm in g]
+    g2[3] = dict(g2[3], H=np.asarray(g2[3]["H"]) * 1.5)  # new content: recomputed
+    filterbankdual(g2, a, L)
+    assert len(calls) == 2
+    filterbankdual(g, a, L, real=False)  # another key
+    assert len(calls) == 3
+
+
+def test_legla_kernel_is_built_once(monkeypatch):
+    import cool_frames.numpy.phase._leglakernel as lk
+    from cool_frames.numpy.phase import legla
+
+    g, a, _fc, L, _ = audfilters(4000, 512)
+    s = [np.abs(cm) for cm in filterbank(np.random.default_rng(0).standard_normal(L), g, a, L)]
+    built = []
+    real_cls = lk.LeglaKernel
+
+    class Counting(real_cls):
+        def __init__(self, *args, **kwargs):
+            built.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(lk, "LeglaKernel", Counting)
+    lk._KERNEL_CACHE.clear()
+    r1 = legla(s, g, a, L=L, real=True, maxit=3)
+    r2 = legla(s, g, a, L=L, real=True, maxit=3)
+    assert len(built) == 1
+    for u, v in zip(r1[0], r2[0]):
+        np.testing.assert_array_equal(u, v)
+    legla(s, g, a, L=L, real=True, maxit=3, relthr=1e-2)
+    assert len(built) == 2

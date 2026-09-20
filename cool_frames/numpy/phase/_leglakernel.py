@@ -215,3 +215,37 @@ class LeglaKernel:
             f"LeglaKernel(M={self.M}, L={self.L}, real={self.real}, "
             f"relthr={self.relthr:g}, nnz={self.nnz:,})"
         )
+
+
+# LEGLA's kernel is built from the bank and its dual on every call, which
+# for a large bank costs seconds (seven for the default ERB bank at
+# fs = 22050, Ls = 65536) -- more than the iterations.  It depends only on
+# the two banks and the settings, so it is cached, keyed by their content.
+_KERNEL_CACHE: dict = {}
+_KERNEL_CACHE_SIZE = 2
+
+
+def cached_kernel(g, gd, hops, N, L, *, real, relthr, zero_self_term=False) -> LeglaKernel:
+    """:class:`LeglaKernel` for these arguments, built once per content."""
+    from ..filterbanks._frame import _bank_digest
+
+    hops = np.asarray(hops, dtype=int)
+    key = (
+        _bank_digest(g, hops, L, "legla-g"),
+        _bank_digest(gd, hops, L, "legla-gd"),
+        hops.tobytes(),
+        tuple(int(n) for n in N),
+        int(L),
+        bool(real),
+        float(relthr),
+        bool(zero_self_term),
+    )
+    kern = _KERNEL_CACHE.get(key)
+    if kern is None:
+        kern = LeglaKernel(
+            g, gd, hops, N, L, real=real, relthr=relthr, zero_self_term=zero_self_term
+        )
+        if len(_KERNEL_CACHE) >= _KERNEL_CACHE_SIZE:
+            _KERNEL_CACHE.pop(next(iter(_KERNEL_CACHE)))
+        _KERNEL_CACHE[key] = kern
+    return kern

@@ -70,25 +70,42 @@ def fir_bank():
 
 
 @pytest.mark.requires_impl
-def test_painless_dual_refuses_fir_filters_instead_of_returning_zeros(fir_bank):
-    """A diagonal dual cannot exist for a time-limited filter; say so.
+def test_fir_bank_gets_its_exact_dual_or_a_refusal_never_zeros(fir_bank):
+    """An FIR bank's dual is exact when the bank is uniform; otherwise refused.
 
     ``painlessfilterbank`` used to fall through to ``H = np.zeros(0)`` for any
-    channel without an ``'H'`` key — i.e. every FIR channel — so
+    channel without an ``'H'`` key -- i.e. every FIR channel -- so
     ``filterbankdual``/``filterbanktight`` returned an *all-zero bank* and
     ``ifilterbank`` reconstructed exactly 0.0.  Nothing raised, and
     ``filterbankbounds`` still reported a valid frame for the same bank.
 
-    Computing a diagonal dual anyway would only trade a visible failure for a
-    plausible-looking wrong answer: the painless construction needs each
-    filter's *frequency* support to be at most L/a, and an FIR filter is
-    full-band by construction.
+    A diagonal (painless) dual cannot exist for a time-limited filter, which is
+    full-band.  A *uniform* FIR bank -- this fixture, every hop 4 -- has an
+    exact canonical dual all the same, from LTFAT's polyphase construction,
+    which ``filterbankdual``/``filterbanktight`` now use; a non-uniform one is
+    still refused rather than answered with a plausible-looking wrong dual.
     """
-    from cool_frames.numpy.filterbanks import filterbankdual, filterbanktight
+    from cool_frames.numpy.filterbanks import (
+        filterbank,
+        filterbankdual,
+        filterbanktight,
+        ifilterbank,
+    )
 
+    g, a, L = fir_bank["g"], fir_bank["a"], fir_bank["L"]
+    x = np.random.default_rng(0).standard_normal(L)
+    for real in (True, False):
+        gd = filterbankdual(g, a, L, real=real)
+        y = np.real(ifilterbank(filterbank(x, g, a, L), gd, a, L, real=real))
+        assert np.linalg.norm(y - x) / np.linalg.norm(x) < 1e-13
+        gt = filterbanktight(g, a, L, real=real)
+        y = np.real(ifilterbank(filterbank(x, gt, a, L), gt, a, L, real=real))
+        assert np.linalg.norm(y - x) / np.linalg.norm(x) < 1e-13
+
+    a_nonuniform = [4, 2, 4, 2, 4, 2]
     for fn in (filterbankdual, filterbanktight):
         with pytest.raises(ValueError, match=r"time-domain|painless"):
-            fn(fir_bank["g"], fir_bank["a"], fir_bank["L"])
+            fn(g, a_nonuniform, L)
 
 
 @pytest.mark.requires_impl
@@ -275,24 +292,40 @@ def test_filterbankwin_dual_and_realdual_are_different(erb):
 
 @pytest.mark.requires_impl
 @pytest.mark.parametrize("fs,Ls", [(4000, 512), (8000, 4096)])
-def test_gabfilters_is_a_tight_frame(fs, Ls):
-    """A 4x-overlap Hann DGT is exactly tight; it used to read kappa = 1.667.
+def test_gabfilters_frame_response_is_flat(fs, Ls):
+    """The edge scaling flattens the frame response; it used to read 1.667.
 
     The DC and Nyquist channels have no conjugate partner, so the
     ``2*real(ifft)`` fold in ``ifilterbank(real=True)`` double-counts them
     unless they carry a 1/sqrt(2).  Every other designer applies it.
+
+    This used to assert kappa = 1 from ``filterbankbounds``, the diagonal
+    (painless) formula.  The default lattice is not painless, and the bank's
+    filters are the Hann DGT's truncated to M bins, so it is not exactly tight;
+    ``filterbankbounds`` now returns its exact bounds (the uniform branch;
+    ``test_gabfilters_bounds_are_exact`` below), and the property the edge
+    scaling is responsible for is the flat diagonal response asserted here.
     """
-    from cool_frames.numpy.filterbanks import filterbankbounds
+    from cool_frames.numpy.filterbanks import filterbankresponse
     from cool_frames.numpy.filters import gabfilters
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        g, a, _fc, L, _info = gabfilters(fs, Ls)
+    g, a, _fc, L, _info = gabfilters(fs, Ls)
+    resp = filterbankresponse(g, a, L, real=True)
+    assert resp.min() > 0
+    kappa = resp.max() / resp.min()
+    assert abs(kappa - 1.0) < 1e-3, f"diagonal response not flat: {kappa:.5f}"
 
+
+@pytest.mark.requires_impl
+def test_gabfilters_bounds_are_exact():
+    """``filterbankbounds`` of a non-painless uniform bank equals the dense SVD."""
+    from cool_frames.numpy.filterbanks import filterbankbounds, filterbankbounds_svd
+    from cool_frames.numpy.filters import gabfilters
+
+    g, a, _fc, L, _info = gabfilters(4000, 512)
     A, B = filterbankbounds(g, a, L)
-    assert A > 0
-    kappa = B / A
-    assert abs(kappa - 1.0) < 1e-3, f"expected a tight frame, got kappa = {kappa:.5f}"
+    As, Bs = filterbankbounds_svd(g, a, L)
+    assert abs(B / A - Bs / As) < 1e-12
 
 
 @pytest.mark.requires_impl
@@ -315,22 +348,26 @@ def test_gabfilters_edge_channels_carry_the_fold_correction():
 
 
 @pytest.mark.requires_impl
-def test_gabfilters_warns_when_the_lattice_is_not_painless():
-    """It used to claim painlessness in a comment and warn only on redundancy < 1.
+def test_gabfilters_default_lattice_has_an_exact_dual():
+    """The default lattice is not painless, and no longer needs to be.
 
     Painlessness needs ``M**2 <= 4L``, which the default lattice never
-    satisfies, so ``filterbankdual`` returns an approximate dual.  Every other
-    designer warns in this situation.
+    satisfies.  ``filterbankdual`` used to return the approximate diagonal dual
+    (round trip 4.9e-4 at fs = 22050, Ls = 65536), and gabfilters warned about
+    it.  The bank is uniform, so its exact canonical dual now comes from the
+    polyphase construction, and the warning is gone.
     """
+    from cool_frames.numpy.filterbanks import filterbank, filterbankdual, ifilterbank
     from cool_frames.numpy.filters import gabfilters
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        gabfilters(16000, 16000)
+        g, a, _fc, L, _info = gabfilters(16000, 4000)
+    assert not any("painless" in str(w.message) for w in caught)
 
-    assert any("painless" in str(w.message) for w in caught), (
-        "no painless warning for a lattice that violates the condition"
-    )
+    x = np.random.default_rng(0).standard_normal(4000)
+    y = ifilterbank(filterbank(x, g, a, L), filterbankdual(g, a, L), a, 4000, real=True)
+    assert np.linalg.norm(np.real(y) - x) / np.linalg.norm(x) < 1e-13
 
 
 # ---------------------------------------------------------------------------
