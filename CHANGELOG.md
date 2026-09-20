@@ -1009,10 +1009,13 @@ coverage pass pinned rather than fixed. PGHI's pure-Python heap integration
   window are now `g / d` and `g / sqrt(d)` exactly, zero where `g` is, which
   keeps a dual computed at length `L` on the fast path.
 
-- **RTISI-LA is PHASERET's algorithm, and finishes.** W52 could not run
-  `rtisila` on a 3 s excerpt in 300 s. Every update of every frame
-  re-synthesised and re-analysed the whole signal, future frames included
-  with zero phase (so it was not causal), frames were grouped by the
+- **RTISI-LA is PHASERET's algorithm.** `rtisila` was not RTISI-LA. Every
+  update of every frame re-synthesised and re-analysed the whole signal,
+  future frames included with zero phase (so it was not causal): about a
+  minute and an MR-SC of -8.7 dB on W52's 3 s excerpt. (W52's run at
+  `f5edebe` recorded it as not finishing that excerpt in 300 s; that was
+  the benchmark's timeout helper, which deadlocked on the returned signal,
+  not `rtisila`.) Frames were grouped by the
   numerator of a fractional hop, `lertisila` used full transforms instead
   of Le Roux's kernel and `gsrtisila` had none of Gnann and Spiertz's
   windows. The family is rewritten:
@@ -1027,10 +1030,12 @@ coverage pass pinned rather than fixed. PGHI's pure-Python heap integration
     and re-analysed exactly, and the newest frame analysed with Zhu's
     windows built from the bank's atoms; on a bank that is a Gabor frame
     this reproduces PHASERET. The benchmark's 513-channel bank takes about
-    a minute (6 ms an update, most of it the exact dual's 4800 bins per
-    channel). `lookahead` defaults to PHASERET's `ceil(M/a) - 1` with the
-    window length replaced by the longest atom's duration (DC and Nyquist
-    complements left out); `frame_hop` to the bank's hop.
+    a minute, as long as the old code, at -16.0 dB on that excerpt
+    (-16.5 dB with the window; 6 ms an update, most of it the exact dual's
+    4800 bins per channel). `lookahead` defaults to PHASERET's
+    `ceil(M/a) - 1` with the window length replaced by the longest atom's
+    duration (DC and Nyquist complements left out); `frame_hop` to the
+    bank's hop.
   - The torch functions run the NumPy implementation.
   **Behavioural change:** different (better) results, `startphase`
   defaulting to PHASERET's (the newest frame starts empty), and
