@@ -695,3 +695,74 @@ def test_legla_kernel_is_built_once(monkeypatch):
         np.testing.assert_array_equal(u, v)
     legla(s, g, a, L=L, real=True, maxit=3, relthr=1e-2)
     assert len(built) == 2
+
+
+# ---------------------------------------------------------------------------
+# B18: PGHI's heap takes the loudest path to a coefficient
+# ---------------------------------------------------------------------------
+#
+# Found while asking why the benchmark's PGHI row lost 0.3 dB per signal to
+# tifresi's on the same magnitudes and the same gradients (the two gradient
+# estimates agree to 1e-3 relative once the conventions are matched, so the
+# integrator was the only place left).  Every coefficient is proposed by
+# several neighbours; the heap entries were ``(-magnitude, index, phase)``
+# tuples, so two proposals for the same coefficient compared by their *phase*
+# and the numerically smallest one won -- an artefact of tuple comparison.
+
+
+def test_the_heap_integrates_a_coefficient_from_its_loudest_neighbour():
+    """Two neighbours propose a phase for the same coefficient; the proposal
+    that must win is the one integrated from the louder of the two."""
+    from cool_frames.numpy.phase._constphase import heap_pghi
+
+    # Two channels, two frames, hop 1: (m, n) -> flat index m * 2 + n.
+    N, a_int = [2, 2], [1, 1]
+    fc_norm = np.array([0.0, 1.0])
+    abss = np.array([1.0, 0.9, 0.8, 0.7])          # seed is (0, 0)
+    tgrad = np.array([0.10, 0.20, 0.30, 0.40])     # varies with channel and
+    fgrad = np.array([0.50, -0.25, 0.75, -0.50])   # frame: the two paths differ
+
+    tgw, fgw = tgrad * np.pi, -fgrad * np.pi
+    # (0,0) -> (0,1), one frame in time
+    p01 = a_int[0] * (tgw[0] + tgw[1]) / 2
+    # (0,0) -> (1,0), one channel up (fc spacing 1.0, no time offset)
+    p10 = (fc_norm[1] - fc_norm[0]) * (fgw[0] + fgw[2]) / 2
+    # the two ways into (1,1): from (0,1), magnitude 0.9, and from (1,0), 0.8
+    from_loud = p01 + (fc_norm[1] - fc_norm[0]) * (fgw[1] + fgw[3]) / 2
+    from_quiet = p10 + a_int[1] * (tgw[2] + tgw[3]) / 2
+    assert not np.isclose(from_loud, from_quiet)    # the fixture is informative
+
+    phase = heap_pghi(abss, tgrad, fgrad, N, a_int, fc_norm)
+    assert phase[0] == 0.0
+    assert phase[1] == pytest.approx(p01)
+    assert phase[2] == pytest.approx(p10)
+    assert phase[3] == pytest.approx(from_loud)
+    assert phase[3] != pytest.approx(from_quiet)
+
+
+def test_pghi_consistency_on_a_gabor_bank():
+    """End to end: resynthesise the reconstructed coefficients, re-analyse,
+    and compare the magnitudes with the ones PGHI was given.  The phase-value
+    tie-break scored -22.7 dB on this fixture, the loudest-path one -24.8 dB;
+    the threshold sits between them."""
+    from cool_frames.numpy.filters import gabfilters
+    from cool_frames.numpy.filterbanks import filterbankdual, filterbankwin, ifilterbank
+    from cool_frames.numpy.phase import filterbankconstphase
+
+    fs, L = 4000, 4096
+    g, a, fc, L, info = gabfilters(fs, L, M=128, a=32)
+    gw = filterbankwin(g, a, L)[0]
+    gd = filterbankwin(filterbankdual(g, a, L), a, L)[0]
+    t = np.arange(L) / fs
+    x = (np.sin(2 * np.pi * (200 * t + 300 * t**2)) + 0.4 * np.sin(2 * np.pi * 750 * t)
+         + 0.05 * np.random.default_rng(0).standard_normal(L))
+    s = [np.abs(np.asarray(cm)) for cm in filterbank(x, gw, a, L)]
+    sqtfr = np.sqrt(np.broadcast_to(np.asarray(info["tfr"], float), (len(g),)).copy())
+
+    c, _used = filterbankconstphase(s, np.asarray(a), np.asarray(fc, float),
+                                    sqtfr=sqtfr, fs=fs, rng=0)
+    y = np.real(ifilterbank(c, gd, a, L, real=True))
+    s2 = [np.abs(np.asarray(v)) for v in filterbank(y, gw, a, L)]
+    num = np.linalg.norm(np.concatenate([(u - v).ravel() for u, v in zip(s2, s)]))
+    den = np.linalg.norm(np.concatenate([v.ravel() for v in s]))
+    assert 20 * np.log10(num / den) < -24.0

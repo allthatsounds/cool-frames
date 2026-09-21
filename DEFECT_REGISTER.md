@@ -567,12 +567,13 @@ profiling of its slow rows. Regression tests:
 on `1f581bc` (B9 and B10 also on `1d0773b`, the commit that fixed B1-B8;
 B11 to B13 are speed: the tests of B11 and B12 pin the results to the old
 code's, and B13 needs no test of its own, B12's cache test covering it).
-B14-B17 were fixed after the published run (at `f5edebe`); their tests are
+B14-B18 were fixed after the published run (at `f5edebe`); their tests are
 at the end of `test_benchmark_findings.py` (B14,
 B15: the dual is the pseudo-inverse of the analysis for arbitrary
 coefficients, the tight frame and bounds match the dense operator, the cache
-recomputes only on new content), in `test_rtisila_family.py` (B16, against
-PHASERET) and at the end of `tests/gabor/test_gabor.py` (B17).
+recomputes only on new content; B18: the heap's path and the consistency it
+buys), in `test_rtisila_family.py` (B16, against PHASERET) and at the end of
+`tests/gabor/test_gabor.py` (B17).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -593,6 +594,7 @@ PHASERET) and at the end of `tests/gabor/test_gabor.py` (B17).
 | B15 | `filterbanks/_frame.py`, `phase/_leglakernel.py` | `gla`/`legla` recomputed the canonical dual on every call; `legla` rebuilt its kernel too | cached by the content of the evaluated filters, returned as copies: a repeated call on the benchmark's bank 35 ms for the dual (3 s to compute exactly); `legla` on the ERB bank 6.9 s → 0.1 s |
 | B16 | `phase/_rtisila.py`, `_gsrtisila.py`, `_lertisila.py`, torch equivalents | `rtisila` was not RTISI-LA: every update re-synthesised and re-analysed the whole signal, *future frames included* (not causal), about a minute and MR-SC -8.7 dB on W52's 3 s excerpt (W52's run at `f5edebe` recorded it as not finishing in 300 s: its timeout helper deadlocked on the returned signal, since corrected in W52); frames were grouped by the numerator of a fractional hop; `lertisila` had no kernel and `gsrtisila` no windows; the references cited other papers | rewritten as PHASERET's algorithm. With a window (`rtisila(s, g, a, M)`): line-by-line ports of all three, checked against PHASERET in Octave (1e-9), 0.4 s and -16.5 dB for the excerpt. With a filter bank: frames of `frame_hop` samples, the partial reconstruction held as its spectrum and updated exactly, Zhu's windows from the bank's atoms (reproduces PHASERET on a bank that is a Gabor frame); about a minute on the benchmark's 513-channel bank, as before, at -16.0 dB. Torch runs the NumPy code |
 | B17 | `gabor/_dgt.py`, `gabor/_fb.py` | `gabor.dgtreal`/`idgtreal` used the long-window factorisation for every window, where LTFAT uses the filter-bank algorithm for any window shorter than the signal | analysis + synthesis at 65536/1024/256: 121 ms → 7-14 ms (ltfatpy 3.0 ms); equal to the factorisation to 1e-16 on 300 random lattices, and to LTFAT. `gabdual`/`gabtight` of a painless window are `g/d`, `g/sqrt(d)` exactly |
+| B18 | `phase/_constphase.py` | PGHI's heap held `(-magnitude, index, phase)` tuples, so when several neighbours proposed a phase for the same coefficient -- the normal case -- Python's tuple comparison fell through to the proposed *phase* and the numerically smallest one won: an artefact, not a criterion. Found by asking why W52's PGHI row lost 0.3 dB per signal to tifresi's on the same magnitudes; the two gradient estimates agree to 1e-3 relative once the conventions are matched, and each integrator keeps its own result when fed the other's gradients, so only the heap was left | the source's magnitude is the second key and a push counter the third: the proposal integrated from the loudest neighbour wins, equal keys keep insertion order. W52's fifteen signals improve on thirteen (median MR-SC -17.6 → -18.4 dB; against tifresi's PGHI, signal by signal, from 0.3 dB behind to 0.25 dB ahead; clicks 3.7 dB better, vibrato 1.7 dB worse), the test fixture -22.7 → -24.8 dB. Affects every PGHI caller, Gabor and filterbank |
 
 ### Still open, from the same benchmark
 
@@ -602,8 +604,9 @@ Verified, not fixed here. Numbers from W52's `results/t12_findings.json`
 - **PGHI's heap integration is pure Python**: 2075 ms per excerpt against
   42 ms for tifresi's numba version (49x).
 
-Fixed since (B14-B17 above): `gabfilters` exactness, the dual recomputed on
-every call, `rtisila` not being RTISI-LA, the short-window DGT.
+Fixed since (B14-B18 above): `gabfilters` exactness, the dual recomputed on
+every call, `rtisila` not being RTISI-LA, the short-window DGT, and the heap
+path of PGHI itself (found while explaining the row below).
 
 ### LTFAT discrepancies found while fixing them
 
