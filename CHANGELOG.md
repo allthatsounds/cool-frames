@@ -1067,6 +1067,35 @@ zero (Hamming, Blackman2, Nuttall01), where LTFAT 2.6 sets it to zero, and
 `middlepad` splits that sample when extending, where LTFAT's `fir2long` does
 not.
 
+### PGHI's heap takes the loudest path to each coefficient
+
+W52's PGHI row lost 0.3 dB per signal to tifresi's numba PGHI on the same
+magnitudes, and the gradient estimate was not why: cool-frames' and tifresi's
+agree to 1e-3 relative once the conventions are lined up (cool-frames'
+`tgrad` is the absolute instantaneous frequency in normalised units,
+tifresi's the deviation from the bin centre in LTFAT's), and feeding either
+estimate to either integrator leaves each integrator's own result unchanged.
+The heap was why. Its entries were `(-magnitude, index, phase)` tuples, so
+when several neighbours proposed a phase for the same coefficient -- the
+normal case -- Python's tuple comparison fell through to the proposed
+*phase*, and the numerically smallest one won. That is an artefact of tuple
+ordering, not a criterion: LTFAT's C heap pops same-key entries in insertion
+order, so there the loudest source wins.
+
+The key is now `(-magnitude of the target, -magnitude of the source, push
+counter)`: the loudest coefficient is still integrated first, among the
+proposals for one coefficient the one integrated from the loudest neighbour
+wins -- the argument PGHI rests on, since a trapezoidal step is only as good
+as the gradient estimates at its ends -- and equal keys keep insertion order,
+so the result never depends on how two floats happen to compare.
+
+**Behavioural change:** different (better) phase from every PGHI caller,
+Gabor and filterbank alike. On W52's fifteen signals the reconstruction
+improves on thirteen: median MR-SC -17.6 → -18.4 dB, and against tifresi's
+PGHI, signal by signal, from 0.3 dB behind to 0.25 dB ahead; clicks gain
+3.7 dB, vibrato loses 1.7 dB. The fixture in the tests goes from -22.7 to
+-24.8 dB.
+
 ## 0.1.0
 
 First public release.
