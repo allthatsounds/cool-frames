@@ -29,6 +29,12 @@ import numpy as np
 
 from ..core._core import involute, modcent, postpad
 from ._firwin import firwin, firwin_taper
+from ._freqwin import freqwin
+
+
+def _mround(x: float) -> int:
+    """MATLAB/LTFAT ``round``: halves away from zero (Python rounds them to even)."""
+    return int(math.floor(abs(x) + 0.5) * (1 if x >= 0 else -1))
 
 # ---------------------------------------------------------------------------
 # Helper: Parse MATLAB-style varargs for filter functions
@@ -165,15 +171,17 @@ def blfilter(winname, fsupp: float, fc: float = 0.0, *args,
     else:
         wnames = [str(winname)]
 
-    def _win(win_len: int) -> np.ndarray:
-        """Evaluate the window function at length win_len.
+    taper = len(wnames) >= 3 and str(wnames[1]).lower() == "taper"
 
-        Supports both simple window names and tapering windows.
-        """
-        if len(wnames) >= 3 and wnames[1].lower() == "taper":
-            ratio = float(wnames[2])
-            return firwin_taper(wnames[0], wnames[1], ratio, win_len, norm="inf")
-        return firwin(wnames[0], win_len, norm="inf")
+    def _win(win_len: int, shift: float = 0.0) -> np.ndarray:
+        """The window at length win_len, whole-point even (peak at index 0),
+        shifted by ``shift`` samples.  Supports tapering windows."""
+        if taper:
+            if shift:
+                raise NotImplementedError("blfilter: pedantic is not implemented for a "
+                                          "tapering window")
+            return firwin_taper(wnames[0], wnames[1], float(wnames[2]), win_len, norm="inf")
+        return firwin(wnames[0], win_len, norm="inf", shift=shift)
 
     def _apply_scal_norm(h: np.ndarray, L: int) -> np.ndarray:
         """Apply scaling and normalization to a filter response.
@@ -208,32 +216,30 @@ def blfilter(winname, fsupp: float, fc: float = 0.0, *args,
             return h
 
     def _fc_offset(L: int) -> float:
-        """Compute subsample offset for centre frequency adjustment.
-
-        Returns the fractional error in centre-frequency alignment, used for
-        pedantic mode to apply linear-phase correction.
-        """
+        """Sub-bin part of the centre frequency (pedantic mode), in bins."""
         if pedantic:
-            return L / 2 * fc_norm - round(L / 2 * fc_norm)
+            return L / 2 * fc_norm - _mround(L / 2 * fc_norm)
         return 0.0
 
+    def _win_len(L: int) -> int:
+        return max(min_win, _mround(L / 2 * fsupp_norm))
+
+    # LTFAT's blfilter: H = fftshift(firwin(...)), whose peak -- index 0 of the
+    # whole-point even window -- moves to index floor(n/2), and foff =
+    # round(L/2 fc) - floor(n/2) puts it on the centre frequency's bin; with
+    # 'pedantic' the window is evaluated shifted by the sub-bin remainder.
+    # Until 2026-09-26 the window was not shifted and foff subtracted the
+    # index of its maximum (0), so every window whose peak is at index 0 --
+    # every LTFAT window -- ran one-sidedly from fc upwards, its lower half
+    # wrapped to the top of its support; and 'pedantic' multiplied the
+    # response by a linear phase, which delays the impulse response instead
+    # of moving the window in frequency.
     def H(L: int) -> np.ndarray:
-        win_len = max(min_win, round(L / 2 * fsupp_norm))
-        h = _win(win_len)
-        shift = _fc_offset(L)
-        if shift != 0:
-            # Sub-sample shift via linear phase
-            n = np.arange(len(h)) - len(h) // 2
-            h = h * np.exp(-1j * 2 * np.pi * n * shift / len(h))
+        h = np.fft.fftshift(_win(_win_len(L), -_fc_offset(L)))
         return _apply_scal_norm(h, L)
 
     def foff(L: int) -> int:
-        win_len = max(min_win, round(L / 2 * fsupp_norm))
-        # Compute the window to find the peak position
-        h = _win(win_len)
-        peak_idx = int(np.argmax(np.abs(h)))
-        # Place the peak at the desired center frequency bin
-        return int(round(L / 2 * fc_norm)) - peak_idx
+        return int(_mround(L / 2 * fc_norm)) - _win_len(L) // 2
 
     return {
         "H":        H,
@@ -395,6 +401,9 @@ def firfilter(winname, M=None, fc=0.0, *args, delay=0, fs=None, norm="energy",
 # freqfilter – frequency-domain filter specified as full frequency response
 # ---------------------------------------------------------------------------
 
+_FREQWIN_SHAPES = ("gauss", "butterworth", "roex", "gammatone")
+
+
 def freqfilter(winname, fsupp: float, fc: float = 0.0, *args,
                fs: float | None = None,
                norm: str = "energy",
@@ -402,35 +411,52 @@ def freqfilter(winname, fsupp: float, fc: float = 0.0, *args,
                scal: float = 1.0,
                min_win: int = 1,
                pedantic: bool = False,
-               bwtruncmul: float = np.inf) -> dict:
-    """Frequency-domain filter (full-length transfer function).
+               bwtruncmul: float = 4.0) -> dict:
+    """Frequency-domain filter from a frequency-response shape (LTFAT's
+    ``freqfilter``).
 
-    Delegates to :func:`blfilter` for now (band-limited approximation).
+    The response is :func:`freqwin` ``(name, Lw, bw)`` centred on *fc*, with
+    ``bw = fsupp`` its -6 dB bandwidth, kept on ``Lw = min(round(bw *
+    bwtruncmul * L / fs), L)`` DFT bins around *fc* (``bwtruncmul`` = 4, as
+    in LTFAT).  Shapes: ``'gauss'``, ``'butterworth'``, ``'roex'`` and
+    ``'gammatone'`` as in :func:`freqwin` (whose ``'roex'`` is LTFAT's
+    ``'gammatone'``, and whose ``'gammatone'`` is the true gammatone
+    response); a tuple ``(name, order)`` sets the order.  Any other name is
+    a :func:`firwin` window and is passed to :func:`blfilter` with *fsupp* as
+    its support (a cool-frames extension; LTFAT refuses those names).
+
+    Until 2026-09-26 this delegated every name to :func:`blfilter`, so the
+    frequency-response shapes were evaluated by :func:`firwin`, which had no
+    bandwidth parameter and approximated them (see ``DEFECT_REGISTER.md``).
 
     Parameters
     ----------
-    winname : str
-        Window name.
+    winname : str or (str, int)
+        Frequency-response shape, optionally with its order.
     fsupp : float
-        Frequency support in Hz (if fs given) or normalized units.
+        For the frequency-response shapes, their -6 dB bandwidth (LTFAT's
+        ``bw``); for a :func:`firwin` window, its support.  In Hz if *fs* is
+        given, else normalised (Nyquist = 1).
     fc : float
-        Centre frequency.
+        Centre frequency, same units.
     *args
         MATLAB-style flags/key-value pairs.
     fs : float, optional
         Sampling rate in Hz.
     norm : str
-        Normalization type.
+        Normalisation, as in :func:`blfilter`: ``'energy'`` (default;
+        ``sum(abs(H)**2) / L == 1``), ``'1'``/``'area'`` or
+        ``'inf'``/``'peak'`` (unit peak).
     delay : int
         Filter delay in samples.
     scal : float
         Scaling factor.
     min_win : int
-        Minimum window length.
+        Minimum window length (only for :func:`blfilter` windows).
     pedantic : bool
-        Subsample adjustment flag.
+        Evaluate the response shifted by the sub-bin part of *fc*.
     bwtruncmul : float
-        Bandwidth truncation multiplier (unused).
+        Support of the kept response, in bandwidths (default 4).
 
     Returns
     -------
@@ -440,11 +466,10 @@ def freqfilter(winname, fsupp: float, fc: float = 0.0, *args,
     Examples
     --------
     >>> from cool_frames.numpy.filters.lowlevel import freqfilter
-    >>> g = freqfilter('hann', 500, 1000, fs=16000)
+    >>> g = freqfilter('gauss', 500, 1000, fs=16000)
     >>> 'H' in g
     True
     """
-    # Merge positional varargs (MATLAB-style flags) into keyword args
     realonly = False
     if args:
         parsed = _parse_filter_varargs(args)
@@ -463,8 +488,45 @@ def freqfilter(winname, fsupp: float, fc: float = 0.0, *args,
         if "realonly" in parsed:
             realonly = parsed["realonly"]
 
-    return blfilter(winname, fsupp, fc, fs=fs, norm=norm, delay=delay,
-                    scal=scal, min_win=min_win, pedantic=pedantic, realonly=realonly)
+    if isinstance(winname, (list, tuple)):
+        name = str(winname[0]).lower()
+        order = int(winname[1]) if len(winname) > 1 and not isinstance(winname[1], str) else None
+    else:
+        name, order = str(winname).lower(), None
+    if name not in _FREQWIN_SHAPES:
+        return blfilter(winname, fsupp, fc, fs=fs, norm=norm, delay=delay, scal=scal,
+                        min_win=min_win, pedantic=pedantic, realonly=realonly)
+
+    fs_ = 2.0 if fs is None else float(fs)
+    fc_norm = float(modcent(2.0 * fc / fs_, 2.0))
+    bw = float(fsupp)
+
+    def _lw(L: int) -> int:
+        return int(min(_mround(bw * bwtruncmul * L / fs_), L))
+
+    def H(L: int) -> np.ndarray:
+        lw = _lw(L)
+        off = (L / 2 * fc_norm - _mround(L / 2 * fc_norm)) if pedantic else 0.0
+        h = np.fft.fftshift(freqwin(name, lw, bw, fs=fs_ / L * lw, order=order, shift=off))
+        # normalised as blfilter's windows are, then scaled to the length.
+        # (LTFAT's freqfilter passes no norm to freqwin, so its 'energy'
+        # response is not of unit energy; see DEFECT_REGISTER.md.)
+        if norm in ("energy", "2"):
+            return h / np.linalg.norm(h) * scal * math.sqrt(L)
+        if norm in ("1", "area"):
+            return h / np.sum(np.abs(h)) * scal * float(L)
+        return h / np.max(np.abs(h)) * scal
+
+    def foff(L: int) -> int:
+        return int(_mround(L / 2 * fc_norm)) - _lw(L) // 2
+
+    return {
+        "H":        H,
+        "foff":     foff,
+        "realonly": 1 if realonly else 0,
+        "delay":    int(delay),
+        "fs":       fs,
+    }
 
 
 # ---------------------------------------------------------------------------

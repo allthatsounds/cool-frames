@@ -9,24 +9,18 @@ MATLAB originals
   layer1/filter_design/audfilters.m
   layer0/math_utils/floor23.m
 
-Design note — blfilter fftshift convention
+Design note — where the window's peak goes
 -------------------------------------------
-The shared ``blfilter`` helper stores the Hann window as
-``np.fft.fftshift(h)`` (peak at index 0) and computes::
-
-    foff = round(L/2 * fc_norm) - win_len // 2
-
-which places the peak at ``fc_bin - win_len//2`` — half a window away
-from the intended centre frequency.  For even-length windows, the
-centre-frequency bin receives the Hann zero-crossing, creating dead DFT
-bins and frame lower bound A = 0 in sparse configurations.
-
-*All* filters in ``audfilters`` are therefore built with
-``_make_direct_filter`` (from ``_cqtfilters``), which stores the
-un-shifted Hann window (peak at index ``n // 2``) and sets
-``foff = fc_bin - win_bins // 2`` so the peak maps exactly to
-``fc_bin = round(L * fc_hz / fs)``.  Odd window lengths are enforced.
-This is fully compatible with ``filter_freqresp`` and all layer-2 functions.
+Every filter in ``audfilters`` is built by ``_make_direct_filter`` (from
+``_cqtfilters``): the window is stored with its peak at index ``n // 2``
+(odd ``n``) and ``foff = fc_bin - n // 2`` puts that peak on
+``fc_bin = round(L * fc_hz / fs)``.  The Hann is a symmetric Hann with zeros
+at both ends; every other window is :func:`firwin`'s whole-point even window
+(peak at index 0) passed through ``fftshift``, which moves the peak to
+``n // 2``.  (Until 2026-09-26 the fftshift was missing, so any window but
+the Hann ran one-sidedly from ``fc`` upwards; ``blfilter`` had the same
+defect.  LTFAT's ``blfilter`` stores ``fftshift(firwin(...))`` with
+``foff = round(L/2*fc) - floor(n/2)``, which is the same placement.)
 
 Mel-scale default spacing
 --------------------------
@@ -134,9 +128,15 @@ def audfilters(fs: float, Ls: int, *,
                hop_ms:   float | None = None) -> tuple[list[dict], np.ndarray, np.ndarray, int, dict]:
     """Construct an auditory filterbank.
 
-    Auditory filterbank using gammatone filters based on auditory psychology
-    (Moore 2003), efficient approximations (Patterson et al. 1992), and
-    frequency analysis (Hohmann 2002).  See *References* below.
+    Band-limited filters equidistant on an auditory frequency scale (ERB by
+    default; Moore 2003), each a window in the frequency domain -- a Hann by
+    default (``window``) -- centred on its channel's frequency.  The window's
+    support is the auditory bandwidth at that frequency times ``bwmul``,
+    divided by the window's bandwidth factor (0.375 for the Hann), so that its
+    equivalent rectangular bandwidth is ``bwmul`` auditory bandwidths: 1 ERB
+    by default.  A DC and a Nyquist channel complete the bank.  These are not
+    gammatone filters (Patterson et al. 1992; Hohmann 2002); for those see
+    :func:`gammatonefir`.  See *References* below.
 
     .. note:: **Parameter-order convention.**
        ``audfilters``, ``cqtfilters``, ``greenwoodfilters`` and (since the

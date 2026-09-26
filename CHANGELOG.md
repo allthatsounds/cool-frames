@@ -1096,6 +1096,37 @@ PGHI, signal by signal, from 0.3 dB behind to 0.25 dB ahead; clicks gain
 3.7 dB, vibrato loses 1.7 dB. The fixture in the tests goes from -22.7 to
 -24.8 dB.
 
+### Filter windows: where the window goes, and which windows exist
+
+Found while answering which window the ERB bank uses (`DEFECT_REGISTER.md`,
+W1-W7). **The default banks are unchanged** -- every `audfilters` and
+`cqtfilters` call with the Hann window builds bit-identical filters.
+
+- **Behavioural change:** `blfilter` responses are now centred on `fc`, as
+  LTFAT's are; they ran one-sidedly from `fc` upwards for every LTFAT window.
+  `pedantic=True` now moves the window by the sub-bin remainder of `fc`
+  (it applied a linear phase).
+- **Behavioural change:** `audfilters` and `cqtfilters` with any window but
+  the Hann now centre it on `fc` (its peak sat at the lower edge of the
+  support).
+- **Behavioural change:** `freqfilter` builds LTFAT's frequency responses
+  for `'gauss'`, `'butterworth'`, `'roex'` and `'gammatone'` from `freqwin`,
+  with the second argument their -6 dB bandwidth; other names still go
+  through `blfilter`.
+- **Behavioural change:** `firwin`/`firwin_eval` `'gauss'` and
+  `'butterworth'` now peak at index 0 like every other window, and
+  `'truncgauss'` is LTFAT's (with its percentage suffix, `'truncgauss20'`);
+  `pghi_findgamma` of it now agrees with the Cg it tabulates for that name.
+- **Breaking:** `firwin('gammatone')` and `firwin('roex')` raise
+  `ValueError` -- they were not window shapes (a causal envelope with a
+  spurious first sample, and a Gaussian) -- as does
+  `audfilters(window='gammatone')`, which built filters 3750 times too wide.
+  Use `freqwin` for frequency responses and `gammatonefir` for impulse
+  responses.
+- `freqwin` orders an even length's middle bin as LTFAT does (-L/2) and
+  takes `shift`; `firwin` takes `shift`.
+- The `audfilters` docstring no longer calls its filters gammatone filters.
+
 ## 0.1.0
 
 First public release.

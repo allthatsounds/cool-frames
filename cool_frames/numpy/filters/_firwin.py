@@ -29,12 +29,52 @@ def _x(M: int) -> np.ndarray:
     return n / M
 
 
+def _xc(x: np.ndarray) -> np.ndarray:
+    """WPE positions folded to [-0.5, 0.5): the signed distance from the peak
+    (index 0), so that a shape defined around 0 is sampled whole-point even."""
+    x = np.asarray(x, dtype=float)
+    return np.where(x < 0.5, x, x - 1.0)
+
+
+def _truncgauss_percent(name: str) -> float:
+    """The height (in %) at which 'truncgauss' is cut: 1 by default, or the
+    number appended to the name ('truncgauss20'), as in LTFAT."""
+    tail = name[len("truncgauss"):]
+    if not tail:
+        return 1.0
+    try:
+        pct = float(tail)
+    except ValueError:
+        raise ValueError(f"firwin: cannot read a percentage from {name!r}") from None
+    if not 0.0 < pct < 100.0:
+        raise ValueError(f"firwin: the truncgauss percentage must lie in (0, 100); got {pct}")
+    return pct
+
+
+# Shapes that are frequency responses or impulse responses with their own
+# bandwidth, not zero-phase windows: firwin has none of them (neither has
+# LTFAT's firwin).  Until 2026-09-26 it returned a Gaussian under the name
+# 'roex' and a causal envelope with a spurious unit first sample under
+# 'gammatone', and audfilters(window='gammatone') built filters 3750 times too
+# wide from it.
+_NOT_WINDOWS = {
+    "gammatone": "freqwin('gammatone', L, bw) for its frequency response, or "
+                 "gammatonefir(fc, fs) for its impulse response",
+    "roex": "freqwin('roex', L, bw) for the rounded-exponential frequency response",
+}
+
+
+def _not_a_window(name: str) -> None:
+    if name in _NOT_WINDOWS:
+        raise ValueError(f"firwin: {name!r} is not a window shape; use {_NOT_WINDOWS[name]}")
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def firwin(name: str, M: int, norm: str = "inf", *,
-           beta: float | None = None) -> np.ndarray:
+           beta: float | None = None, shift: float = 0.0) -> np.ndarray:
     """Evaluate a named symmetric FIR window of length *M*.
 
     The returned vector uses the WPE (Whole-Point Even) convention where
@@ -48,14 +88,24 @@ def firwin(name: str, M: int, norm: str = "inf", *,
         ``'blackman2'``, ``'rect'``, ``'square'``, ``'tria'``,
         ``'bartlett'``, ``'sqrttria'``, ``'itersine'``, ``'ogg'``,
         ``'nuttall'``, ``'nuttall10'``, ``'nuttall01'``, ``'nuttall11'``,
-        ``'nuttall20'``, ``'gauss'``, ``'gammatone'``, ``'butterworth'``, ``'roex'``,
-        ``'truncgauss'``, ``'kaiser'``.
+        ``'nuttall20'``, ``'gauss'``, ``'butterworth'``, ``'truncgauss'``
+        (cut at 1 % of its height, or at the percentage appended to the name,
+        e.g. ``'truncgauss20'``, as in LTFAT) and ``'kaiser'``.  Every window
+        peaks at index 0 and is whole-point even.  ``'gammatone'`` and
+        ``'roex'`` are not window shapes and raise ``ValueError`` naming
+        :func:`freqwin` / :func:`gammatonefir`.
     M : int
         Window length (number of samples).
     norm : str
         Normalisation: ``'inf'`` / ``'peak'`` (default, unit-peak, no scaling),
         ``'energy'`` (``sqrt(L)`` scaling), ``'1'`` / ``'area'``
         (``L`` scaling).
+    shift : float
+        Evaluate the window shifted by this many samples (fractional), as
+        LTFAT's ``firwin(..., 'shift', s)``: sample *n* takes the shape's value
+        at ``(n + shift) / M`` from the peak; samples pushed past half a
+        window from the peak are zero.  ``blfilter(..., pedantic=True)`` uses
+        it for the sub-bin centre frequency.  Default 0.
     beta : float, optional
         Kaiser-Bessel shape parameter; **required** when ``name='kaiser'``
         (0 -> rectangular, larger -> narrower mainlobe).  Ignored otherwise.
@@ -80,6 +130,13 @@ def firwin(name: str, M: int, norm: str = "inf", *,
     1.0
     """
     name = name.lower().strip()
+    _not_a_window(name)
+    if shift:
+        if name == "kaiser":
+            raise NotImplementedError("firwin: shift is not implemented for 'kaiser'")
+        xs = _xc(_x(M)) + shift / M
+        g = firwin_eval(name, np.mod(xs, 1.0)) * (np.abs(xs) <= 0.5)
+        return _apply_norm(np.maximum(g, 0.0), norm, M)
     x = _x(M)
     n = np.arange(M, dtype=float)
 
@@ -134,52 +191,22 @@ def firwin(name: str, M: int, norm: str = "inf", *,
         g = (3 / 8) + 0.5 * np.cos(2 * np.pi * x) + (1 / 8) * np.cos(4 * np.pi * x)
 
     elif name == "gauss":
-        # Gaussian window: exp(-0.5 * ((n - (M-1)/2) / (sigma * (M-1)/2))^2)
-        # Using sigma=0.4 as MATLAB convention
-        sigma = 0.4
-        center = (M - 1) / 2.0
-        g = np.exp(-0.5 * ((n - center) / (sigma * center)) ** 2)
+        # Gaussian with sigma = 0.2 of the window length (0.4 of its half),
+        # centred on index 0.  (Until 2026-09-26 it peaked at the middle
+        # sample, against this module's convention.)
+        g = np.exp(-0.5 * (_xc(x) / 0.2) ** 2)
 
-    elif name == "truncgauss":
-        # Truncated Gaussian: Gaussian truncated at ±2 sigma
-        sigma = 0.4
-        center = (M - 1) / 2.0
-        g = np.exp(-0.5 * ((n - center) / (sigma * center)) ** 2)
-        # Truncate at ±2 sigma
-        threshold = np.exp(-2.0)
-        g = np.where(g > threshold, g, 0.0)
-
-    elif name == "gammatone":
-        # Gammatone impulse response envelope in time domain.
-        # g(t) = t^(n-1) * exp(-2*pi*b*t) where n is the order
-        n_order = 4  # Default order
-        t = np.arange(M, dtype=float)
-        # Normalize time to [0, 1]
-        t_norm = t / M
-        # Gammatone envelope: power law * exponential decay
-        decay = 4.0 * n_order  # Decay rate parameter
-        g = (t_norm ** (n_order - 1)) * np.exp(-decay * t_norm)
-        # Handle t=0 case for n_order=1
-        g[0] = np.exp(0)
+    elif name.startswith("truncgauss"):
+        # LTFAT: exp(4 log(p/100) x^2), height p % at x = +-1/2 (p = 1 by
+        # default); the Cg that pghi_findgamma tabulates for 'truncgauss'.
+        # (Until 2026-09-26: a Gaussian at the middle sample, zeroed below
+        # exp(-2) -- pghi_findgamma of it was 2.2 times the tabulated value.)
+        g = np.exp(4.0 * math.log(_truncgauss_percent(name) / 100.0) * _xc(x) ** 2)
 
     elif name == "butterworth":
-        # Butterworth filter envelope: approximation as smooth transition
-        # Smooth transition centered at M/2
-        t = np.arange(M, dtype=float)
-        t_norm = t / M
-        # Smooth transition with order 4
-        order = 4
-        center = 0.5
-        width = 0.3  # relative width
-        g = 1.0 / (1.0 + ((np.abs(t_norm - center) / width) ** (2 * order)))
-
-    elif name == "roex":
-        # Roex (Rounded Exponential) filter: another auditory filter shape
-        # Gaussian-like envelope centered at middle
-        center = 0.5
-        sigma = 0.1
-        t_norm = np.arange(M, dtype=float) / M
-        g = np.exp(-0.5 * ((t_norm - center) / sigma) ** 2)
+        # Butterworth-like plateau of order 4 and half-width 0.3, centred on
+        # index 0 (until 2026-09-26 centred on the middle sample).
+        g = 1.0 / (1.0 + (np.abs(_xc(x)) / 0.3) ** 8)
 
     elif name == "kaiser":
         if beta is None:
@@ -343,6 +370,7 @@ def firwin_eval(name: str, x: np.ndarray) -> np.ndarray:
     1.0
     """
     name = name.lower().strip()
+    _not_a_window(name)
     x = np.asarray(x, dtype=float)
 
     if name in ("hann", "hanning", "nuttall10"):
@@ -393,35 +421,13 @@ def firwin_eval(name: str, x: np.ndarray) -> np.ndarray:
         g = (3 / 8) + 0.5 * np.cos(2 * np.pi * x) + (1 / 8) * np.cos(4 * np.pi * x)
 
     elif name == "gauss":
-        # Gaussian window: exp(-0.5 * ((x - 0) / (sigma * 0.5))^2)
-        sigma = 0.4
-        g = np.exp(-0.5 * (x / (sigma * 0.5)) ** 2)
+        g = np.exp(-0.5 * (_xc(x) / 0.2) ** 2)
 
-    elif name == "truncgauss":
-        # Truncated Gaussian
-        sigma = 0.4
-        g = np.exp(-0.5 * (x / (sigma * 0.5)) ** 2)
-        threshold = np.exp(-2.0)
-        g = np.where(g > threshold, g, 0.0)
-
-    elif name == "gammatone":
-        # Gammatone-like envelope: uses x directly as t_norm in [0, 1)
-        n_order = 4
-        decay = 4.0 * n_order
-        g = (x ** (n_order - 1)) * np.exp(-decay * x)
+    elif name.startswith("truncgauss"):
+        g = np.exp(4.0 * math.log(_truncgauss_percent(name) / 100.0) * _xc(x) ** 2)
 
     elif name == "butterworth":
-        # Butterworth-like envelope centered at x=0.5
-        order = 4
-        center = 0.5
-        width = 0.3
-        g = 1.0 / (1.0 + ((np.abs(x - center) / width) ** (2 * order)))
-
-    elif name == "roex":
-        # Roex-like envelope centered at x=0.5
-        center = 0.5
-        sigma = 0.1
-        g = np.exp(-0.5 * ((x - center) / sigma) ** 2)
+        g = 1.0 / (1.0 + (np.abs(_xc(x)) / 0.3) ** 8)
 
     else:
         raise ValueError(f"firwin_eval: unknown window type {name!r}")

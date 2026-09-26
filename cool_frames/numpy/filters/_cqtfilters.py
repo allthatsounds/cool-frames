@@ -129,7 +129,11 @@ def _make_direct_filter(
             return g / mx if mx > 0 else g  # type: ignore[assignment]
         if winname == "hann":
             return _hann_window(win_bins)
-        return _firwin(winname, win_bins, norm="inf")
+        # firwin's windows are whole-point even (peak at index 0); fftshift
+        # moves the peak to index win_bins // 2, where foff below expects it.
+        # (Until 2026-09-26 it was not shifted, so every window but the Hann
+        # ran one-sidedly from fc upwards in audfilters and cqtfilters.)
+        return np.fft.fftshift(_firwin(winname, win_bins, norm="inf"))
 
     def _scale(h: np.ndarray, L: int) -> np.ndarray:
         if norm in ("energy", "2"):

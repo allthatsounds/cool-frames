@@ -25,7 +25,8 @@ from ..core._core import setnorm
 def freqwin(name, L: int, bw: float, *,
             fs: float = 2.0,
             order: int | None = None,
-            norm: str = "null") -> np.ndarray:
+            norm: str = "null",
+            shift: float = 0.0) -> np.ndarray:
     """Frequency-response window.
 
     Returns a length-*L* window representing the frequency response of
@@ -60,6 +61,9 @@ def freqwin(name, L: int, bw: float, *,
         ``'gammatone'`` (default 4 for all three).
     norm : str
         Normalisation (default ``'null'``).
+    shift : float
+        Shift the window by this many bins, in [-0.5, 0.5) (LTFAT's
+        ``'shift'``); :func:`freqfilter` uses it in pedantic mode.  Default 0.
 
     Returns
     -------
@@ -70,10 +74,17 @@ def freqwin(name, L: int, bw: float, *,
     step = fs / L
     bwrelheight = 10.0 ** (-3.0 / 10.0)  # -6 dB ≈ half-height
 
-    # DFT frequency indices
+    if not -0.5 <= shift < 0.5:
+        raise ValueError(f"freqwin: shift must lie in [-0.5, 0.5); got {shift}")
+
+    # DFT frequency indices as LTFAT orders them: 0..ceil(L/2)-1, then
+    # -floor(L/2)..-1.  (Until 2026-09-26 index L/2 of an even L was +L/2;
+    # the symmetric shapes do not notice, the asymmetric ones -- roex,
+    # gammatone -- put their upper-edge value at the lower edge once
+    # fftshifted, as freqfilter does.)
     k = np.arange(L, dtype=float)
-    k[k >= L // 2 + 1] -= L  # centred: 0..L/2, -(L/2-1)..-1
-    H = k.copy()
+    k[k >= (L + 1) // 2] -= L
+    H = k - shift
 
     if name == "gauss":
         H = np.exp(4.0 * H ** 2 * math.log(bwrelheight) / (bw / step) ** 2)  # type: ignore[assignment]

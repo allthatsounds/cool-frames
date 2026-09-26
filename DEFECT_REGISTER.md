@@ -621,10 +621,35 @@ Verified against LTFAT 2.6.0 in Octave, not fixed here.
   `gabdual` refuses to return its FIR dual (an even-length window with a
   non-zero middle sample has none), which LTFAT's zeroed window has. Hann,
   Blackman, the triangular, cosine, Nuttall and itersine windows agree.
+- **LTFAT's `freqfilter` does not normalise.** It takes `setnorm`'s flags
+  but passes none to `freqwin`, so its `'energy'` response is `freqwin`'s
+  raw shape times `sqrt(L)`, not of unit energy. cool-frames' `freqfilter`
+  (since W6 above) normalises as `blfilter` does, which is what the flag
+  says and what the tests ported from the MATLAB suite expect.
 - **`middlepad` splits the middle sample of an even-length window when
   extending it** (LTFAT's behaviour before 2.x); LTFAT 2.6's `fir2long` uses
   `middlepad(..., 'hp')`, which does not. 5 % on a random 96-tap window;
   none on `firwin` windows whose middle sample is zero.
+
+## Found while describing the ERB bank, 2026-09-26
+
+Asked which window the W22 paper's ERB bank uses, the answer was not the
+`audfilters` docstring's, and following the window through the designers
+turned up the rest. The Hann banks every default call builds are
+bit-identical before and after (all channels of `audfilters` at 1 and 0.5
+ERB and `cqtfilters` at 12 and 24 bins per octave, compared as full-length
+responses); everything below concerns the other windows and the lower-level
+constructors. Regression tests: `tests/regressions/test_window_conventions_2026_09_26.py`.
+
+| # | Area | Defect | Was → is |
+|---|---|---|---|
+| W1 | `filters/_design.py` | The `audfilters` docstring called its filters gammatone filters | describes what it builds: frequency-domain windows (Hann by default) on the auditory scale, of `bwmul` auditory bandwidths equivalent rectangular bandwidth (1 ERB by default), plus DC and Nyquist channels; points at `gammatonefir` for gammatone filters. The module's design note, which had the fftshift convention backwards, rewritten |
+| W2 | `filters/_firwin.py` | `firwin` promises whole-point even windows with their peak at index 0, but `'gauss'`, `'truncgauss'` and `'butterworth'` peaked at the middle sample (`firwin_eval`'s were one-sided); `'truncgauss'` was not LTFAT's, so `pghi_findgamma` of it was 2.2 times the Cg tabulated under that name (0.370 against 0.1705) | whole-point even, peak at 0; `'truncgauss'` is LTFAT's `exp(4 log(p/100) x^2)`, with LTFAT's percentage suffix (`'truncgauss20'`): numeric Cg 0.1709 against the table's 0.1705. `firwin` also takes LTFAT's `shift` |
+| W3 | `filters/_firwin.py` | `'gammatone'` was a causal envelope with a spurious unit first sample, so its bandwidth factor came out 1e-4 and `audfilters(window='gammatone')` built filters 3750 times too wide (supports of 275 kHz at 16 kHz, hops of 1); `'roex'` was a Gaussian | neither is a window shape (nor in LTFAT's `firwin`): both raise `ValueError` naming `freqwin` and `gammatonefir`, and so does `audfilters(window='gammatone')` |
+| W4 | `filters/_filters.py` | `blfilter` stored the window unshifted and subtracted the index of its maximum from `foff`. For a window whose peak is at index 0 -- every LTFAT window -- the response ran one-sidedly from `fc` upwards with its lower half wrapped to the top (`blfilter('hann', 0.1, 0.3)` at L = 256: support bins 38-50, peak at 38 = `fc`). `pedantic` multiplied the response by a linear phase, which delays the impulse response instead of moving the window | LTFAT's construction, `fftshift(firwin(...))` with `foff = round(L/2 fc) - floor(n/2)`: symmetric about `fc`; `pedantic` evaluates the window shifted by the sub-bin remainder (centroid within 0.02 bins of `L/2 fc`) |
+| W5 | `filters/_cqtfilters.py` (`_make_direct_filter`, used by `audfilters` and `cqtfilters`) | Windows other than the Hann were not fftshifted either: peak at the lower edge of the support (`audfilters(window='blackman')`, channel 17: peak at bin 1232 for `fc` at 1561, support 1232-1890) | centred on `fc`; the Hann path, which builds its own centred window, unchanged |
+| W6 | `filters/_filters.py` | `freqfilter` delegated to `blfilter`, so `'gauss'`, `'butterworth'`, `'roex'` and `'gammatone'` came from `firwin`, which has no bandwidth parameter (W2, W3) | LTFAT's construction: `freqwin(name, Lw, bw)` with `bw` the -6 dB bandwidth, kept on `Lw = round(4 bw L / fs)` bins; other names still go to `blfilter` (documented extension) |
+| W7 | `filters/_freqwin.py` | Index L/2 of an even length was +L/2 where LTFAT's is -L/2; the asymmetric shapes (`'roex'`, `'gammatone'`) then put their upper-edge value at the lower edge once `freqfilter` fftshifts them | LTFAT's order; `shift` added (LTFAT's, for `freqfilter`'s pedantic mode) |
 
 ## Minor, recorded for completeness
 
