@@ -1169,6 +1169,23 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   system that is not a frame, which keeps its pseudo-inverse dual.
 - Results computed with `gabfilters` change wherever L is not small against
   M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
+- **Behavioural change: the Gabor module extends a short window as LTFAT
+  2.6's `fir2long` does** (`DEFECT_REGISTER.md` G11). `dgt`, `idgt`,
+  `dgtreal`, `idgtreal`, `gabdual`, `gabtight`, `gabframebounds` and
+  `gabframediag` extended a window with the whole-point `middlepad`, which
+  splits sample gl/2 of an even-length window between times +gl/2 and
+  -gl/2; LTFAT 2.6's `fir2long` (the half-point `middlepad` for even
+  lengths) puts it at -gl/2, as its filter-bank DGT does and as
+  `gabfilters` did. Since the Gabor closed forms above, a `gabfilters` bank
+  with such a window had a dual computed for another window: round trip
+  3.1e-5 for Gauss 1024/256 at L = 65536, 7e-4 for Hamming 16/4 (exact
+  at the polyphase construction before), and a condition number of 1.0040
+  for a frame whose kappa is 1.0000. Every window whose middle sample is zero --
+  every `firwin` window but Hamming, Nuttall01 and Blackman2 at even
+  length, and every odd-length window -- gives bit-identical results.
+  `gabdual` and `gabtight` return the FIR dual and tight windows of an
+  even-length window with a non-zero middle sample, which they refused
+  (it exists: LTFAT returns it).
 
 ### Frame verdicts and bounds for banks that are not painless
 

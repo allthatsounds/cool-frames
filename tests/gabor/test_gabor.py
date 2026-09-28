@@ -209,11 +209,22 @@ def test_painless_fir_dual_and_tight(gl, a, M):
     assert _relerr(idgt(dgt(f, gt, a, M), gt, a), f) < 1e-10
 
 
-def test_painless_fir_without_exact_fir_dual_is_refused():
+def test_painless_fir_dual_with_non_zero_middle_sample():
+    """LTFAT 2.6's ``fir2long`` puts sample gl/2 of an even-length window at
+    time -gl/2 and splits nothing, so such a window has an exact FIR dual,
+    the dual at a transform length cut back.  (Until 2026-09-28 the module
+    split that sample between +gl/2 and -gl/2 and refused the FIR dual.)"""
     g = np.roll(np.hanning(12)[1:-1], -5)  # even length, non-zero middle sample
-    with pytest.raises(ValueError, match="no exact FIR dual"):
-        gabdual(g, 4, 12)
-    assert gabdual(g, 4, 12, L=24).shape == (24,)
+    assert g.shape == (10,) and g[5] != 0
+    gd = gabdual(g, 4, 12)
+    gdL = gabdual(g, 4, 12, L=24)
+    assert gd.shape == (10,) and gdL.shape == (24,)
+    assert np.allclose(gdL[:5], gd[:5]) and np.allclose(gdL[-5:], gd[5:])
+    assert not np.any(gdL[5:19])
+    f = np.random.default_rng(12).standard_normal(24)
+    assert _relerr(idgt(dgt(f, g, 4, 12), gd, 4), f) < 1e-12
+    gt = gabtight(g, 4, 12)
+    assert _relerr(idgt(dgt(f, gt, 4, 12), gt, 4), f) < 1e-12
 
 
 # ---------------------------------------------------------------------------

@@ -11,8 +11,9 @@ adjoint, ``f = sum_{m,n} c[m, n] * g_{m,n}``.  ``gabdual``, ``gabtight``,
 ``S f = sum_{m,n} <f, g_{m,n}> g_{m,n}`` of that system, as LTFAT's do, so
 ``idgt(dgt(f, g, a, M), gabdual(g, a, M, L), a)`` returns ``f``.
 
-A window shorter than the transform length is extended with ``middlepad``
-(LTFAT's ``fir2long``).  As in LTFAT, a window whose support is shorter than
+A window shorter than the transform length is extended as LTFAT 2.6's
+``fir2long`` does: its first ``ceil(gl/2)`` samples (in DFT ordering) at the
+start, the rest at the end, no sample split.  As in LTFAT, a window whose support is shorter than
 the transform goes through the filter-bank algorithm (``comp_dgt_fb`` /
 ``comp_idgt_fb``, ``_fb.py``), and only a window of full length through the
 long-window factorisation of Søndergaard (``_walnut.py``).  The support is
@@ -32,8 +33,10 @@ from math import lcm
 
 import numpy as np
 
-from ..core import middlepad, postpad
+from ..core import postpad
 from ._factorised import (
+    _fir2long,
+    _long2fir,
     _gabdual_normalised,
     _gabframebounds,
     _gabframediag,
@@ -82,13 +85,14 @@ def _check_length(L: int, a: int, M: int) -> int:
 
 
 def _as_window(g: np.ndarray, L: int) -> np.ndarray:
-    """LTFAT's ``fir2long``: zero-extend a window to length L around index 0."""
+    """LTFAT 2.6's ``fir2long``: zero-extend a window to length L around index 0
+    (``_factorised._fir2long``)."""
     g = np.asarray(g)
     if g.ndim != 1:
         raise ValueError(f"the window must be one-dimensional, got shape {g.shape}")
     if g.shape[0] > L:
         raise ValueError(f"the window (length {g.shape[0]}) is longer than L={L}")
-    return middlepad(g, L) if g.shape[0] < L else g
+    return _fir2long(g, L) if g.shape[0] < L else g
 
 
 def _real_window(g: np.ndarray) -> np.ndarray:
@@ -121,25 +125,6 @@ def _frame_length(g: np.ndarray, a: int, M: int, L: int | None) -> tuple[np.ndar
         return g, gl, False
     L = _check_length(L, a, M)
     return _as_window(g, L), L, False
-
-
-def _check_fir_crop(g: np.ndarray, what: str) -> None:
-    """Refuse to return a FIR-length result that cannot represent the answer.
-
-    ``middlepad`` (LTFAT's ``fir2long``) splits the middle sample of an
-    even-length window between times +gl/2 and -gl/2.  The dual or tight
-    window weights those two halves differently, so cutting it back to
-    ``gl`` samples is only exact when that sample is zero, as it is for the
-    windows ``firwin`` designs.
-    """
-    gl = g.shape[0]
-    if gl % 2 == 0 and g[gl // 2] != 0:
-        raise ValueError(
-            f"cannot return the {what} window at the window's own length {gl}: an "
-            f"even-length window with a non-zero middle sample (index {gl // 2}) has "
-            f"no exact FIR {what}. Pass L to get it at a transform length, or use a "
-            f"window whose middle sample is zero (e.g. from cool_frames.filters.firwin)"
-        )
 
 
 def _require_frame(g: np.ndarray, a: int, M: int, L: int) -> None:
@@ -201,7 +186,7 @@ def dgt(
         Signal, or W signals as columns.  Real or complex.
     g : ndarray, shape (gl,)
         Window, real or complex, with ``gl <= L``; a shorter window is
-        extended with ``middlepad``.
+        extended as LTFAT's ``fir2long`` does.
     a : int
         Time shift (hop size).
     M : int
@@ -356,22 +341,17 @@ def gabdual(
         Transform length (a multiple of ``lcm(a, M)``, at least ``gl``).  The
         dual is returned at this length.  If omitted, ``g`` must either fit
         the painless case ``gl <= M`` -- the dual then has the support of
-        ``g`` and is returned at length ``gl`` (for an even ``gl`` this needs
-        a zero middle sample, see Raises) -- or already have a valid
+        ``g`` and is returned at length ``gl`` -- or already have a valid
         transform length.
 
     Raises
     ------
     ValueError
-        If the system is not a frame, so no dual exists; or if ``L`` is omitted
-        for an even-length window whose middle sample is non-zero, whose dual
-        has no exact representation at length ``gl``.
+        If the system is not a frame, so no dual exists.
     """
     a, M = _check_lattice(a, M)
     g = _real_window(g)
     gw, Lw, crop = _frame_length(g, a, M, L)
-    if crop:
-        _check_fir_crop(g, "dual")
     _require_frame(gw, a, M, Lw)
     d = _painless_diag(gw, a, M, Lw)
     if d is not None:
@@ -380,7 +360,7 @@ def gabdual(
         gd[nz] = gw[nz] / d[nz]
     else:
         gd = np.real_if_close(_gabdual_normalised(gw, a, M, Lw), tol=1e6) / M
-    return middlepad(gd, g.shape[0]) if crop else gd
+    return _long2fir(gd, g.shape[0]) if crop else gd
 
 
 def gabtight(
@@ -397,8 +377,6 @@ def gabtight(
     a, M = _check_lattice(a, M)
     g = _real_window(g)
     gw, Lw, crop = _frame_length(g, a, M, L)
-    if crop:
-        _check_fir_crop(g, "tight")
     _require_frame(gw, a, M, Lw)
     d = _painless_diag(gw, a, M, Lw)
     if d is not None:
@@ -407,7 +385,7 @@ def gabtight(
         gt[nz] = gw[nz] / np.sqrt(d[nz])
     else:
         gt = np.real_if_close(_gabtight_normalised(gw, a, M, Lw), tol=1e6) / np.sqrt(M)
-    return middlepad(gt, g.shape[0]) if crop else gt
+    return _long2fir(gt, g.shape[0]) if crop else gt
 
 
 def gabframebounds(

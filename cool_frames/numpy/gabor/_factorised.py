@@ -69,8 +69,41 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..core import middlepad
 from ._walnut import comp_wfac
+
+
+def _fir2long(g: np.ndarray, L: int) -> np.ndarray:
+    """LTFAT 2.6 ``fir2long``: the first ``ceil(gl/2)`` samples of a window in
+    DFT ordering at the start, the other ``floor(gl/2)`` at the end, zeros in
+    between.  No sample is split: LTFAT 2.6 extends an even-length window with
+    its half-point ``middlepad``, which puts sample ``gl/2`` at time ``-gl/2``,
+    where its filter-bank DGT (``comp_dgt_fb``) and ``gabfilters`` place it.
+    (The whole-point ``middlepad`` splits that sample between ``+gl/2`` and
+    ``-gl/2``; until 2026-09-28 the Gabor module extended windows so, which
+    moved every even-length window whose middle sample is not zero --
+    Hamming, Gauss -- away from LTFAT's and from ``gabfilters``'.)"""
+    g = np.asarray(g)
+    gl = g.shape[0]
+    if gl == L:
+        return g.copy()
+    if gl > L:
+        raise ValueError(f"the window (length {gl}) is longer than L={L}")
+    out = np.zeros((L,) + g.shape[1:], dtype=g.dtype)
+    h = -(-gl // 2)
+    out[:h] = g[:h]
+    if gl - h:
+        out[L - (gl - h):] = g[h:]
+    return out
+
+
+def _long2fir(g: np.ndarray, gl: int) -> np.ndarray:
+    """LTFAT 2.6 ``long2fir`` (``'unsymmetric'``): the first ``ceil(gl/2)``
+    and the last ``floor(gl/2)`` samples; the inverse of ``_fir2long``."""
+    g = np.asarray(g)
+    h = -(-gl // 2)
+    if gl - h == 0:
+        return g[:h].copy()
+    return np.concatenate([g[:h], g[g.shape[0] - (gl - h):]])
 
 # ---------------------------------------------------------------------------
 # gabframediag — frame operator diagonal
@@ -120,7 +153,7 @@ def _gabframediag(
     gl = len(g)
 
     if L is not None and gl < L:
-        g = middlepad(g, L)
+        g = _fir2long(g, L)
         gl = L
 
     g2 = np.abs(g) ** 2
@@ -212,9 +245,7 @@ def _gabframebounds(
     # operator is the diagonal.  Testing the array length instead sent every
     # padded window down the factorised path -- 16,384 1x1 eigenvalue
     # problems for Hann 1024 / a = 256 / M = 1024 at L = 2**16 (166 ms, where
-    # the diagonal takes well under a millisecond).  An even window whose
-    # middle sample ``middlepad`` split in two has support M + 1 and correctly
-    # stays on the general path.
+    # the diagonal takes well under a millisecond).
     if (L is None or L == gl) and gl % a == 0 and _circular_support(g) <= M:
         d = _gabframediag(g, a, M)
         return float(np.min(d)), float(np.max(d))
@@ -223,7 +254,7 @@ def _gabframebounds(
     if L is None:
         L = gl
     if gl < L:
-        g = middlepad(g, L)
+        g = _fir2long(g, L)
 
     gf, params = comp_wfac(g, a, M)
     c = params["c"]
@@ -339,7 +370,7 @@ def _gabdual_long(
 
     # Extend window to L if needed
     if len(g) != L:
-        g_long = middlepad(g, L)
+        g_long = _fir2long(g, L)
     else:
         g_long = g.copy()
 
@@ -377,7 +408,7 @@ def _gabdual_long(
 
     # Truncate back to original window length if needed
     if gl_orig < L:
-        gd = middlepad(gd, gl_orig)
+        gd = _long2fir(gd, gl_orig)
 
     return gd.real if np.max(np.abs(gd.imag)) < 1e-10 else gd
 
@@ -516,7 +547,7 @@ def _gabtight_long(
     gl_orig = len(g)
 
     if len(g) != L:
-        g_long = middlepad(g, L)
+        g_long = _fir2long(g, L)
     else:
         g_long = g.copy()
 
@@ -541,6 +572,6 @@ def _gabtight_long(
     gt = _comp_iwfac(gtf, a, M, params)
 
     if gl_orig < L:
-        gt = middlepad(gt, gl_orig)
+        gt = _long2fir(gt, gl_orig)
 
     return gt.real if np.max(np.abs(gt.imag)) < 1e-10 else gt

@@ -88,9 +88,10 @@ def _dual(g, a: int, M: int, L: int) -> tuple[np.ndarray, np.ndarray]:
     """The canonical dual at length ``L`` and cut to ``M`` samples (exact:
     the system is painless, so the dual has the window's support)."""
     from ..gabor import gabdual
+    from ..gabor._factorised import _long2fir
 
     gd = gabdual(g, a, M, L)
-    return gd, middlepad(gd, M)
+    return gd, _long2fir(gd, M)
 
 
 def _check_lookahead(lookahead, default: int, N: int) -> int:
