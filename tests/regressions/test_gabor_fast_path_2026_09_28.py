@@ -204,3 +204,32 @@ def test_rtisila_filter_bank_in_time_matches_spectral_engine(M, a, Ls, window, r
     assert _quiet(
         FbFrames, g, gd, normalise_a(aa, len(g)), L, [L // a] * len(g), real, a
     ).timedomain
+
+
+@pytest.mark.parametrize(
+    "M, a, Ls, window, real",
+    [
+        (32, 8, 300, "hann", True),
+        (24, 6, 240, "gauss", True),
+        (16, 4, 128, "hann", False),
+        (20, 5, 200, "hamming", True),
+    ],
+)
+def test_phase_gradient_through_the_dgt_matches_derivative_banks(M, a, Ls, window, real):
+    """P3: ``filterbankphasegrad`` on a Gabor bank takes the derivative
+    coefficients through the DGT; they equal the derivative banks'."""
+    from cool_frames.numpy.phase import filterbankphasegrad
+    from cool_frames.numpy.phase._phasegrad import _gabor_derivative_coefficients
+
+    g, aa, _fc, L, _ = _bank(dict(M=M, a=a, Ls=Ls, window=window, real=real))
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal(Ls)
+    if not real:
+        x = x + 1j * rng.standard_normal(Ls)
+    assert _gabor_derivative_coefficients(x, g, normalise_a(aa, len(g)), L) is not None
+    assert _gabor_derivative_coefficients(x, _generic(g), normalise_a(aa, len(g)), L) is None
+    fast = _quiet(filterbankphasegrad, x, g, aa, L)
+    slow = _quiet(filterbankphasegrad, x, _generic(g), aa, L)
+    for u, v in zip(fast, slow):
+        scale = max(float(np.max(np.abs(w))) for w in v)
+        assert max(float(np.max(np.abs(p - q))) for p, q in zip(u, v)) < 1e-11 * scale

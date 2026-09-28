@@ -295,13 +295,73 @@ def filterbankphasegrad(f, g: list[dict], a, L: int | None = None, minlvl: float
     if L is None:
         L = filterbanklength(len(f), a_norm)
 
-    # Build derivative filters
-    ch, cd = comp_phasegradfilters(g, a_norm, L)
+    gab = _gabor_derivative_coefficients(f, g, a_norm, L)
+    if gab is not None:
+        c, ch_c, cd_c = gab
+    else:
+        # Build derivative filters
+        ch, cd = comp_phasegradfilters(g, a_norm, L)
 
-    # Run all three filterbanks
-    c = filterbank(f, g, a_norm, L=L)
-    ch_c = filterbank(f, ch, a_norm, L=L)
-    cd_c = filterbank(f, cd, a_norm, L=L)
+        # Run all three filterbanks
+        c = filterbank(f, g, a_norm, L=L)
+        ch_c = filterbank(f, ch, a_norm, L=L)
+        cd_c = filterbank(f, cd, a_norm, L=L)
 
     tgrad, fgrad, s = comp_filterbankphasegrad(c, ch_c, cd_c, L, minlvl)
     return tgrad, fgrad, s, c
+
+
+# ---------------------------------------------------------------------------
+# Gabor banks: the derivative coefficients through the DGT
+# ---------------------------------------------------------------------------
+#
+# A ``gabfilters`` channel stores the whole L-point transform of its window,
+# so the derivative banks above -- responses evaluated from callables, one
+# L-point FFT pair per channel for ``ch`` -- cost O(M2 L) twice: 3 s for a
+# 1024/256 bank at L = 2**16.  Channel k of an unedited bank stores
+# ``s_k * G`` at offset ``foff_k``, one response G for every channel.  So
+#
+#   ch_k = s_k * _make_ch(G)                        a Gabor bank of one window;
+#   cd_k = (foff_k - L r_k + L//2) * H_k + s_k * (i - L//2) * G[i]
+#                                                    (``_make_cd``'s centred
+#        index, split into the channel's centre and an offset from it),
+#
+# and both take the Gabor transform of ``filterbank``'s fast path.
+
+
+def _gabor_derivative_coefficients(f, g: list[dict], a_norm, L: int):
+    """``(c, ch_c, cd_c)`` for an unedited Gabor bank with an interior
+    channel (edge scale 1), equal to the generic derivative banks' to
+    rounding; otherwise ``None``."""
+    from ..core._core import involute
+    from ..filterbanks._utils import _gabor_fast
+    from ..filters._gabfilters import _gab_bank, _gab_edge_scale
+
+    gab = _gabor_fast(g, a_norm, L)
+    if gab is None or len(g) < 3:
+        return None
+    _win, a, M, real = gab
+    scale = _gab_edge_scale(M, real, len(g))
+    ref = int(np.flatnonzero(scale == 1.0)[0]) if np.any(scale == 1.0) else None
+    if ref is None:
+        return None
+    G = np.asarray(g[ref]["H"], dtype=complex)
+    fs = g[0].get("fs")
+
+    def window_of(R):
+        """The window ``_gab_bank`` turns into the response R."""
+        return involute(np.fft.ifft(np.fft.ifftshift(R)))
+
+    h = L // 2
+    ch_ref = comp_phasegradfilters([{"H": G, "foff": 0}], np.array([[a, 1]]), L)[0][0]["H"](L)
+    ch_bank = _gab_bank(window_of(np.asarray(ch_ref, dtype=complex)), a, M, L, fs, real)
+    cd_bank = _gab_bank(window_of((np.arange(L) - h) * G), a, M, L, fs, real)
+    c = filterbank(f, g, a_norm, L=L)
+    ch_c = filterbank(f, ch_bank, a_norm, L=L)
+    cd_off = filterbank(f, cd_bank, a_norm, L=L)
+    cd_c = []
+    for gm, cm, dm in zip(g, c, cd_off):
+        fo = int(gm["foff"])
+        r = int(np.round(0.5 * (2 * fo + L - 1) / L))
+        cd_c.append((fo - L * r + h) * cm + dm)
+    return c, ch_c, cd_c

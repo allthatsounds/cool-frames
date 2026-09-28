@@ -1193,6 +1193,17 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   time and analyses and synthesises a frame as a windowed FFT and its
   adjoint: 10 s for that excerpt, equal to the spectral engine to 1e-12
   (`DEFECT_REGISTER.md` P2).
+- **`filterbankphasegrad` takes a Gabor bank's derivative coefficients
+  through the DGT.** Its time- and frequency-weighted banks are evaluated
+  from callables, one L-point FFT pair per channel, and applied with the
+  generic kernels: 3.5 s for the comparative benchmark's bank at L = 65536
+  (its reassignment row took 2.4 s, 120 ms on the truncated bank). Channel
+  k of an unedited Gabor bank stores one response G scaled by s_k, so the
+  frequency-weighted bank is a Gabor bank of one window and the
+  time-derivative bank is the channel's centre frequency times the bank plus
+  a Gabor bank of one window: 0.24 s, equal to the derivative banks to 1e-11
+  (`DEFECT_REGISTER.md` P3). `filterbankphasederiv`'s second derivatives
+  still take the generic banks.
 - **Behavioural change: the Gabor module extends a short window as LTFAT
   2.6's `fir2long` does** (`DEFECT_REGISTER.md` G11). `dgt`, `idgt`,
   `dgtreal`, `idgtreal`, `gabdual`, `gabtight`, `gabframebounds` and
