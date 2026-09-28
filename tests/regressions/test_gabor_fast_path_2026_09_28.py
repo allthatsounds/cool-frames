@@ -169,3 +169,38 @@ def test_even_window_with_non_zero_middle_sample(window, M, a):
     A, B = filterbankbounds(g, aa, L)
     A2, B2 = filterbankbounds_svd(_generic(g), aa, L)
     assert abs(B / A - B2 / A2) < 1e-9 * (B2 / A2)
+
+
+@pytest.mark.parametrize(
+    "M, a, Ls, window, real, startphase",
+    [
+        (32, 8, 300, "hann", True, "zhu"),
+        (24, 6, 240, "gauss", True, "zhu"),
+        (32, 8, 256, "hann", True, "rand"),
+        (16, 4, 128, "hann", False, "zero"),
+    ],
+)
+def test_rtisila_filter_bank_in_time_matches_spectral_engine(M, a, Ls, window, real, startphase):
+    """P2: the RTISI-LA filter-bank engine works on a Gabor bank in time
+    (``_GaborClass``); it equals the spectral engine, which the same bank
+    with writeable responses takes."""
+    from cool_frames.numpy.phase._rtisila_fb import FbFrames
+    from cool_frames.phase import rtisila
+
+    g, aa, _fc, L, _ = _quiet(gabfilters, 1000, Ls, M=M, a=a, window=window, real=real)
+    rng = np.random.default_rng(1)
+    x = rng.standard_normal(Ls)
+    if not real:
+        x = x + 1j * rng.standard_normal(Ls)
+    s = [np.abs(cm) for cm in filterbank(x, g, aa, L)]
+    kw = dict(L=L, Ls=Ls, real=real, startphase=startphase, seed=3)
+    c1, f1, r1, _ = _quiet(rtisila, s, g, aa, **kw)
+    c2, f2, r2, _ = _quiet(rtisila, s, _generic(g), aa, **kw)
+    scale = max(np.max(np.abs(v)) for v in c2)
+    assert max(np.max(np.abs(u - v)) for u, v in zip(c1, c2)) < 1e-10 * scale
+    assert np.max(np.abs(f1 - f2)) < 1e-10 * np.max(np.abs(f2))
+    assert abs(r1 - r2) < 1e-10
+    gd = filterbankdual(g, aa, L, real=real)
+    assert _quiet(
+        FbFrames, g, gd, normalise_a(aa, len(g)), L, [L // a] * len(g), real, a
+    ).timedomain

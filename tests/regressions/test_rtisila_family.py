@@ -227,7 +227,10 @@ def test_engine_is_filterbank_and_ifilterbank(bank, real):
         eng = FbFrames(
             g, gd, an, L, N, real, default_frame_hop(prepare_filters(g, an, L)[0], an, L)
         )
-        eng.F = np.fft.fft(x)
+        # a Gabor bank's engine holds the partial reconstruction in time,
+        # every other bank's its spectrum
+        to_engine = (lambda v: np.asarray(v, dtype=complex)) if eng.timedomain else np.fft.fft
+        eng.F = to_engine(x)
         est = [np.zeros((len(cl.chans), cl.N), dtype=complex) for cl in eng.classes]
         for k in range(eng.n_frames):
             for (ci, n0, n1), e in zip(eng.frames[k], eng.analyse(k)):
@@ -241,7 +244,8 @@ def test_engine_is_filterbank_and_ifilterbank(bank, real):
         eng.F[:] = 0
         for k in range(eng.n_frames):
             eng.add(k, [Y[ci][:, n0:n1] for ci, n0, n1 in eng.frames[k]])
-        F_ref = np.fft.fft(ifilterbank(y, gd, a, L, real=real))
+        F_ref = to_engine(ifilterbank(y, gd, a, L, real=real))
+    assert eng.timedomain == (bank == "uniform-gabor" and real)
     assert np.max(np.abs(eng.F - F_ref)) / np.max(np.abs(F_ref)) < 1e-13
 
 

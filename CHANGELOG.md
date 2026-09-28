@@ -1184,6 +1184,15 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   generic kernels, as for the closed forms above. `ifilterbank` no longer
   measures such a bank's filters on every call for its real/two-sided
   check (300 ms): the bank records which it is.
+- **RTISI-LA's filter-bank form works on a Gabor bank in time.** Its
+  engine updates the partial reconstruction through each channel's stored
+  bins, so with all L bins per channel an update of the comparative
+  benchmark's bank (513 channels, L = 65536) cost 70 million products, and
+  one 3 s excerpt several minutes (41 s on the truncated bank). For an
+  unedited Gabor bank with its Gabor dual it now keeps the reconstruction in
+  time and analyses and synthesises a frame as a windowed FFT and its
+  adjoint: 10 s for that excerpt, equal to the spectral engine to 1e-12
+  (`DEFECT_REGISTER.md` P2).
 - **Behavioural change: the Gabor module extends a short window as LTFAT
   2.6's `fir2long` does** (`DEFECT_REGISTER.md` G11). `dgt`, `idgt`,
   `dgtreal`, `idgtreal`, `gabdual`, `gabtight`, `gabframebounds` and

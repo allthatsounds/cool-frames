@@ -26,8 +26,13 @@ Both use each channel's frequency response as the bank's own
 the time shift of coefficient ``n`` applied as a phase, so an update is
 exact to rounding (checked against ``filterbank`` / ``ifilterbank`` in the
 tests).  Its cost is the number of non-zero bins of the channels in the frame,
-of the bank and of its dual: for the benchmark's 513-channel Gabor bank,
-whose exact dual is about 4800 bins per channel, about 6 ms per update.
+of the bank and of its dual.  A ``gabfilters`` bank stores all L bins of every
+channel (as LTFAT's does), which made that 70 million products per update at
+the comparative benchmark's bank (513 channels, L = 2**16); an unedited Gabor
+bank and its Gabor dual are therefore handled in time instead
+(``_GaborClass``): a frame is a column, analysed as the windowed FFT of the
+partial reconstruction and synthesised as the dual-windowed inverse FFT, the
+same operators to rounding (checked in the tests).
 """
 
 from __future__ import annotations
@@ -214,6 +219,72 @@ class _HopClass:
                 F[self.FUd_neg] += np.conj(D)
 
 
+class _GaborClass(_HopClass):
+    """The one hop class of an unedited ``gabfilters`` bank with its Gabor
+    dual, working on the partial reconstruction in time rather than on its
+    spectrum.  Coefficient ``n`` of channel ``k`` is the time-invariant DGT,
+
+        c_k[n] = s_k * sum_j x[a n + j] conj(w[j]) exp(-2 pi i k j / M),
+
+    (``j`` over the window's circular support, ``s_k`` the bank's edge
+    scale), which is what ``_HopClass.analyse`` computes from the spectrum;
+    synthesis is its adjoint with the dual window, twice its real part for a
+    real bank, as ``_HopClass.synthesise`` adds to the spectrum."""
+
+    def __init__(self, chans, g_ready, gd_ready, a_norm, L, N, gab, gabd):
+        from ..filters._gabfilters import _gab_edge_scale
+        from ..gabor._factorised import _fir2long
+        from ..gabor._fb import window_support
+
+        win, a, M, real = gab
+        wind = gabd[0]
+        self.chans = np.asarray(chans, dtype=np.int64)
+        self.N, self.L, self.hop, self.M = int(N), int(L), int(a), int(M)
+        self.M2 = len(self.chans)
+        self.edge = _gab_edge_scale(self.M, real, self.M2)
+        self.folded = True
+        self.scale = 1.0 / L
+
+        def support(w):
+            first, vals = window_support(_fir2long(np.asarray(w), L))
+            # signed offsets j of the support, and the FFT bin j mod M
+            off = first + np.arange(vals.size)
+            off = np.where(off > L // 2, off - L, off)
+            return off.astype(np.int64), np.asarray(vals)
+
+        self.off, self.w = support(win)
+        self.offd, self.wd = support(wind)
+        self._g_ready = [g_ready[int(m)] for m in chans]
+        self._gd_ready = [gd_ready[int(m)] for m in chans]
+        self._a_rows = [a_norm[int(m)] for m in chans]
+        self.spec = None
+
+    def analyse(self, F: np.ndarray, n0: int, n1: int) -> np.ndarray:
+        """Coefficients ``n0..n1-1``; here ``F`` is the partial
+        reconstruction in time."""
+        n = np.arange(n0, n1, dtype=np.int64)
+        idx = np.mod(n[:, None] * self.hop + self.off[None, :], self.L)
+        seg = F[idx] * np.conj(self.w)[None, :]
+        folded = np.zeros((n.size, self.M), dtype=complex)
+        np.add.at(folded, (slice(None), np.mod(self.off, self.M)), seg)
+        C = np.fft.fft(folded, axis=1)[:, : self.M2]
+        return np.asarray(C.T * self.edge[:, None])
+
+    def synthesise(self, F: np.ndarray, delta: np.ndarray, n0: int, n1: int, real: bool) -> None:
+        """Add the synthesis of ``delta`` (channels x ``n1-n0``) to the
+        partial reconstruction ``F`` in time (``real``: twice its real
+        part)."""
+        full = np.zeros((self.M, n1 - n0), dtype=complex)
+        full[: self.M2] = delta * self.edge[:, None]
+        Y = np.fft.ifft(full, axis=0) * self.M  # (M, cols)
+        seg = Y[np.mod(self.offd, self.M)][:, :].T * self.wd[None, :]
+        if real:
+            seg = 2.0 * seg.real
+        n = np.arange(n0, n1, dtype=np.int64)
+        idx = np.mod(n[:, None] * self.hop + self.offd[None, :], self.L)
+        np.add.at(F, idx, seg)
+
+
 # ---------------------------------------------------------------------------
 # Frames, durations and the default look-ahead
 # ---------------------------------------------------------------------------
@@ -349,9 +420,27 @@ class FbFrames:
         keys: dict[tuple[int, int], list[int]] = {}
         for m in range(self.M):
             keys.setdefault((int(a_norm[m, 0]), int(a_norm[m, 1])), []).append(m)
-        self.classes = [
-            _HopClass(ch, g_ready, gd_ready, a_norm, L, self.Nm[ch[0]]) for ch in keys.values()
-        ]
+        from ..filterbanks._utils import _gabor_fast
+
+        gab, gabd = _gabor_fast(g, a_norm, L), _gabor_fast(gd, a_norm, L)
+        # A Gabor bank with its Gabor dual works in time (``_GaborClass``);
+        # ``self.F`` then holds the partial reconstruction itself.
+        self.timedomain = bool(
+            gab is not None
+            and gabd is not None
+            and len(keys) == 1
+            and gab[1:] == gabd[1:]
+            and gab[3] == self.real
+        )
+        if self.timedomain:
+            (ch,) = keys.values()
+            self.classes = [
+                _GaborClass(ch, g_ready, gd_ready, a_norm, L, self.Nm[ch[0]], gab, gabd)
+            ]
+        else:
+            self.classes = [
+                _HopClass(ch, g_ready, gd_ready, a_norm, L, self.Nm[ch[0]]) for ch in keys.values()
+            ]
         H = int(frame_hop)
         if H < 1:
             raise ValueError(f"frame_hop must be a positive integer, got {frame_hop!r}")
@@ -404,7 +493,7 @@ class FbFrames:
         spec = getattr(self, "spec_classes", set())
         if not spec:
             return self.analyse(k)
-        f = np.fft.ifft(self.F)
+        f = self.F if self.timedomain else np.fft.ifft(self.F)
         out = []
         for ci, n0, n1 in self.frames[k]:
             cl = self.classes[ci]
