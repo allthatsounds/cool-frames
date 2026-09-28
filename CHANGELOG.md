@@ -1212,6 +1212,12 @@ Found while re-checking the admissibility verdicts after the `gabfilters` fix
   `info["empty_channels"]`. `ifilterbank`'s real/two-sided check ignores
   empty and mirror-symmetric (DC and Nyquist complement) channels, which
   made very sparse banks warn while reconstructing exactly (G10).
+- `warpedfilters` caches each channel's response per length. The painless
+  repair and the verdict read every channel at design time, and each read
+  called the user's warp at every bin again: a 16-bank sweep took 12.6 s,
+  and takes 4.0 s with the cache (11.7 s before the repair existed). The
+  other designers' banks now evaluate their DC and Nyquist complements at
+  design time rather than at the first analysis; the total is unchanged.
 
 ## 0.1.0
 

@@ -267,14 +267,25 @@ def warpedblfilter(winname: str, fsupp: float, fc: float, *,
     if freqtoscale is None or scaletofreq is None:
         raise ValueError("freqtoscale and scaletofreq must be provided")
 
+    # The response is a pure function of L, and a designer evaluates it
+    # several times at one length (the complements sum the inner bank, the
+    # painless repair and the admissibility verdict read every channel), each
+    # time calling the user's warp at every bin.  Cache the last few lengths;
+    # hand out copies, as the complements' cache does.
+    _cache: dict = {}
+
     def H(L: int) -> np.ndarray:
-        h = comp_warpedfreqresponse(
-            winname, fc, fsupp, fs, L,
-            freqtoscale, scaletofreq,
-            norm=norm,
-            do_symmetric=do_symmetric,
-        )
-        return h * scal
+        L = int(L)
+        if L not in _cache:
+            if len(_cache) >= 4:
+                _cache.pop(next(iter(_cache)))
+            _cache[L] = comp_warpedfreqresponse(
+                winname, fc, fsupp, fs, L,
+                freqtoscale, scaletofreq,
+                norm=norm,
+                do_symmetric=do_symmetric,
+            ) * scal
+        return _cache[L].copy()
 
     def foff(L: int) -> int:
         return comp_warpedfoff(fc, fsupp, fs, L,
