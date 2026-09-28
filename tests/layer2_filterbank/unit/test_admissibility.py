@@ -265,120 +265,96 @@ def test_warpedfilters_below_the_floor_warns():
 
 
 # ---------------------------------------------------------------------------
-# gabfilters: the warping coordinate is frequency itself
+# gabfilters: a time-limited window, so the verdict is in time
 # ---------------------------------------------------------------------------
-
-def gab_geometry(fs, Ls, M, a, real=True):
-    """Bin geometry of a ``gabfilters`` bank, from the parameters only.
-
-    The prototype is built in the TIME domain: a length-M window zero-padded
-    to L, transformed, then truncated to the M bins around its peak.  So every
-    channel realises exactly M DFT bins -- whatever the window shape -- at
-
-        A_k = k*(L/M) - M//2,    B_k = A_k + M - 1
-
-    with ``L = dgtlength(Ls, a, M)`` a multiple of M.  There are no dead
-    endpoint bins: the transformed window vanishes only at L-bin offsets that
-    are multiples of L/M, and those bins carry another channel's peak.  Since
-    the channels are uniform *in frequency*, the exact interval is expressed
-    through the warped hook with ``scaletofreq`` the identity; the
-    quarter-bin inset makes floor()/ceil() land on A and B for both parities
-    of M.
-    """
-    b = math.lcm(int(a), int(M))
-    L = int(math.ceil(Ls / b) * b)
-    q = L // M
-    M2 = M // 2 + 1 if real else M
-    nyq_bin = L // 2
-    A_top = (M2 - 1) * q - M // 2
-    B_top = A_top + M - 1
-    if real and B_top >= nyq_bin:
-        # the top channel reaches Nyquist and folds to [min(A,L-B), L/2]
-        last = M2 - 1
-        W_nyq = 2 * (nyq_bin - min(A_top, L - B_top)) + 1
-    else:
-        # no channel plays the Nyquist complement; a one-bin stub is exact
-        last = M2
-        W_nyq = 1
-    A = np.arange(1, last, dtype=float) * q - M // 2
-    u = (A + M / 2.0) * fs / L
-    bwmul = (M / 2.0 - 0.25) * fs / L
-    return u, bwmul, M * fs / L, W_nyq * fs / L, L
+#
+# Every channel stores the whole L-point transform of its window (as LTFAT's
+# gabfilters.m does), so no bin is ever uncovered in frequency.  A window of
+# at most M samples makes the frame operator diagonal in time, and the bank is
+# a frame iff the a-periodisation of |g|^2 has no zero.  Until 2026-09-28 the
+# port kept only M bins per channel and these tests pinned the geometry that
+# truncation produced -- including "M = 16, a = 4 is not a frame", which is a
+# tight Hann frame.  See tests/regressions/test_gabfilters_full_band_2026_09_28.py.
+#
+# ``measured_is_frame`` reads the painless diagonal, which is not the frame
+# operator of a non-painless bank (see test_non_painless_bank_is_where_the_
+# estimator_lies below), so these tests measure with the exact uniform-bank
+# bounds instead.
 
 
-def test_predictor_matches_response_gabfilters():
+def exact_is_frame(g, a, L, real=True):
+    from cool_frames.numpy.filterbanks import filterbankbounds
+
+    A, B = filterbankbounds(g, a, L, real=real)
+    return bool(A > 1e-12 * max(B, 1e-300))
+
+
+def test_gabfilters_verdict_matches_response():
     warnings.simplefilter("ignore")
     for fs in (8000, 16000):
-        for Ls in (512, 1024):
+        for Ls in (512, 1024, 4096):
             for M in (4, 8, 9, 16, 17, 24, 25, 32, 33, 64):
-                for a in (2, max(1, M // 4), M + 1):
+                for a in (2, max(1, M // 4), M - 1, M, M + 1):
                     if math.lcm(a, M) > 8 * Ls:
                         continue
-                    g, aout, _fc, L, _ = gabfilters(fs, Ls, M=M, a=a)
-                    u, bwmul, dc, nyq, Lg = gab_geometry(fs, Ls, M, a)
-                    assert Lg == L
-                    p = predict_admissible(
-                        None, None, fs=fs, L=L, fsupp_dc=dc, fsupp_nyq=nyq,
-                        min_win=1, window="rect",
-                        warped=(u, lambda x: x, bwmul))
-                    assert p["is_frame"] == measured_is_frame(g, aout, L), (
-                        f"fs={fs} Ls={Ls} M={M} a={a}: predicted "
-                        f"{p['is_frame']}, measured {not p['is_frame']}")
+                    g, aout, _fc, L, info = gabfilters(fs, Ls, M=M, a=a)
+                    assert info["admissible"]["is_frame"] == exact_is_frame(g, aout, L), (
+                        f"fs={fs} Ls={Ls} M={M} a={a}")
 
 
-def test_predictor_matches_response_gabfilters_two_sided():
+def test_gabfilters_verdict_matches_response_two_sided():
     warnings.simplefilter("ignore")
     for M in (8, 9, 16, 17, 32):
-        for a in (2, max(1, M // 4), M + 1):
-            g, aout, _fc, L, _ = gabfilters(16000, 1024, M=M, a=a, real=False)
-            u, bwmul, dc, nyq, _L = gab_geometry(16000, 1024, M, a, real=False)
-            p = predict_admissible(None, None, fs=16000, L=L, fsupp_dc=dc,
-                                   fsupp_nyq=nyq, min_win=1, window="rect",
-                                   warped=(u, lambda x: x, bwmul))
-            assert p["is_frame"] == measured_is_frame(g, aout, L)
+        for a in (2, max(1, M // 4), M, M + 1):
+            g, aout, _fc, L, info = gabfilters(16000, 1024, M=M, a=a, real=False)
+            measured = exact_is_frame(g, aout, L, real=False)
+            assert info["admissible"]["is_frame"] == measured, f"M={M} a={a}"
 
 
-def test_predictor_matches_response_gabfilters_at_the_covering_boundary():
-    """``L/M`` within a couple of bins of ``M`` is where the verdict turns:
-    the channels abut at ``L/M == M`` and the parity of M decides whether the
-    top one still reaches Nyquist."""
+def test_gabfilters_verdict_does_not_depend_on_L():
+    """The truncated port turned at L/M = M; the real bank does not turn at all."""
     warnings.simplefilter("ignore")
     for M in range(3, 40):
-        for q in range(max(1, M - 2), M + 3):
+        for q in (max(1, M - 2), M, M + 2, 4 * M):
             Ls = M * (q - 1) + 1            # a = 1  ->  L = dgtlength = M*q
-            if Ls < 1:
-                continue
             for real in (True, False):
-                g, aout, _fc, L, _ = gabfilters(16000, Ls, M=M, a=1, real=real)
+                g, aout, _fc, L, info = gabfilters(16000, Ls, M=M, a=1, real=real)
                 assert L == M * q
-                u, bwmul, dc, nyq, _L = gab_geometry(16000, Ls, M, 1, real=real)
-                p = predict_admissible(None, None, fs=16000, L=L, fsupp_dc=dc,
-                                       fsupp_nyq=nyq, min_win=1, window="rect",
-                                       warped=(u, lambda x: x, bwmul))
-                assert p["is_frame"] == measured_is_frame(g, aout, L), (
-                    f"M={M} q={q} real={real}")
+                assert info["admissible"]["is_frame"] is True, f"M={M} q={q}"
+                assert exact_is_frame(g, aout, L, real=real), f"M={M} q={q} real={real}"
 
 
-def test_gabfilters_foreign_window_length_reports_no_verdict():
-    """A window array whose length is not M puts the transformed window's
-    zeros out of step with the channel lattice, so the live support is no
-    longer 'all of it': no verdict rather than a wrong one."""
+def test_gabfilters_foreign_window_length_gets_a_verdict():
+    """A window array shorter than M still gives a diagonal frame operator,
+    so the time-domain verdict is exact for it too."""
     from cool_frames.numpy.filters._firwin import firwin
 
     warnings.simplefilter("ignore")
     w = firwin("hann", 12, norm="energy")
-    _g, _a, _fc, _L, info = gabfilters(16000, 300, M=25, a=1, window=w)
-    assert info["admissible"] is None
+    for a in (1, 6, 11, 12, 13):
+        g, aout, _fc, L, info = gabfilters(16000, 300, M=25, a=a, window=w)
+        assert info["admissible"]["is_frame"] == exact_is_frame(g, aout, L), f"a={a}"
 
 
 def test_gabfilters_reports_admissibility():
     """``info['admissible']`` must agree with the measured frame response."""
     warnings.simplefilter("ignore")
-    for M, a, expected in ((256, 64, True), (16, 4, False), (24, 25, False)):
+    for M, a, expected in ((256, 64, True), (16, 4, True), (24, 25, False)):
         g, aout, _fc, L, info = gabfilters(16000, 4096, M=M, a=a)
         assert info["designer"] == "gabfilters"
         assert info["admissible"]["is_frame"] is expected
-        assert info["admissible"]["is_frame"] == measured_is_frame(g, aout, L)
+        assert info["admissible"]["is_frame"] == exact_is_frame(g, aout, L)
+
+
+def test_gabfilters_reports_the_condition_number():
+    """For a window no longer than M the verdict's kappa is exact."""
+    from cool_frames.numpy.filterbanks import filterbankbounds
+
+    warnings.simplefilter("ignore")
+    for M, a in ((256, 64), (17, 5), (64, 48)):
+        g, aout, _fc, L, info = gabfilters(16000, 4096, M=M, a=a)
+        A, B = filterbankbounds(g, aout, L)
+        assert info["admissible"]["kappa_pred"] == pytest.approx(B / A, rel=1e-9)
 
 
 def test_gabfilters_reports_geometry():
@@ -386,19 +362,18 @@ def test_gabfilters_reports_geometry():
     _g, _a, fc, L, info = gabfilters(16000, 4096, M=256, a=64)
     assert "fsupp_inner" in info and "fsupp_dc" in info and "fsupp_nyq" in info
     assert len(info["fsupp_inner"]) == len(fc) - 2
-    assert info["fsupp_dc"] > 0 and info["fsupp_nyq"] > 0
-    # every channel realises the same M-bin support
-    assert info["fsupp_dc"] == pytest.approx(256 * 16000 / L)
-    assert np.allclose(info["fsupp_inner"], 256 * 16000 / L)
+    # every channel stores all L bins: its support is the whole band
+    assert info["fsupp_dc"] == pytest.approx(16000.0)
+    assert info["fsupp_nyq"] == pytest.approx(16000.0)
+    assert np.allclose(info["fsupp_inner"], 16000.0)
 
 
-def test_gabfilters_below_the_floor_warns():
-    """L/M > M leaves holes between the channels; it must say so."""
+def test_gabfilters_hop_beyond_the_window_warns():
+    """a larger than the window's nonzero length leaves samples no atom sees."""
     from cool_frames.diagnostics.admissibility import NotAFrameWarning
 
-    # M = 16, Ls = 4096  ->  L = 4096, L/M = 256 > 16
     with pytest.warns(NotAFrameWarning, match="not a frame"):
-        gabfilters(16000, 4096, M=16, a=4)
+        gabfilters(16000, 4096, M=16, a=17)
 
 
 def test_gabfilters_admissible_geometry_does_not_warn():
@@ -406,7 +381,8 @@ def test_gabfilters_admissible_geometry_does_not_warn():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", NotAFrameWarning)
-        gabfilters(16000, 4096, M=256, a=64)      # L/M = 16 <= 256
+        gabfilters(16000, 4096, M=256, a=64)
+        gabfilters(16000, 4096, M=16, a=4)        # L/M = 256 > M: still a frame
 
 
 def test_gabfilters_freq_axis_reports_no_verdict():

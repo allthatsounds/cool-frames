@@ -174,12 +174,6 @@ def _comp_tfrfromwin(g: np.ndarray, atheight: float | None = None) -> float:
 # gabfilters – public API
 # ---------------------------------------------------------------------------
 
-def _identity_scaletofreq(u):
-    """Gabor channels are uniform in frequency itself: ``g(f) = f``."""
-    return u
-
-
-
 def gabfilters(fs: float, Ls: int, *,
                window="hann",
                window_ms: float | None = None,
@@ -232,6 +226,15 @@ def gabfilters(fs: float, Ls: int, *,
         Window normalisation: ``'energy'`` (default), ``'1'``, ``'inf'``.
     windowaxis : str
         ``'time'`` (default) or ``'freq'``.
+
+    Notes
+    -----
+    As in LTFAT, every channel stores the whole ``L``-point transform of the
+    window (``M2 * L`` complex values in all), because a time-limited window
+    is not band-limited; this is what makes the bank equal to ``dgtreal``
+    with the time-invariant phase convention at every ``L``.  For long
+    signals use :func:`cool_frames.gabor.dgtreal` directly, which is exact
+    and needs no ``L``-length filters.
 
     Returns
     -------
@@ -325,26 +328,36 @@ def gabfilters(fs: float, Ls: int, *,
     if fs is not None:
         fc_out = fc_out * (float(fs) / 2.0)
 
-    # ── Extract compact prototype of length Lg_compact ────────────────
-    # The time-domain prototype has M nonzero samples, so its frequency
-    # support is concentrated within ~M bins.  Storing only the compact
-    # support (rather than the full L-length FFT) keeps the filter descriptors
-    # consistent with blfilter / waveletfilters output.
+    # ── The stored response is the whole transformed window ──────────────
+    # LTFAT's gabfilters.m stores ``gtmp.H = gnum`` -- all ``Lg`` bins -- with
+    # ``foff = kk*L/M - floor(Lg/2)``.  A window of M samples is time-limited,
+    # so its L-point spectrum is not band-limited: its main lobe alone spans
+    # ``~4*L/M`` bins for a Hann window, and its sidelobes reach every bin.
     #
-    # NOTE: this does *not* establish the painless condition, contrary to what
-    # this comment claimed before v0.1.1.  Painlessness needs support <= N =
-    # L/a, i.e. M <= L/a, which the default lattice (a = M//4) never satisfies:
-    # it needs M**2 <= 4L.  It does not need to: the bank is uniform, and
-    # `filterbankdual`/`filterbanktight`/`filterbankbounds` treat a uniform
-    # bank that is not painless exactly, by LTFAT's polyphase construction.
+    # Until 2026-09-28 this port kept only ``M`` bins around the peak, on the
+    # reasoning that "M nonzero samples concentrate within ~M bins".  That is
+    # backwards: the support in bins scales with ``L/M``, not with ``M``.  The
+    # kept band was ``M**2/L`` channel spacings wide, so the bank departed
+    # from the DGT it documents as ``L`` grew past ``M**2`` and stopped being
+    # a frame near ``L = M**2``: at ``M = 480, a = 120, L = 144000`` the
+    # magnitudes differed from ``dgtreal`` by 28 % and the bounds read
+    # ``(2.53, 3.84)`` against ``(4, 4)``; ``M = 16, a = 4, L = 1024`` -- a
+    # tight Hann frame -- was reported as not a frame at all.
     #
-    # We keep Lg_compact = M bins centred on the peak of gnum (which sits
-    # at index Lg//2 after the fftshift above).
-    Lg_compact = len(g0)            # = M  (the window length)
-    center = Lg // 2
-    half_lo = Lg_compact // 2
-    half_hi = Lg_compact - half_lo
-    gnum_compact = gnum[center - half_lo : center + half_hi].copy()
+    # Storing all ``Lg`` bins restores LTFAT's behaviour: the bank now equals
+    # ``dgtreal`` with the time-invariant phase convention at every ``L``.
+    # The cost is LTFAT's too -- ``M2 * L`` complex values -- and the same
+    # advice applies: for long signals use ``cool_frames.gabor.dgtreal``.
+    # In ``windowaxis='freq'`` mode ``gnum`` already has ``M`` bins, as in
+    # LTFAT, so nothing changes there.
+    #
+    # Painlessness still does not hold and is still not needed: the bank is
+    # uniform, and `filterbankdual`/`filterbanktight`/`filterbankbounds`
+    # treat a uniform non-painless bank exactly, by LTFAT's polyphase
+    # construction.
+    Lg_compact = Lg
+    half_lo = Lg // 2
+    gnum_compact = gnum.copy()
 
     # Build filter descriptors.
     #
@@ -394,89 +407,58 @@ def gabfilters(fs: float, Ls: int, *,
     # Announce a non-frame geometry here, where the parameters were chosen,
     # rather than letting it surface later as an all-zero dual.
     #
-    # Unlike the painless designers, gabfilters builds its prototype in the
-    # TIME domain, so its realised frequency support is not a designed
-    # bandwidth but the width of the compact block it stores: every channel
-    # occupies exactly ``gl = len(gnum_compact)`` DFT bins, whatever the
-    # window shape, laid out at
+    # windowaxis='time': every channel now stores the full transformed window
+    # (``gl = L`` bins), so nothing is uncovered in frequency and the only way
+    # to fail is in time.  A window of at most M samples makes the frame
+    # operator diagonal in time (the "painless in time" case of Daubechies,
+    # Grossmann and Meyer), proportional to the a-periodisation
     #
-    #     A_k = k*(L/M) - gl//2,   B_k = A_k + gl - 1,   k = 0 .. Mout-1
+    #     D(r) = sum_k |g0[r + k*a]|^2 ,   r = 0 .. a-1 ,
     #
-    # (``L = dgtlength(Ls, a, M)`` is a multiple of M, so ``k*L/M`` is exact).
-    # There are no dead endpoint bins: the truncated tails of the transformed
-    # window are generically nonzero, and where they do vanish exactly (the
-    # Dirichlet zeros at multiples of L/M) the bin carries another channel's
-    # peak.  So the bank is a frame iff L/M <= gl.
+    # so the bank is a frame iff ``min D > 0`` and its condition number is
+    # ``max D / min D``.  That is exact, not a prediction.
     #
-    # gabfilters' warping coordinate is frequency itself (``g(f) = f``), so
-    # the interval is handed to the predictor through the warped hook with
-    # ``scaletofreq = identity``; that is the one route that can express an
-    # even-width interval exactly (``_interval_linear`` always builds an odd
-    # one).  The quarter-bin inset in ``bwmul`` is what makes floor()/ceil()
-    # land on A and B for both parities of gl.
-    # ``gl == M`` (a named window, or an array of length M) is what makes the
-    # "no dead bins" claim above true for *any* window shape: the transformed
-    # window vanishes exactly at L-bin offsets that are multiples of L/gl, and
-    # with gl == M that lattice is the channel lattice L/M, so every such bin
-    # carries some other channel's peak.  A window array of a different length
-    # puts the two lattices out of step -- with gl = L, for instance, a
-    # periodic Hann has a three-bin spectrum, nothing like its gl bins -- and
-    # the dead bins are then window-dependent, so we report no verdict.
+    # windowaxis='freq' stores the window itself as the frequency response,
+    # whose live width depends on how many endpoint bins that window zeroes
+    # out; we report no verdict there rather than an unvalidated one.
     gl = Lg_compact
     fsupp_hz = float(gl) * fs / L
     fsupp_all = np.full(M2, fsupp_hz, dtype=float)
-    q = L // Mfull
-    nyq_bin = L // 2
-    A_top = (M2 - 1) * q - gl // 2
-    B_top = A_top + gl - 1
-    representable = (gl == Mfull)
-    if not real:
-        # two-sided bank: no channel is the Nyquist complement.  A gap in a
-        # uniform layout repeats every L/M bins, so bin L/2 can never be the
-        # *only* hole -- a one-bin stub there is therefore exact.
-        last = M2
-        W_nyq = 1
-    elif B_top >= nyq_bin:
-        # the top channel reaches Nyquist: folded about it, it covers
-        # [min(A_top, L - B_top), L/2] -- exactly an interval centred on
-        # Nyquist, which is how the predictor models the edge.
-        last = M2 - 1
-        W_nyq = 2 * (nyq_bin - min(A_top, L - B_top)) + 1
-    elif B_top <= nyq_bin - 2:
-        # the top channel stops short of Nyquist: it is an ordinary inner
-        # channel and [B_top+1, L/2-1] is uncovered, which the one-bin stub
-        # still reports as a hole.
-        last = M2
-        W_nyq = 1
-    else:
-        # B_top == L/2 - 1: bin L/2 is uncovered but the predictor always
-        # covers it (it assumes a Nyquist complement), so this hole is
-        # invisible to it.  With gl == M that only happens for odd M at
-        # L/M = M+1 (L even) or M+2 (L odd) -- both of which have L/M > gl,
-        # so the gaps *between* the channels give the right verdict anyway.
-        last = M2
-        W_nyq = 1
-    A_inner = np.arange(1, last, dtype=float) * q - gl // 2
-    u_inner = (A_inner + gl / 2.0) * fs / L
-    bwmul = (gl / 2.0 - 0.25) * fs / L
-    fsupp_dc = fsupp_hz               # folds to [0, gl//2], the exact coverage
-    fsupp_nyq = W_nyq * fs / L
+    fsupp_dc = fsupp_hz
+    fsupp_nyq = fsupp_hz
 
-    if windowaxis == "time" and representable:
-        from ..diagnostics.admissibility import check_admissible
-
-        admissible = check_admissible(
-            None, None, fs=fs, L=int(L),
-            fsupp_dc=fsupp_dc, fsupp_nyq=fsupp_nyq,
-            warped=(u_inner, _identity_scaletofreq, bwmul),
-            min_win=1, window="rect", designer="gabfilters")
+    if windowaxis == "time" and len(g0) <= Mfull:
+        # Periodise the window as it actually sits in the length-L signal
+        # (``_fir2long`` wraps its second half to the end), not by its index
+        # in ``g0``: the positions modulo ``a`` differ unless ``a`` divides M.
+        w2 = np.abs(_fir2long(g0, L)) ** 2
+        D = w2.reshape(L // a, a).sum(axis=0)
+        peak = float(D.max()) if D.size else 0.0
+        holes = np.flatnonzero(D <= peak * 1e-12) if peak > 0 else np.arange(a)
+        is_frame = bool(peak > 0 and holes.size == 0)
+        kappa = float(peak / D.min()) if is_frame else math.inf
+        admissible = {
+            "is_frame": is_frame,
+            "first_hole_bin": None,          # no frequency hole is possible
+            "n_hole_bins": 0,
+            "first_hole_sample": None if is_frame else int(holes[0]),
+            "n_hole_samples": 0 if is_frame else int(holes.size * (L // a)),
+            "rho": float(a) / float(len(w2)),
+            "kappa_pred": kappa,
+            "usable": is_frame,
+        }
+        if not is_frame:
+            from ..diagnostics.admissibility import NotAFrameWarning
+            warnings.warn(
+                f"gabfilters: this geometry is not a frame. The hop a={a} leaves "
+                f"{holes.size} of every {a} samples outside the window's support "
+                f"(the first at offset {int(holes[0])}), so the lower frame bound "
+                f"is zero. Use a <= the window's nonzero length -- see "
+                f"cool_frames.diagnostics.admissibility.",
+                NotAFrameWarning,
+                stacklevel=2,
+            )
     else:
-        # Two layouts we cannot express, so we report no verdict rather than
-        # an unvalidated one: windowaxis='freq', which stores the window
-        # itself as the frequency response so the live width is gl minus
-        # however many endpoint bins that particular window zeroes out
-        # (window- and parity-dependent), and a window array whose length is
-        # not M (see above).
         admissible = None
 
     info = {

@@ -24,19 +24,25 @@ consistency: resynthesise, re-analyse, and ask whether the magnitudes survived
 the round trip.  A coefficient set that is not in the range of the analysis
 operator cannot be produced by any signal, and the gap is what you hear.
 
-Measured consistency on the fixture below (redundancy 2.1, a chirp plus a
-steady partial), zero phase = +8.4 dB, true phase = -310 dB:
+Measured consistency on the fixture below (redundancy 2.1, a tight frame; a
+chirp plus a steady partial), zero phase = +2.9 dB, true phase = -309 dB:
 
 ===========  ==========  ==========
 routine      1 iter      10 iters
 ===========  ==========  ==========
-gla            +0.6 dB    -12.0 dB
-legla          +0.5 dB    -12.0 dB
-rtisila       -16.6 dB    -19.2 dB
-gsrtisila     -16.6 dB    -19.2 dB
-lertisila     -16.6 dB    -19.2 dB
-decolbfgs      -5.1 dB    -10.2 dB
+gla            +1.0 dB     -8.8 dB
+legla          +1.0 dB     -8.9 dB
+rtisila       -21.6 dB    -31.2 dB
+gsrtisila     -21.6 dB    -31.2 dB
+lertisila     -13.6 dB    -31.0 dB
+decolbfgs       0.0 dB     -7.9 dB
 ===========  ==========  ==========
+
+(Remeasured 2026-09-28.  Until then ``gabfilters`` kept 32 of this bank's 512
+bins per channel -- 2 channel spacings -- so the fixture was not the Gabor
+frame it names, and the table read +8.4 dB for zero phase, -12.0 dB for GLA
+and -19.2 dB for the RTISI-LA family at 10 iterations; see
+``DEFECT_REGISTER.md``, G1.)
 
 (The RTISI-LA rows were -7.9 / -13.0 dB, and -8.6 / -12.1 dB for
 ``lertisila``, before the family was rewritten as PHASERET's algorithm: the
@@ -132,10 +138,13 @@ def _np(x):
 def test_iterative_retrieval_beats_zero_phase(name, backend):
     """Each routine must improve consistency over the zero-phase input it starts from.
 
-    Zero phase measures +8.4 dB on this fixture.  Anything that retrieves phase
+    Zero phase measures +2.9 dB on this fixture.  Anything that retrieves phase
     lands far below 0 dB; anything that returns noise, returns its input, or
-    reports success without iterating lands at or above it.  The -3 dB
-    threshold is ~7 dB of slack against the worst measured routine.
+    reports success without iterating lands at or above it.  15 iterations,
+    not 10: torch's L-BFGS (history 100, strong-Wolfe line search) trails
+    SciPy's early on the exact bank -- -2.8 dB against -7.9 dB after 10 --
+    and reaches -9.1 dB after 15.  The -3 dB threshold is then ~5.7 dB of
+    slack against the worst routine (-8.7 dB, NumPy ``decolbfgs``).
     """
     if backend == "torch":
         pytest.importorskip("torch")
@@ -153,7 +162,7 @@ def test_iterative_retrieval_beats_zero_phase(name, backend):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         c_out, f_out, _relres, _niter = fn(
-            _to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=10
+            _to_backend(mag, backend), g, a_np, L=L, Ls=LS, real=real, maxit=15
         )
 
     got = _consistency_db(c_out, g, a_np, L, real, mag)
@@ -209,7 +218,7 @@ def test_backends_agree(name):
 
     ``decolbfgs`` is excluded: it runs an L-BFGS line search, and NumPy's and
     torch's differ, so the two backends legitimately land in different local
-    minima (-10.25 dB vs -10.16 dB after 10 iterations here).  Its agreement is
+    minima (-7.9 dB vs -2.8 dB after 10 iterations here, -8.7 vs -9.1 after 15).  Its agreement is
     checked by the consistency bound above rather than element-wise.
 
     The rest are deterministic alternating projections and must agree to

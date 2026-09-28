@@ -135,6 +135,17 @@ def _prepare_filters(
             # torch tested only the length, so a fractional-hop full-length
             # channel went down the uniform kernel and raised
             # "RuntimeError: shape [...] is invalid for input of size ...".
+            #
+            # The full-length kernel reads a dense response starting at bin 0
+            # and ignores ``foff``; rotate a response stored with an offset
+            # into place, as the NumPy ``prepare_filters`` does (2026-09-28:
+            # ``gabfilters`` stores all L bins with foff = k*L/M - L//2, and
+            # without this every channel was applied at DC).  ``torch.roll``
+            # keeps the gradient path to H.
+            foff_m = int(gm.get("foff", 0) or 0)
+            if foff_m % L:
+                gm["H"] = torch.roll(H, shifts=foff_m)
+                gm["foff"] = 0
             m_fft.append(m)
         else:
             m_fftbl.append(m)

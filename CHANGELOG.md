@@ -1127,6 +1127,36 @@ W1-W7). **The default banks are unchanged** -- every `audfilters` and
   takes `shift`; `firwin` takes `shift`.
 - The `audfilters` docstring no longer calls its filters gammatone filters.
 
+### `gabfilters` is the DGT at every length
+
+Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
+(`DEFECT_REGISTER.md`, G1-G3): `gabfilters` on a 6 s excerpt was not a frame.
+
+- **Behavioural change:** `gabfilters` (with `windowaxis='time'`, the default)
+  stores the whole L-point transform of its window in every channel, as
+  LTFAT's `gabfilters.m` does. It kept M bins -- M^2/L channel spacings -- so
+  it drifted from `dgtreal` as L grew and was not a frame beyond L of about
+  M^2: magnitude error 1.5e-3 at M = 480, L = 24000; 0.29 at L = 144000, with
+  bounds (2.53, 3.84) for a frame whose bounds are (4, 4). It now equals
+  `dgtreal` in the time-invariant convention at every L. The memory is
+  LTFAT's, M2*L complex values; for long signals use
+  `cool_frames.gabor.dgtreal`.
+- **Supersedes the `gabfilters` rule** under "Frame admissibility is now
+  predictable in closed form" above: "frame iff L/M <= M" described the
+  truncated bank, not the Gabor frame. `info["admissible"]` is now exact
+  and read in time. A window of at most M samples makes the frame operator
+  diagonal, so the bank is a frame iff the a-periodisation of |g|^2 has no
+  zero, and kappa is its max over its min. A window array shorter than M now
+  gets a verdict too. `windowaxis='freq'` is unchanged and still reports
+  none. `info["fsupp*"]` report the whole band.
+- **Behavioural change:** `filterbank` and `ifilterbank`, in both backends,
+  now apply a full-length response stored with a non-zero `foff` at `foff`,
+  where `filter_freqresp` always placed it. They used to apply it at DC. No
+  designer produced such a response before, so the defect only showed once
+  `gabfilters` did.
+- Results computed with `gabfilters` change wherever L is not small against
+  M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
+
 ## 0.1.0
 
 First public release.

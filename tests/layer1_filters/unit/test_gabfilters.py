@@ -76,8 +76,10 @@ class TestFilterDescriptors:
             assert 'foff' in g, "Filter must have 'foff' field"
             assert 'realonly' in g, "Filter must have 'realonly' field"
 
-    @pytest.mark.xfail(reason="Short filters return compact H; full-length padding not yet implemented")
     def test_all_filters_have_same_h_length(self):
+        """Every channel stores the whole L-point transform of the window, as
+        LTFAT's gabfilters.m does (an xfail until 2026-09-28, when the port
+        still truncated it to M bins)."""
         gout, _, _, L, _ = gabfilters(16000, _LS, window='hann', a=_A, M=_M)
         for g in gout:
             assert len(g['H']) == L, \

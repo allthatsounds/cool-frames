@@ -651,6 +651,28 @@ constructors. Regression tests: `tests/regressions/test_window_conventions_2026_
 | W6 | `filters/_filters.py` | `freqfilter` delegated to `blfilter`, so `'gauss'`, `'butterworth'`, `'roex'` and `'gammatone'` came from `firwin`, which has no bandwidth parameter (W2, W3) | LTFAT's construction: `freqwin(name, Lw, bw)` with `bw` the -6 dB bandwidth, kept on `Lw = round(4 bw L / fs)` bins; other names still go to `blfilter` (documented extension) |
 | W7 | `filters/_freqwin.py` | Index L/2 of an even length was +L/2 where LTFAT's is -L/2; the asymmetric shapes (`'roex'`, `'gammatone'`) then put their upper-edge value at the lower edge once `freqfilter` fftshifts them | LTFAT's order; `shift` added (LTFAT's, for `freqfilter`'s pedantic mode) |
 
+## Found while sketching an LRAC 2.0 codec bank, 2026-09-28
+
+A 24 kHz `gabfilters` bank on a 6 s speech excerpt was not a frame. Regression
+tests: `tests/regressions/test_gabfilters_full_band_2026_09_28.py`.
+
+| # | Area | Defect | Was → is |
+|---|---|---|---|
+| G1 | `filters/_gabfilters.py` | Kept only M of the L bins of each channel's transformed window, reasoning that an M-sample window's spectrum lies within ~M bins. It spans ~4L/M bins (the Hann main lobe alone) and its sidelobes reach every bin. The kept band was M^2/L channel spacings, so the bank drifted from `dgtreal` as L grew and stopped being a frame near L = M^2. LTFAT's `gabfilters.m` stores all L bins. The admissibility rule built on the truncation ("frame iff L/M <= M") described the defect, not the Gabor frame | At M = 480, a = 120 the magnitude error against `dgtreal` was 3.0e-5 at L = 4800, 1.5e-3 at 24000, 3.6e-2 at 72000 and 0.29 at 144000 (bounds (2.53, 3.84) instead of (4, 4)); M = 16, a = 4 at L = 1024, a tight Hann frame, was reported "not a frame" → equals `dgtreal` (time-invariant convention) to within 2.5e-12 at every L tested, with bounds equal to `gabframebounds`. `info["admissible"]` is exact, read in time (frame iff the a-periodisation of \|g\|^2 has no zero, kappa its max/min). Storage is M2*L complex values, as in LTFAT |
+| G2 | `filterbanks/_utils.py` (`prepare_filters`) | A length-L `H` went to the full-length kernels, which take a dense response starting at bin 0 and never read `foff`, while `filter_freqresp` (bounds, duals) placed it at `foff`. No designer produced such a filter before G1's fix, so the two paths had never met; with G1 fixed, analysis applied every channel at DC | rotated into place before dispatch (`np.roll(H, foff)`, `foff = 0`); round trips of the fixed `gabfilters` −299 to −308 dB |
+| G3 | `torch/filterbanks/_core.py` (`_prepare_filters`) | The same in the torch backend: analysis differed from NumPy by O(1), round trip +2 dB | `torch.roll`, which keeps the gradient path to `H`; agrees with NumPy to 2.4e-15, round trip −297 dB |
+
+Tests that pinned the defect were corrected, not loosened around it:
+- The four `gabfilters` admissibility tests encoded the truncated geometry. They are rewritten to check the verdict against the exact bounds (`filterbankbounds`), for real and two-sided banks, window arrays shorter than M, and L from below M^2 to 4*M^2.
+- Two xfails caused by the truncation now pass and are unmarked: `test_all_filters_have_same_h_length` and `test_no_dead_bins_complex`.
+- The single-sided pseudo-inverse projection test asked for 1e-8. With the full sidelobes, the frame operator's eigenvalues now run continuously down to `_PINV_REL`, so the achievable accuracy is ~eps/`_PINV_REL`: measured 3.5e-6, bound 1.1e-4.
+
+Consequences outside the package. Every reproduce bundle pins an earlier revision and still reproduces its old numbers.
+- **W03** states the truncated rule and validates it: "collapses to L/M <= M", the 1160 `gabfilters` rows of tab:admval, the M = 64, a = 48 "non-frame" example, and c07's one-iteration rows.
+- **W52**'s kappa values 1.0020 and 1.0003 are truncation artefacts, as are its cost numbers for the exact dual.
+- **W22**'s uniform-Gabor cells at M = 256, a = 64 have kept band M^2/L = 4.06.
+- `ltfat_filterbank/cola` carries the same truncation.
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —

@@ -338,11 +338,14 @@ class TestGabFiltersFrequencyCoverageImpl:
     MATLAB counterpart: PropFilterDesignCoverage (gabfilters coverage).
     """
 
-    @pytest.mark.xfail(reason="Gabor filterbank complement filters may leave dead DFT bins")
     def test_no_dead_bins_complex(self, needs_impl):
         """
         Gabor filterbank in complex mode should cover all DFT bins:
         sum_m |H_m(k)|^2 > 0 for all k.
+
+        An xfail until 2026-09-28: the port kept only M of the L bins of each
+        channel's transformed window, which left bins no channel reached.
+        LTFAT stores all of them, and so does the port now.
         """
         from cool_frames.filters import gabfilters  # type: ignore
         from cool_frames.numpy.filters._filters import comp_transferfunction  # type: ignore
