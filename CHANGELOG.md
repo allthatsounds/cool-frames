@@ -1165,7 +1165,8 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   another), so the bank costs 2L complex values instead of M2*L, and writing
   into a channel's `H` raises instead of silently changing every channel.
   Copy the array to edit it; a bank with a replaced response is no longer
-  treated as a Gabor bank and takes the generic path.
+  treated as a Gabor bank and takes the generic path, and so does a Gabor
+  system that is not a frame, which keeps its pseudo-inverse dual.
 - Results computed with `gabfilters` change wherever L is not small against
   M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
 

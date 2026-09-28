@@ -205,3 +205,21 @@ def test_torch_gabor_bank_shares_its_responses_and_takes_the_closed_forms():
     assert float(A) == pytest.approx(4.0, rel=1e-12) and float(B) == pytest.approx(4.0, rel=1e-12)
     gdt = t_dual(gt, aout, L)
     assert len(gdt) == len(gt)
+
+
+def test_a_gabor_bank_that_is_not_a_frame_keeps_the_pseudo_inverse():
+    """gabdual refuses a non-frame; the bank then takes the generic
+    construction, whose pseudo-inverse dual makes synthesis followed by
+    analysis a projection, as before the closed forms."""
+    warnings.simplefilter("ignore")
+    g, aout, _fc, L, info = gabfilters(16000, 4096, M=64, a=72)     # hop > window
+    assert info["admissible"]["is_frame"] is False
+    gd = filterbankdual(g, aout, L)
+    assert all(np.all(np.isfinite(dm["H"])) for dm in gd)
+    rng = np.random.default_rng(2)
+    c = [rng.standard_normal(len(cm)) + 1j * rng.standard_normal(len(cm))
+         for cm in filterbank(np.zeros(L), g, aout, L)]
+    p1 = filterbank(ifilterbank(c, gd, aout, Ls=L, real=True), g, aout, L)
+    p2 = filterbank(ifilterbank(p1, gd, aout, Ls=L, real=True), g, aout, L)
+    scale = max(float(np.max(np.abs(cm))) for cm in p1)
+    assert max(float(np.max(np.abs(u - v))) for u, v in zip(p1, p2)) / scale < 1e-6

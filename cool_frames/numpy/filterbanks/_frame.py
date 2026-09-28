@@ -675,8 +675,15 @@ def _canonical_frame(g: list[dict], a, L: int, type_: str, real: bool) -> list[d
     a_norm = normalise_a(a, M)
     gab = _gabor_bank(g, a_norm, L, real)
     if gab is not None:
+        from ..gabor import gabframebounds
+
         win, a_g, M_g, fs = gab
-        return _gabor_frame(win, a_g, M_g, L, fs, real, type_)
+        A, B = gabframebounds(win, a_g, M_g, L)
+        # ``gabdual`` and ``gabtight`` refuse a system that is not a frame;
+        # such a bank keeps the generic construction's pseudo-inverse, as
+        # before the closed forms existed.
+        if A > _PINV_REL * B:
+            return _gabor_frame(win, a_g, M_g, L, fs, real, type_)
     g_ready, _, _, _ = prepare_filters(g, a_norm, L)
     key = _frame_key(g_ready, g, a_norm, L, type_, real)
     hit = _FRAME_CACHE.get(key)
