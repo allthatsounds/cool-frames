@@ -180,7 +180,7 @@ def heap_pghi(
     def flat_idx(m: int, n: int) -> int:
         return offsets[m] + n % N[m]  # type: ignore[no-any-return]
 
-    order = 0                      # push counter, the heap's last tie-break
+    order = 0  # push counter, the heap's last tie-break
 
     # --- Convert gradients to radians ---
     tgradw = tgrad * math.pi

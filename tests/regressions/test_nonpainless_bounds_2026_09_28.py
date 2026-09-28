@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import warnings
 
-import numpy as np
 import pytest
 
+import numpy as np
 from cool_frames.numpy.filterbanks import filterbankbounds, filterbankbounds_svd
 from cool_frames.numpy.filters import (
     audfilters,
@@ -41,8 +41,9 @@ def _kappa(A, B):
 
 
 def test_wavelet_nonframe_that_covers_every_bin_gets_no_frame_verdict():
-    g, a, fc, L, info = _quiet(waveletfilters, 16000, 512, painless=False,
-                               fmax=4000, highpass="auto")
+    g, a, _fc, L, info = _quiet(
+        waveletfilters, 16000, 512, painless=False, fmax=4000, highpass="auto"
+    )
     assert info["painless"] is False
     assert info["admissible"] is None
     A, B = filterbankbounds(g, a, L)
@@ -58,15 +59,19 @@ def test_wavelet_nonframe_that_covers_every_bin_gets_no_frame_verdict():
     assert Bc == pytest.approx(Bsc, rel=1e-10)
 
 
-@pytest.mark.parametrize("make", [
-    lambda: waveletfilters(16000, 384, painless=False),
-    lambda: audfilters(8000, 384, redmul=0.5),
-    lambda: greenwoodfilters(8000, 384, redmul=0.5),
-    lambda: cqtfilters(8000, 384, redmul=0.6, fmin=100),
-    lambda: warpedfilters(np.sqrt, np.square, 8000, 50, 3800, 4, 256, redmul=0.5),
-], ids=["wavelet", "aud", "greenwood", "cqt", "warped"])
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: waveletfilters(16000, 384, painless=False),
+        lambda: audfilters(8000, 384, redmul=0.5),
+        lambda: greenwoodfilters(8000, 384, redmul=0.5),
+        lambda: cqtfilters(8000, 384, redmul=0.6, fmin=100),
+        lambda: warpedfilters(np.sqrt, np.square, 8000, 50, 3800, 4, 256, redmul=0.5),
+    ],
+    ids=["wavelet", "aud", "greenwood", "cqt", "warped"],
+)
 def test_nonuniform_nonpainless_bounds_are_exact(make):
-    g, a, fc, L, info = _quiet(make)
+    g, a, _fc, L, info = _quiet(make)
     assert info["painless"] is False
     assert info["admissible"] is None or info["admissible"]["is_frame"] is False
     for real in (True, False):
@@ -81,21 +86,25 @@ def test_nonuniform_nonpainless_bounds_are_exact(make):
 def test_not_a_frame_verdict_survives_aliasing():
     # Uncovered bins annihilate their exponentials whatever the hops, so the
     # "not a frame" verdict stands on a non-painless bank.
-    g, a, fc, L, info = _quiet(audfilters, 8000, 512, M=8, redmul=0.5)
+    g, a, _fc, L, info = _quiet(audfilters, 8000, 512, M=8, redmul=0.5)
     assert info["painless"] is False
     assert info["admissible"]["is_frame"] is False
     assert filterbankbounds(g, a, L)[0] == 0.0
 
 
-@pytest.mark.parametrize("make", [
-    lambda: audfilters(8000, 1024),
-    lambda: greenwoodfilters(8000, 1024),
-    lambda: cqtfilters(8000, 1024, fmin=100),
-    lambda: warpedfilters(np.sqrt, np.square, 8000, 50, 3800, 4, 1024),
-    lambda: waveletfilters(16000, 512),
-], ids=["aud", "greenwood", "cqt", "warped", "wavelet"])
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: audfilters(8000, 1024),
+        lambda: greenwoodfilters(8000, 1024),
+        lambda: cqtfilters(8000, 1024, fmin=100),
+        lambda: warpedfilters(np.sqrt, np.square, 8000, 50, 3800, 4, 1024),
+        lambda: waveletfilters(16000, 512),
+    ],
+    ids=["aud", "greenwood", "cqt", "warped", "wavelet"],
+)
 def test_painless_banks_keep_their_verdict(make):
-    g, a, fc, L, info = _quiet(make)
+    g, a, _fc, L, info = _quiet(make)
     assert info["painless"] is True
     assert info["admissible"]["is_frame"] is True
     assert filterbankbounds(g, a, L)[0] > 0
@@ -105,11 +114,11 @@ def test_large_block_path_matches_dense():
     # A block above the dense threshold goes through Lanczos and LOBPCG.
     from cool_frames.numpy.filterbanks import _frame
 
-    g, a, fc, L, info = _quiet(waveletfilters, 16000, 4096, painless=False)
+    g, a, _fc, L, _info = _quiet(waveletfilters, 16000, 4096, painless=False)
     A, B = filterbankbounds(g, a, L)
     old = _frame._DENSE_BLOCK
     try:
-        _frame._DENSE_BLOCK = 10 ** 6
+        _frame._DENSE_BLOCK = 10**6
         Ad, Bd = filterbankbounds(g, a, L)
     finally:
         _frame._DENSE_BLOCK = old
@@ -120,8 +129,9 @@ def test_large_block_path_matches_dense():
 def test_large_singular_block_reads_zero():
     from cool_frames.numpy.filterbanks import _frame
 
-    g, a, fc, L, info = _quiet(waveletfilters, 16000, 512, painless=False,
-                               fmax=4000, highpass="auto")
+    g, a, _fc, L, _info = _quiet(
+        waveletfilters, 16000, 512, painless=False, fmax=4000, highpass="auto"
+    )
     old = _frame._DENSE_BLOCK
     try:
         _frame._DENSE_BLOCK = 50

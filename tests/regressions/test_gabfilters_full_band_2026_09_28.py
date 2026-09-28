@@ -16,13 +16,14 @@ channel at DC while ``filter_freqresp`` (bounds, duals) applied it at its
 centre frequency.  No designer produced such a filter before, so the two paths
 had never met.  ``prepare_filters`` now rotates it into place.
 """
+
 from __future__ import annotations
 
 import warnings
 
-import numpy as np
 import pytest
 
+import numpy as np
 from cool_frames.numpy.filterbanks import (
     filterbank,
     filterbankbounds,
@@ -48,8 +49,14 @@ def _as_gabfilters(C, a, M):
 
 # (M, a, Ls): from L < M**2, where the old truncation was nearly harmless,
 # to L >> M**2, where it was not a frame.
-CASES = [(480, 120, 4800), (480, 120, 24000), (256, 64, 16000),
-         (64, 16, 8192), (16, 4, 1024), (17, 5, 1000)]
+CASES = [
+    (480, 120, 4800),
+    (480, 120, 24000),
+    (256, 64, 16000),
+    (64, 16, 8192),
+    (16, 4, 1024),
+    (17, 5, 1000),
+]
 
 
 @pytest.mark.parametrize("M,a,Ls", CASES)
@@ -133,12 +140,19 @@ def test_torch_full_length_response_with_offset_matches_numpy():
 # channels also share one response instead of storing M2 copies.
 
 
-@pytest.mark.parametrize("M,a,Ls,real", [(64, 16, 2048, True), (65, 16, 2080, True),
-                                         (64, 48, 2048, True), (17, 5, 1000, True),
-                                         (64, 16, 2048, False), (33, 11, 1089, False)])
+@pytest.mark.parametrize(
+    "M,a,Ls,real",
+    [
+        (64, 16, 2048, True),
+        (65, 16, 2080, True),
+        (64, 48, 2048, True),
+        (17, 5, 1000, True),
+        (64, 16, 2048, False),
+        (33, 11, 1089, False),
+    ],
+)
 def test_gabor_closed_forms_equal_the_generic_construction(M, a, Ls, real):
-    from cool_frames.numpy.filterbanks import filterbanktight
-    from cool_frames.numpy.filterbanks import _frame
+    from cool_frames.numpy.filterbanks import _frame, filterbanktight
     from cool_frames.numpy.filters._filters import filter_freqresp
 
     warnings.simplefilter("ignore")
@@ -148,11 +162,16 @@ def test_gabor_closed_forms_equal_the_generic_construction(M, a, Ls, real):
     g_generic = [dict(gm, H=np.array(gm["H"])) for gm in g]
     for fn in (filterbankdual, filterbanktight):
         fast, slow = fn(g, aout, L, real=real), fn(g_generic, aout, L, real=real)
-        worst = max(np.max(np.abs(filter_freqresp(f, L)[0] - filter_freqresp(s, L)[0]))
-                    for f, s in zip(fast, slow))
+        worst = max(
+            np.max(np.abs(filter_freqresp(f, L)[0] - filter_freqresp(s, L)[0]))
+            for f, s in zip(fast, slow)
+        )
         assert worst < 1e-12, (fn.__name__, worst)
-    np.testing.assert_allclose(filterbankbounds(g, aout, L, real=real),
-                               filterbankbounds(g_generic, aout, L, real=real), rtol=1e-12)
+    np.testing.assert_allclose(
+        filterbankbounds(g, aout, L, real=real),
+        filterbankbounds(g_generic, aout, L, real=real),
+        rtol=1e-12,
+    )
 
 
 def test_gabor_bank_at_the_benchmark_size_is_cheap_and_exact():
@@ -187,13 +206,13 @@ def test_an_edited_gabor_bank_is_not_treated_as_one():
     edited = [dict(gm) for gm in g]
     edited[5]["H"] = 0.5 * g[5]["H"]
     assert _frame._gabor_bank(edited, an, L, True) is None
-    assert _frame._gabor_bank(g, an, L, False) is None      # single-sided bank, real=False
+    assert _frame._gabor_bank(g, an, L, False) is None  # single-sided bank, real=False
     with pytest.raises(ValueError):
-        g[3]["H"][0] = 0.0                                   # shared responses are read-only
+        g[3]["H"][0] = 0.0  # shared responses are read-only
 
 
 def test_torch_gabor_bank_shares_its_responses_and_takes_the_closed_forms():
-    torch = pytest.importorskip("torch")
+    pytest.importorskip("torch")
     from cool_frames.torch.filterbanks import filterbankbounds as t_bounds
     from cool_frames.torch.filterbanks import filterbankdual as t_dual
     from cool_frames.torch.filters import gabfilters as t_gab
@@ -212,13 +231,15 @@ def test_a_gabor_bank_that_is_not_a_frame_keeps_the_pseudo_inverse():
     construction, whose pseudo-inverse dual makes synthesis followed by
     analysis a projection, as before the closed forms."""
     warnings.simplefilter("ignore")
-    g, aout, _fc, L, info = gabfilters(16000, 4096, M=64, a=72)     # hop > window
+    g, aout, _fc, L, info = gabfilters(16000, 4096, M=64, a=72)  # hop > window
     assert info["admissible"]["is_frame"] is False
     gd = filterbankdual(g, aout, L)
     assert all(np.all(np.isfinite(dm["H"])) for dm in gd)
     rng = np.random.default_rng(2)
-    c = [rng.standard_normal(len(cm)) + 1j * rng.standard_normal(len(cm))
-         for cm in filterbank(np.zeros(L), g, aout, L)]
+    c = [
+        rng.standard_normal(len(cm)) + 1j * rng.standard_normal(len(cm))
+        for cm in filterbank(np.zeros(L), g, aout, L)
+    ]
     p1 = filterbank(ifilterbank(c, gd, aout, Ls=L, real=True), g, aout, L)
     p2 = filterbank(ifilterbank(p1, gd, aout, Ls=L, real=True), g, aout, L)
     scale = max(float(np.max(np.abs(cm))) for cm in p1)

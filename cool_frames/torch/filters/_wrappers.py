@@ -94,16 +94,18 @@ def numpy_filters_to_torch(
         if H is not None:
             if callable(H):
                 H = H(L)
-                d["H"] = torch.tensor(np.asarray(H, dtype=np.complex128),
-                                      dtype=dtype, device=device)
+                d["H"] = torch.tensor(
+                    np.asarray(H, dtype=np.complex128), dtype=dtype, device=device
+                )
             else:
                 # One tensor per distinct array: a gabfilters bank shares one
                 # length-L response among its interior channels, and a tensor
                 # per channel would cost M2*L instead of 2*L.
                 key = id(H)
                 if key not in shared:
-                    shared[key] = torch.tensor(np.asarray(H, dtype=np.complex128),
-                                               dtype=dtype, device=device)
+                    shared[key] = torch.tensor(
+                        np.asarray(H, dtype=np.complex128), dtype=dtype, device=device
+                    )
                 d["H"] = shared[key]
         # Also convert foff if callable
         foff = d.get("foff")

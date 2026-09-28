@@ -397,5 +397,6 @@ def test_a_single_sided_uniform_bank_has_a_pseudo_inverse_dual():
     # rounding is amplified by up to 1/_PINV_REL, so the projection holds to
     # ~eps/_PINV_REL = 2.2e-6, not to 1e-8.  Measured: 3.5e-6.
     from cool_frames.numpy.filterbanks._frame import _PINV_REL
+
     bound = 50 * np.finfo(float).eps / _PINV_REL
     assert max(float(np.max(np.abs(u - v))) for u, v in zip(c, c2)) / scale < bound

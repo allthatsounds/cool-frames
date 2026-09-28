@@ -26,9 +26,25 @@ from cool_frames.numpy.filters._freqwin import freqwin
 from cool_frames.numpy.filters.lowlevel import blfilter, freqfilter
 from cool_frames.numpy.phase._findgamma import pghi_findgamma
 
-WINDOWS = ["hann", "sine", "hamming", "blackman", "blackman2", "rect", "tria", "sqrttria",
-           "itersine", "nuttall", "nuttall01", "nuttall11", "nuttall20", "gauss",
-           "truncgauss", "truncgauss20", "butterworth"]
+WINDOWS = [
+    "hann",
+    "sine",
+    "hamming",
+    "blackman",
+    "blackman2",
+    "rect",
+    "tria",
+    "sqrttria",
+    "itersine",
+    "nuttall",
+    "nuttall01",
+    "nuttall11",
+    "nuttall20",
+    "gauss",
+    "truncgauss",
+    "truncgauss20",
+    "butterworth",
+]
 
 
 @pytest.mark.parametrize("name", WINDOWS)
@@ -55,7 +71,7 @@ def test_truncgauss_is_ltfats(name, height):
     M = 128
     n = np.arange(M)
     x = np.where(n < M / 2, n / M, n / M - 1)
-    np.testing.assert_allclose(firwin(name, M), np.exp(4 * np.log(height) * x ** 2), atol=1e-12)
+    np.testing.assert_allclose(firwin(name, M), np.exp(4 * np.log(height) * x**2), atol=1e-12)
     assert firwin(name, M)[M // 2] == pytest.approx(height, rel=1e-12)
 
 
@@ -82,7 +98,9 @@ def test_audfilters_filters_have_one_erb_equivalent_bandwidth():
     _, _, fc, _, info = audfilters(16000, 16000)
     fc = np.asarray(fc, float)[1:-1]
     erb = 24.7 + fc / 9.265
-    np.testing.assert_allclose(np.ravel(info["fsupp"])[1:-1] * window_winbw("hann"), erb, rtol=1e-3)
+    np.testing.assert_allclose(
+        np.ravel(info["fsupp"])[1:-1] * window_winbw("hann"), erb, rtol=1e-3
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +117,9 @@ def _centred(H, centre_bin):
     assert k == centre_bin
     w = np.nonzero(H > 1e-12 * H.max())[0]
     half = min(k - w.min(), w.max() - k)
-    np.testing.assert_allclose(H[k - half:k], H[k + 1:k + half + 1][::-1], rtol=1e-9, atol=1e-12 * H.max())
+    np.testing.assert_allclose(
+        H[k - half : k], H[k + 1 : k + half + 1][::-1], rtol=1e-9, atol=1e-12 * H.max()
+    )
 
 
 @pytest.mark.parametrize("name", PLACED)
@@ -111,21 +131,23 @@ def test_blfilter_centres_every_window_on_fc(name, fsupp):
 
 @pytest.mark.parametrize("name", ["hann", "blackman", "nuttall", "gauss"])
 def test_audfilters_and_cqtfilters_centre_every_window(name):
-    for g, _, fc, L, _ in (audfilters(16000, 16000, window=name),
-                           cqtfilters(16000, 16000, bins=12, window=name)):
+    for g, _, fc, L, _ in (
+        audfilters(16000, 16000, window=name),
+        cqtfilters(16000, 16000, bins=12, window=name),
+    ):
         for m in (5, len(g) // 2, len(g) - 5):
             H = np.abs(comp_transferfunction(g[m], L))
             assert abs(int(np.argmax(H)) - fc[m] / 16000 * L) <= 0.5 + 1e-9
 
 
 def test_blfilter_pedantic_moves_the_window_by_the_sub_bin_offset():
-    L, fc = 512, 0.3013            # L/2 fc = 77.13: 0.13 bins above bin 77
+    L, fc = 512, 0.3013  # L/2 fc = 77.13: 0.13 bins above bin 77
     H = np.abs(comp_transferfunction(blfilter("gauss", 0.1, fc, pedantic=True), L))
     k = np.arange(L)
-    centroid = np.sum(k * H ** 2) / np.sum(H ** 2)
+    centroid = np.sum(k * H**2) / np.sum(H**2)
     assert centroid == pytest.approx(L / 2 * fc, abs=0.02)
     H0 = np.abs(comp_transferfunction(blfilter("gauss", 0.1, fc), L))
-    assert np.sum(k * H0 ** 2) / np.sum(H0 ** 2) == pytest.approx(77.0, abs=0.02)
+    assert np.sum(k * H0**2) / np.sum(H0**2) == pytest.approx(77.0, abs=0.02)
 
 
 @pytest.mark.parametrize("name", ["gauss", "butterworth", "roex", "gammatone"])
@@ -136,10 +158,13 @@ def test_freqfilter_is_ltfats_construction(name):
     lw = int(np.floor(4 * bw * L / 2 + 0.5))
     ref = np.zeros(L, complex)
     w = np.fft.fftshift(freqwin(name, lw, bw, fs=2.0 / L * lw))
-    ref[(np.floor(L / 2 * fc + 0.5).astype(int) - lw // 2 + np.arange(lw)) % L] = w / np.abs(w).max()
-    np.testing.assert_allclose(comp_transferfunction(freqfilter(name, bw, fc, "peak"), L), ref,
-                               atol=1e-12)
-    H = comp_transferfunction(freqfilter(name, bw, fc), L)          # 'energy'
+    ref[(np.floor(L / 2 * fc + 0.5).astype(int) - lw // 2 + np.arange(lw)) % L] = (
+        w / np.abs(w).max()
+    )
+    np.testing.assert_allclose(
+        comp_transferfunction(freqfilter(name, bw, fc, "peak"), L), ref, atol=1e-12
+    )
+    H = comp_transferfunction(freqfilter(name, bw, fc), L)  # 'energy'
     assert np.sum(np.abs(H) ** 2) / L == pytest.approx(1.0, rel=1e-12)
 
 
@@ -158,10 +183,12 @@ def test_freqwin_orders_even_lengths_as_ltfat():
     yn = 10.0 ** (-3.0 / 10.0)
     dil = bw / 2.0 / np.sqrt(yn ** (-2.0 / n) - 1.0) / step
     peakpos = (n - 1) / (2.0 * np.pi * dil)
-    k = np.r_[0:L // 2, -L // 2:0].astype(float)
+    k = np.r_[0 : L // 2, -L // 2 : 0].astype(float)
     ref = (1.0 + 1j * k / dil) ** (-n) * np.exp(2j * np.pi * k * peakpos)
     np.testing.assert_allclose(freqwin("roex", L, bw), ref, rtol=1e-12)
     # and a shift s evaluates the shape at k - s
     np.testing.assert_allclose(
         freqwin("roex", L, bw, shift=0.25),
-        (1.0 + 1j * (k - 0.25) / dil) ** (-n) * np.exp(2j * np.pi * (k - 0.25) * peakpos), rtol=1e-12)
+        (1.0 + 1j * (k - 0.25) / dil) ** (-n) * np.exp(2j * np.pi * (k - 0.25) * peakpos),
+        rtol=1e-12,
+    )
