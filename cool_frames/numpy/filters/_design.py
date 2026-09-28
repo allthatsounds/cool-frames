@@ -76,6 +76,15 @@ from ._firwin import hann_winbw, window_winbw
 _MEL_SCALES = {"mel", "mel1000"}
 _DEFAULT_SPACING = {s: 100.0 for s in _MEL_SCALES}    # mel units
 _DEFAULT_BWMUL   = {s: 100.0 for s in _MEL_SCALES}
+# The Greenwood scale is the cochlear position x in [0, 1], and its
+# ``audfiltbw`` is df/dx -- the bandwidth of the *whole* cochlea.  Its
+# defaults are greenwoodfilters': 0.02 of the cochlea per channel, and a
+# bandwidth of one spacing.  They were 1.0 and 1.0 (DEFECT_REGISTER G9):
+# fmin = audtofreq(1.0) = 20.7 kHz, above Nyquist at every rate the W03 sweep
+# used, so a call without fmin raised and a call with M built one "inner"
+# channel at 20.7 kHz, 38 times wider than L.
+_DEFAULT_SPACING["greenwood"] = 0.02
+_DEFAULT_BWMUL["greenwood"] = 0.02
 
 
 def _scale_default(scale: str, param: str, value):
@@ -222,6 +231,12 @@ def audfilters(fs: float, Ls: int, *,
         fmin = float(audtofreq(spacing, scale))
     fmin = float(fmin)
     fmax = min(float(fmax), fs / 2.0)
+    if not fmin < fmax:
+        raise ValueError(
+            f"audfilters: fmin = {fmin:.6g} Hz is not below fmax = {fmax:.6g} Hz "
+            f"(scale={scale!r}, fs={fs:.6g}). Pass fmin, or a smaller spacing: "
+            f"without fmin the lowest channel sits one spacing above the "
+            f"scale's origin.")
 
     if M is not None:
         # M overrides spacing
@@ -385,6 +400,22 @@ def audfilters(fs: float, Ls: int, *,
         from ._painless import fit_fractional_lengths
 
         fit_fractional_lengths(g_list, a, int(L))
+    else:
+        # Integer hops: the same repair on the bank actually built.  A
+        # complement one bin wider than its hop allows, or a channel widened
+        # by the ``min_win`` floor, made 1197 default configurations of three
+        # designers reconstruct to 1e-3..7e-2 (DEFECT_REGISTER G8).
+        from ._painless import repair_painless_hops, repair_uniform_hop
+
+        # Not under redmul < 1, which asks for fewer coefficients than the
+        # painless limit allows (LTFAT's reading, and the tests of G7 rely on
+        # it); nor under hop_ms, which names the hop.
+        if redmul >= 1:
+            if sampling == "uniform":
+                if hop_ms is None:
+                    repair_uniform_hop(g_list, a, int(L))
+            else:
+                repair_painless_hops(g_list, a, int(L))
 
     # Announce a non-frame geometry here, where the parameters were chosen,
     # rather than letting it surface later as an all-zero dual.

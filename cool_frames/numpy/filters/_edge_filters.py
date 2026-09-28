@@ -136,8 +136,12 @@ def build_complement_lowpass(
         S_max = float(np.max(S_pos))
         Hinv = np.sqrt(np.maximum(S_max - S, 0.0))
         C_full = P0_full * Hinv
-        # Extract at prototype support bins
-        Lw = len(P0["H"](L))
+        # Extract at prototype support bins -- at most once each.  A
+        # prototype wider than the whole circle (a very sparse bank: a
+        # greenwoodfilters DC complement of 4105 bins at L = 4104) stored a
+        # bin twice; the kernels add the two, the painless dual divided each
+        # by the response, and the round trip was 2e-3 (DEFECT_REGISTER G8).
+        Lw = min(len(P0["H"](L)), L)
         foff_v = int(P0["foff"](L))
         idx = np.mod(np.arange(foff_v, foff_v + Lw), L)
         return C_full[idx] * scal  # type: ignore[no-any-return]
@@ -213,7 +217,8 @@ def build_complement_highpass(
         Hinv = np.sqrt(np.maximum(S_max - S, 0.0))
         C_full = PK_nyq_full * Hinv
         # Extract at prototype support bins shifted to Nyquist
-        Lw = len(PK_dc["H"](L))
+        # at most once each, as for the lowpass
+        Lw = min(len(PK_dc["H"](L)), L)
         foff_dc = int(PK_dc["foff"](L))
         foff_hp = L // 2 + foff_dc
         idx = np.mod(np.arange(foff_hp, foff_hp + Lw), L)

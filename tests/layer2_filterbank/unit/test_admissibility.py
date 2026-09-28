@@ -79,6 +79,36 @@ def test_predictor_matches_response_audfilters(scale):
                     f"{p['is_frame']}, measured {not p['is_frame']}")
 
 
+def gw_geometry(fs, Ls, M):
+    """Centres and supports of a ``greenwoodfilters`` bank, from parameters.
+
+    Until 2026-09-28 this test borrowed ``aud_geometry(..., "greenwood", M)``,
+    which read ``audfilters``' Greenwood defaults -- a spacing and bandwidth
+    of the whole cochlea (DEFECT_REGISTER G9) -- so every predicted bank was
+    wide enough to be covered and the comparison could not fail.  This is
+    ``greenwoodfilters``' own rule: a bandwidth of one spacing, fmin one
+    default spacing above the cochlear origin, channels strictly below
+    Nyquist.
+    """
+    from cool_frames.numpy.filters._greenwoodfilters import (
+        _greenwood_bw, _greenwood_freq, _greenwood_pos)
+    from cool_frames.numpy.filters._audscale import GREENWOOD_DEFAULTS as GW
+
+    A, al, k = GW["A"], GW["alpha"], GW["k"]
+    fmin = float(_greenwood_freq(np.asarray(0.02), A, al, k))
+    x0 = float(_greenwood_pos(np.asarray(fmin), A, al, k))
+    x1 = float(_greenwood_pos(np.asarray(fs / 2.0), A, al, k))
+    spacing = (x1 - x0) / max(M - 1, 1)
+    n = int(math.floor((x1 - x0) / spacing)) + 1
+    while n > 1 and float(_greenwood_freq(np.asarray(x0 + (n - 1) * spacing), A, al, k)) \
+            >= fs / 2.0 * (1.0 - 1e-9):
+        n -= 1
+    fc = np.asarray(_greenwood_freq(x0 + spacing * np.arange(n), A, al, k), dtype=float)
+    fsupp = np.maximum(np.asarray(_greenwood_bw(fc, A, al, k)) * spacing / hann_winbw(),
+                       4 / Ls * fs)
+    return fc, fsupp
+
+
 def test_predictor_matches_response_greenwoodfilters():
     warnings.simplefilter("ignore")
     for fs in (8000, 16000):
@@ -86,7 +116,7 @@ def test_predictor_matches_response_greenwoodfilters():
             for M in range(4, 30):
                 try:
                     g, a, _fc, L, _ = greenwoodfilters(fs, Ls, M=M)
-                    fcp, fsp = aud_geometry(fs, Ls, "greenwood", M)
+                    fcp, fsp = gw_geometry(fs, Ls, M)
                 except Exception:
                     continue
                 p = predict_admissible(

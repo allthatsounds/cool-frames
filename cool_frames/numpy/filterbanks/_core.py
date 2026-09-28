@@ -121,16 +121,32 @@ def _negative_frequency_ratio(g_ready: list, L: int) -> float:
     pos = neg = 0.0
     for gm in g_ready:
         H = gm.get("H")
-        if H is None or len(np.asarray(H)) == 0:
+        if H is None:
             # A time-domain (FIR) filter is real, hence two-sided.
             return 1.0
         H = np.asarray(H)
+        if H.size == 0:
+            continue  # an empty channel carries no energy on either side
         foff = int(gm.get("foff", 0) or 0)
         idx = (foff + np.arange(H.size)) % L
         mag2 = np.abs(H) ** 2
-        pos += float(np.sum(mag2[(idx >= 1) & (idx < half)]))
-        neg += float(np.sum(mag2[idx > half]))
+        p_m = float(np.sum(mag2[(idx >= 1) & (idx < half)]))
+        n_m = float(np.sum(mag2[idx > half]))
+        if _mirror_symmetric(p_m, n_m):
+            # A DC or Nyquist complement straddles its edge and carries the
+            # same energy on both sides in single- and two-sided banks alike,
+            # so it says nothing about the convention.  In a very sparse bank
+            # it dominated the sum: greenwoodfilters(16000, 512, M=4) read
+            # 0.47 and warned while reconstructing to 5e-16.
+            continue
+        pos += p_m
+        neg += n_m
     return neg / max(pos, 1e-30)
+
+
+def _mirror_symmetric(p_m: float, n_m: float) -> bool:
+    """A channel with (nearly) equal energy on both sides of DC."""
+    return p_m > 0 and n_m > 0 and abs(p_m - n_m) <= 0.1 * (p_m + n_m)
 
 
 def filterbank_is_real(g: list[dict], a, L: int) -> bool:

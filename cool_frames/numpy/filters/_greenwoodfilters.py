@@ -225,11 +225,15 @@ def greenwoodfilters(
     # Number of inner channels
     inner_n = int(math.floor((x_max - x_min) / spacing)) + 1
 
-    # Trim so all channels lie strictly below Nyquist
+    # Trim so all channels lie strictly below Nyquist.  With M given, the
+    # last channel lands on fmax = fs/2 up to rounding, and a channel at
+    # 7999.999999999 Hz passed "< fs/2": greenwoodfilters(16000, 512, M=4)
+    # built an inner channel on top of the Nyquist complement, 909 bins wide
+    # at L = 528, and reconstructed to 6.5e-2 (DEFECT_REGISTER G8).
     while inner_n > 1:
         x_last = x_min + (inner_n - 1) * spacing
         f_last = float(_greenwood_freq(np.asarray(x_last), gw_A, gw_alpha, gw_k))
-        if f_last < fs / 2.0:
+        if f_last < fs / 2.0 * (1.0 - 1e-9):
             break
         inner_n -= 1
     fmax = float(_greenwood_freq(
@@ -381,6 +385,22 @@ def greenwoodfilters(
         from ._painless import fit_fractional_lengths
 
         fit_fractional_lengths(g_list, a, int(L))
+    else:
+        # Integer hops: the same repair on the bank actually built.  A
+        # complement one bin wider than its hop allows, or a channel widened
+        # by the ``min_win`` floor, made 1197 default configurations of three
+        # designers reconstruct to 1e-3..7e-2 (DEFECT_REGISTER G8).
+        from ._painless import repair_painless_hops, repair_uniform_hop
+
+        # Not under redmul < 1, which asks for fewer coefficients than the
+        # painless limit allows (LTFAT's reading, and the tests of G7 rely on
+        # it); nor under hop_ms, which names the hop.
+        if redmul >= 1:
+            if sampling == "uniform":
+                if hop_ms is None:
+                    repair_uniform_hop(g_list, a, int(L))
+            else:
+                repair_painless_hops(g_list, a, int(L))
 
     from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 

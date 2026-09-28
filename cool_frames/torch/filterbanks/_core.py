@@ -440,14 +440,21 @@ def ifilterbank(
     two_sided = False
     for gm in g_ready:
         H = gm.get("H")
-        if H is None or H.numel() == 0:
+        if H is None:
             two_sided = True  # a time-domain (FIR) filter is real, hence two-sided
             break
+        if H.numel() == 0:
+            continue  # an empty channel carries no energy on either side
         foff = int(gm.get("foff", 0) or 0)
         idx = (foff + np.arange(H.numel())) % L
         mag2 = (torch.abs(H.detach()) ** 2).cpu().numpy()
-        pos += float(np.sum(mag2[(idx >= 1) & (idx < half)]))
-        neg += float(np.sum(mag2[idx > half]))
+        p_m = float(np.sum(mag2[(idx >= 1) & (idx < half)]))
+        n_m = float(np.sum(mag2[idx > half]))
+        # a DC / Nyquist complement is mirror-symmetric in either convention
+        if p_m > 0 and n_m > 0 and abs(p_m - n_m) <= 0.1 * (p_m + n_m):
+            continue
+        pos += p_m
+        neg += n_m
     ratio = 1.0 if two_sided else neg / max(pos, 1e-30)
 
     if real and ratio > 0.3:

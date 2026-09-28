@@ -1067,6 +1067,14 @@ def painlessfilterbank(
     gout = []
     for m in range(M):
         gm = g_ready[m]
+        if "H" in gm and len(gm["H"]) == 0:
+            # A channel with no bins (a wavelet narrower than one DFT bin,
+            # truncated away) analyses nothing, and its dual is the empty
+            # filter.  It used to fall through to the FIR branch below and
+            # raise "channel m is a time-domain (FIR) filter".
+            gout.append({"H": np.zeros(0, dtype=complex), "foff": int(gm.get("foff", 0)),
+                         "realonly": 0, "delay": 0, "fs": g[m].get("fs")})
+            continue
         if "H" in gm and len(gm["H"]) > 0:
             foff_m = gm["foff"]
             LG = len(gm["H"])

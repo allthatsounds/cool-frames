@@ -139,57 +139,13 @@ def _repair_complement_hops(g: list[dict], a, L: int) -> int:
     ``a = 6``: ``aW/L = 3.87``, and the exact oracle put the lower frame bound
     at 0 while the diagonal estimator reported a healthy ``kappa = 4.4``.
 
-    Lowering a hop never invalidates the painless inequality for any other
-    channel, so this is a safe local repair.  Two constraints shape it:
-
-    * ``L`` must stay a whole number of hops, so an integer hop is lowered to
-      the largest **divisor of L** that is within the limit rather than to the
-      limit itself.  (Rational ``[L, N]`` hops are divisor-free: raising ``N``
-      is enough.)
-    * ``g[m]["H"]`` was scaled by ``sqrt(a_m)``, the package's per-channel
-      energy convention, so changing the hop without rescaling would leave the
-      channel with the gain of a hop it no longer has.  The response is
-      rescaled by ``sqrt(a_new / a_old)`` to keep the convention intact.
-
-    Returns the number of channels repaired.
+    The repair is shared with the other designers since 2026-09-28
+    (:func:`._painless.repair_painless_hops`); channels are visited in index
+    order here, as before.
     """
-    a_arr = np.asarray(a)
-    fixed = 0
-    for m, gm in enumerate(g):
-        H = gm.get("H")
-        if H is None:
-            continue
-        Hm = np.asarray(H(L) if callable(H) else H).ravel()
-        if not nonzero_support(Hm):
-            continue
-        if a_arr.ndim == 2:
-            a_old = float(a_arr[m, 0]) / float(a_arr[m, 1])
-            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
-                continue
-            N_new = painless_length(Hm, int(math.ceil(L / a_old)) + 1)
-            a_arr[m, 0] = int(L)
-            a_arr[m, 1] = N_new
-            a_new_m = float(L) / float(N_new)
-        else:
-            a_old = float(a_arr[m])
-            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
-                continue
-            d = int(a_old) - 1
-            while d > 1 and (L % d or aliasing(Hm, L // d) > ALIAS_TOL):
-                d -= 1
-            if d < 1:
-                continue
-            a_arr[m] = d
-            a_new_m = float(d)
-        s = math.sqrt(a_new_m / a_old)
-        if callable(H):
-            # Keep it lazy: some channels build their response from L, and
-            # freezing it here would pin the filter to this one length.
-            gm["H"] = (lambda fn, sc: lambda Lq: np.asarray(fn(Lq)) * sc)(H, s)
-        else:
-            gm["H"] = Hm * s
-        fixed += 1
-    return fixed
+    from ._painless import repair_painless_hops
+
+    return repair_painless_hops(g, a, L, order=list(range(len(g))))
 
 
 def _fit_complement_hops(g: list[dict], a, L: int, Ls: int,
@@ -1228,6 +1184,23 @@ def waveletfilters(
     info["admissible"], _ = restrict_to_painless(info["admissible"], gout,
                                                  a_new, int(L))
     info["painless_ratio"] = float(_pl_ratio)
+    # A wavelet narrower than one DFT bin can fall between bins and be
+    # truncated to nothing (fs = 8000, Ls = 512, fmin = 20: the 20 Hz channel
+    # at L = 576, bins 13.9 Hz apart).  Such a channel analyses nothing; say so
+    # rather than return it silently.
+    _empty = [m for m, gm in enumerate(gout)
+              if gm.get("H") is not None
+              and np.asarray(gm["H"](int(L)) if callable(gm["H"]) else gm["H"]).size == 0]
+    info["empty_channels"] = _empty
+    if _empty:
+        warnings.warn(
+            f"waveletfilters: {len(_empty)} channel(s) have no DFT bin above "
+            f"trunc_at at L = {int(L)} (the first: channel {_empty[0]}, "
+            f"{(fs / 2) * float(np.ravel(info['fc'])[_empty[0]]):.3g} Hz): the wavelet is "
+            f"narrower than one bin and falls between bins, so the channel analyses "
+            f"nothing. Raise fmin or use a longer signal.",
+            stacklevel=2,
+        )
     if _pl_bad:
         warnings.warn(
             f"waveletfilters: {_pl_bad} of {len(gout)} channels violate the "

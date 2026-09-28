@@ -369,6 +369,22 @@ def cqtfilters(
         from ._painless import fit_fractional_lengths
 
         fit_fractional_lengths(g, a, int(L))
+    else:
+        # Integer hops: the same repair on the bank actually built.  A
+        # complement one bin wider than its hop allows, or a channel widened
+        # by the ``min_win`` floor, made 1197 default configurations of three
+        # designers reconstruct to 1e-3..7e-2 (DEFECT_REGISTER G8).
+        from ._painless import repair_painless_hops, repair_uniform_hop
+
+        # Not under redmul < 1, which asks for fewer coefficients than the
+        # painless limit allows (LTFAT's reading, and the tests of G7 rely on
+        # it); nor under hop_ms, which names the hop.
+        if redmul >= 1:
+            if sampling == "uniform":
+                if hop_ms is None:
+                    repair_uniform_hop(g, a, int(L))
+            else:
+                repair_painless_hops(g, a, int(L))
 
     from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 

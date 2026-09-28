@@ -1173,7 +1173,7 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
 ### Frame verdicts and bounds for banks that are not painless
 
 Found while re-checking the admissibility verdicts after the `gabfilters` fix
-(`DEFECT_REGISTER.md`, G6-G7).
+(`DEFECT_REGISTER.md`, G6-G10).
 
 - **Behavioural change:** `info["admissible"]` is `None` (no verdict) for a
   bank with an aliasing channel where the covering test found no hole. The
@@ -1190,6 +1190,28 @@ Found while re-checking the admissibility verdicts after the `gabfilters` fix
   block. It agrees with `filterbankbounds_svd` to 1e-8 in kappa and takes
   0.2 s at L = 5184; at L = 62208 to 82944, where the SVD cannot run, 5 to
   46 s. Painless and uniform banks are unchanged.
+- **Behavioural change:** every designer's bank is painless as built
+  (`DEFECT_REGISTER.md` G8). Measured on the 11,112 default configurations of W03's sweep,
+  1197 `audfilters`, `greenwoodfilters` and `cqtfilters` banks had a channel
+  over its painless limit -- mostly a DC or Nyquist complement one bin too
+  wide -- and the 477 of them that `audfilters(scale='greenwood')` (below)
+  does not account for reconstructed with the canonical dual to a median of
+  3.8e-3, up to 0.18. The
+  repair `waveletfilters` applied, now `_painless.repair_painless_hops`,
+  runs on every integer-hop bank: the channel gets the largest hop dividing
+  L at which it is painless, and its response is rescaled so that the frame
+  response, bounds and dual do not change. Those banks now have a few more
+  coefficients in the repaired channel; every other bank is bit-identical.
+- **Breaking:** `audfilters(scale='greenwood')` uses `greenwoodfilters`'
+  defaults (spacing 0.02 and bwmul 0.02 of the cochlea) instead of ERB's
+  1 and 1, which put fmin at 20.7 kHz (G9). `audfilters` raises when fmin
+  is not below fmax.
+- An empty channel (a wavelet narrower than one bin, truncated away) has an
+  empty dual instead of making `filterbankdual` raise a misleading FIR
+  error; `waveletfilters` warns about it and lists it in
+  `info["empty_channels"]`. `ifilterbank`'s real/two-sided check ignores
+  empty and mirror-symmetric (DC and Nyquist complement) channels, which
+  made very sparse banks warn while reconstructing exactly (G10).
 
 ## 0.1.0
 

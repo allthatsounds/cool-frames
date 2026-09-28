@@ -18,6 +18,8 @@ reconstructed to 1.4e-4).  Counting non-zero bins cannot tell the two apart.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -131,3 +133,123 @@ def fit_fractional_lengths(g: list[dict], a: np.ndarray, L: int) -> None:
             n_new = painless_length(Hm, n_old + 1)
             gm["H"] = _scaled(gm["H"], float(np.sqrt(n_old / n_new)))
             a[m, 1] = n_new
+
+
+def repair_painless_hops(g: list[dict], a, L: int, order=None) -> int:
+    r"""Lower any channel's hop until it meets its own painless limit.
+
+    The designers choose each hop from the bandwidth they *intend* a channel
+    to have; the filter actually built can be wider.  The DC and Nyquist
+    complements are sized by a different rule than the one their hop came
+    from, a prototype is ``round(L * fsupp / fs)`` bins made odd, and a
+    ``min_win`` floor can add bins the hop never saw.  Measured on the banks
+    returned with default parameters, 1197 of the 11,112 ``audfilters``,
+    ``greenwoodfilters`` and ``cqtfilters`` configurations of the W03
+    admissibility sweep had a channel over its limit.  720 were
+    ``audfilters(scale='greenwood')`` with the wrong defaults (G9); in the
+    477 ``greenwoodfilters`` and ``cqtfilters`` banks it was most often a
+    complement one bin too wide (``cqtfilters(8000, 512, fmin=20, bins=1,
+    Qvar=0.5)``: 5 bins on ``N = 4``), and they reconstructed with the
+    canonical dual to a median of 3.8e-3 (up to 0.18) instead of 1e-16,
+    silently.  This is the
+    repair, applied to the bank that is actually returned; it was
+    ``waveletfilters``' own until 2026-09-28.
+
+    Lowering a hop never invalidates the painless inequality for any other
+    channel, so this is a safe local repair.  Two constraints shape it:
+
+    * ``L`` must stay a whole number of hops, so an integer hop is lowered to
+      the largest **divisor of L** that is within the limit rather than to the
+      limit itself.  (Rational ``[L, N]`` hops are divisor-free: raising ``N``
+      is enough.)
+    * ``g[m]["H"]`` was scaled by ``sqrt(a_m)``, the package's per-channel
+      energy convention, so changing the hop without rescaling would leave the
+      channel with the gain of a hop it no longer has.  The response is
+      rescaled by ``sqrt(a_new / a_old)``, which leaves the channel's share of
+      the frame response, ``|H|^2 / a``, and so the bounds and the dual, as
+      the designer intended.
+
+    ``order`` is the order in which channels are visited (default: the inner
+    channels, then the DC and the Nyquist complement, whose closures may read
+    the inner filters and hops -- ``a`` is updated in place).  Returns the
+    number of channels repaired.
+    """
+    a_arr = np.asarray(a)
+    M = len(g)
+    if order is None:
+        order = list(range(1, M - 1)) + [0, M - 1] if M > 2 else list(range(M))
+    fixed = 0
+    for m in order:
+        gm = g[m]
+        if gm is None:
+            continue
+        H = gm.get("H")
+        if H is None:
+            continue
+        Hm = np.asarray(H(L) if callable(H) else H).ravel()
+        if not nonzero_support(Hm):
+            continue
+        if a_arr.ndim == 2:
+            a_old = float(a_arr[m, 0]) / float(a_arr[m, 1])
+            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
+                continue
+            N_new = painless_length(Hm, int(math.ceil(L / a_old)) + 1)
+            a_arr[m, 0] = int(L)
+            a_arr[m, 1] = N_new
+            a_new_m = float(L) / float(N_new)
+        else:
+            a_old = float(a_arr[m])
+            if aliasing(Hm, L / a_old) <= ALIAS_TOL:
+                continue
+            d = int(a_old) - 1
+            while d > 1 and (L % d or aliasing(Hm, L // d) > ALIAS_TOL):
+                d -= 1
+            if d < 1:
+                continue
+            a_arr[m] = d
+            a_new_m = float(d)
+        s = math.sqrt(a_new_m / a_old)
+        if callable(H):
+            # Keep it lazy: some channels build their response from L, and
+            # freezing it here would pin the filter to this one length.
+            gm["H"] = (lambda fn, sc: lambda Lq: np.asarray(fn(Lq)) * sc)(H, s)
+        else:
+            gm["H"] = Hm * s
+        fixed += 1
+    return fixed
+
+
+def repair_uniform_hop(g: list[dict], a, L: int) -> int:
+    """:func:`repair_painless_hops` for a bank whose point is one hop.
+
+    Lowers the common hop, for every channel, to the largest divisor of ``L``
+    at which every channel is painless, and rescales every response by
+    ``sqrt(a_new / a_old)``.  Returns the new hop's reduction (0 if none).
+    """
+    a_arr = np.asarray(a)
+    if a_arr.ndim != 1 or a_arr.size == 0:
+        return 0
+    a_old = int(a_arr[0])
+    resp = []
+    for gm in g:
+        H = None if gm is None else gm.get("H")
+        resp.append(None if H is None else np.asarray(H(L) if callable(H) else H).ravel())
+
+    def ok(d):
+        return all(h is None or not nonzero_support(h) or aliasing(h, L // d) <= ALIAS_TOL
+                   for h in resp)
+
+    if ok(a_old):
+        return 0
+    d = a_old - 1
+    while d > 1 and (L % d or not ok(d)):
+        d -= 1
+    s = math.sqrt(d / a_old)
+    for gm in g:
+        if gm is None or gm.get("H") is None:
+            continue
+        H = gm["H"]
+        gm["H"] = ((lambda fn, sc: lambda Lq: np.asarray(fn(Lq)) * sc)(H, s)
+                   if callable(H) else np.asarray(H) * s)
+    a_arr[:] = d
+    return a_old - d

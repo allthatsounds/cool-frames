@@ -303,6 +303,18 @@ def warpedfilters(
         min_win=min_win,
     )
 
+    # Measure the painless condition on the bank actually built and repair
+    # it, as the other designers do (DEFECT_REGISTER G8).
+    from ._painless import repair_painless_hops, repair_uniform_hop
+
+    # Not under redmul < 1, which asks for fewer coefficients than the
+    # painless limit allows.
+    if redmul >= 1:
+        if sampling == "uniform":
+            repair_uniform_hop(g, a, int(L))
+        else:
+            repair_painless_hops(g, a, int(L))
+
     from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 
     # The warped rule: channels sit uniformly in the scale coordinate and each
