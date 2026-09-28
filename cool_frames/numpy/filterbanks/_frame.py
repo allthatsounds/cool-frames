@@ -164,8 +164,16 @@ def filterbankbounds(g: list[dict], a, L: int, real: bool = True, return_kappa: 
     bounds instead, from the polyphase blocks of its frame operator (LTFAT's
     ``filterbank(real)bounds``), in the same convention: the extreme
     eigenvalues of ``sum_m H_m H_m^H / a`` on each coset of bins, with the
-    mirror image folded in for ``real=True``.  For a bank that is neither,
-    use :func:`filterbankbounds_svd`.
+    mirror image folded in for ``real=True``.  A bank that is neither
+    (``waveletfilters(painless=False)``, any designer with ``redmul < 1``)
+    gets exact bounds from its frame operator in the frequency domain, which
+    couples two bins only through a channel that aliases them onto each
+    other and is therefore sparse; its connected blocks are solved one by
+    one, and a lower bound below 1e-10 of the upper reads as 0, as in the
+    pseudo-inverse.  Until 2026-09-28 such a bank got the diagonal response
+    instead, silently: ``waveletfilters(16000, 512, painless=False,
+    fmax=4000, highpass='auto')`` read ``(0.98, 3.73)`` where its lower bound
+    is 0.
     Note the *absolute* level can differ from the SVD by a representation factor
     (folding double-counts two-sided ``realonly=0`` filters); the κ is exact, and
     :func:`filterbankbounds_svd` gives the exact absolute bounds.
@@ -198,8 +206,12 @@ def filterbankbounds(g: list[dict], a, L: int, real: bool = True, return_kappa: 
             return A, B, (B / A if A > 0 else float("inf"))
         return A, B
     a_uni = _uniform_hop(a_norm, L)
-    if a_uni is not None and _nonpainless_channels(prepare_filters(g, a_norm, L)[0], a_norm, L):
+    g_ready = prepare_filters(g, a_norm, L)[0]
+    aliased = _nonpainless_channels(g_ready, a_norm, L)
+    if aliased and a_uni is not None:
         A, B = _uniform_bounds(g, a_uni, L, real)
+    elif aliased:
+        A, B = _aliased_bounds(g_ready, a_norm, L, real)
     else:
         resp = filterbankresponse(g, a_norm, L, real=real)  # fold when real
         A = float(np.min(resp))
@@ -556,6 +568,166 @@ def _uniform_bounds(g: list[dict], a: int, L: int, real: bool) -> tuple[float, f
         A = min(A, float(lam[:, 0].min()))
         B = max(B, float(lam[:, -1].max()))
     return max(A, 0.0) / a, B / a
+
+
+# ---------------------------------------------------------------------------
+# Non-uniform, non-painless banks: the sparse frame operator
+# ---------------------------------------------------------------------------
+#
+# In the DFT domain channel m contributes
+#     S[k_i, k_j] += conj(H_m[i]) H_m[j] / a_m   for stored bins i = j (mod N_m),
+# where k_i = foff_m + i (mod L) and N_m = L / a_m is the channel length; the
+# kernels fold the stored bins modulo N_m, so this is exact for integer and
+# fractional hops alike.  The diagonal is ``filterbankresponse``.  A painless
+# channel has no i != j in one class, an aliasing one couples a few bins N_m
+# apart, so S is sparse and splits into connected blocks.  ``real=True`` uses
+# S + J conj(S) J (J: k -> -k), whose diagonal is the folded response, the
+# convention of the painless and uniform branches.
+
+# Stored bins below this fraction of a channel's peak are left out: their
+# entries in S are below 1e-24 of the peak's.
+_ALIAS_REL = 1e-12
+# Blocks up to this size are solved densely; larger ones iteratively.
+_DENSE_BLOCK = 800
+
+
+def _aliased_operator(g_ready: list[dict], a_norm: np.ndarray, L: int, real: bool):
+    """The frame operator of an arbitrary bank in the DFT domain, as a
+    sparse Hermitian matrix in the convention of ``filterbankresponse``."""
+    import scipy.sparse as sp
+
+    from ..filters._filters import filter_freqresp
+
+    rows, cols, vals = [], [], []
+    for m, gm in enumerate(g_ready):
+        afrac = float(a_norm[m, 0]) / float(a_norm[m, 1])
+        Nm = int(round(L / afrac))
+        H = gm.get("H")
+        if H is None:
+            H, _ = filter_freqresp(gm, L)
+            foff = 0
+        else:
+            foff = int(gm.get("foff", 0))
+        H = np.asarray(H, dtype=complex).ravel()
+        if H.size == 0:
+            continue
+        peak = float(np.max(np.abs(H)))
+        if peak == 0.0:
+            continue
+        idx = np.flatnonzero(np.abs(H) > _ALIAS_REL * peak)
+        cls = idx % Nm
+        order = np.argsort(cls, kind="stable")
+        idx, cls = idx[order], cls[order]
+        starts = np.flatnonzero(np.r_[True, cls[1:] != cls[:-1]])
+        ends = np.r_[starts[1:], idx.size]
+        for s0, s1 in zip(starts, ends):
+            ii = idx[s0:s1]
+            kk = (foff + ii) % L
+            h = H[ii]
+            rows.append(np.repeat(kk, kk.size))
+            cols.append(np.tile(kk, kk.size))
+            vals.append((np.conj(h)[:, None] * h[None, :]).ravel() / afrac)
+    if rows:
+        r = np.concatenate(rows)
+        c = np.concatenate(cols)
+        v = np.concatenate(vals)
+    else:
+        r = c = np.zeros(0, dtype=int)
+        v = np.zeros(0, dtype=complex)
+    if real:
+        r, c, v = (np.concatenate([r, (-r) % L]), np.concatenate([c, (-c) % L]),
+                   np.concatenate([v, np.conj(v)]))
+    return sp.csr_matrix((v, (r, c)), shape=(L, L))
+
+
+def _block_extremes(blk, zero_rel: float) -> tuple[float, float]:
+    """Smallest and largest eigenvalue of one Hermitian block.
+
+    Large blocks are solved on the real matrix ``[[Re, -Im], [Im, Re]]`` when
+    the block is complex (same eigenvalues, each twice), because ARPACK's
+    complex driver is the non-Hermitian one and was 40x slower here.
+
+    * The largest eigenvalue: Lanczos (ARPACK).
+    * Whether the smallest is zero: LOBPCG preconditioned with the exact
+      inverse of the operator shifted just below zero.  Its Ritz values are
+      upper bounds on the eigenvalues, so a Ritz value below
+      ``zero_rel * largest`` proves the block singular at that level.  This
+      takes milliseconds where shift-invert Lanczos needed seconds: a
+      singular block has a null space of many dimensions, and near-singular
+      solves keep Lanczos's residual from converging.
+    * Otherwise the smallest: shift-invert Lanczos just below zero.
+    """
+    import scipy.sparse as sp
+    from scipy.sparse.linalg import (ArpackNoConvergence, LinearOperator,
+                                     eigsh, lobpcg, splu)
+
+    n = blk.shape[0]
+    if n <= _DENSE_BLOCK:
+        ev = np.linalg.eigvalsh(blk.toarray())
+        return float(ev[0]), float(ev[-1])
+    if blk.dtype.kind == "c" and np.any(blk.data.imag != 0):
+        R = sp.bmat([[blk.real, -blk.imag], [blk.imag, blk.real]], format="csc")
+    else:
+        R = sp.csc_matrix(blk.real)
+    N = R.shape[0]
+    # A wider Krylov space than ARPACK's default of 20: the extreme
+    # eigenvalues of these operators come in tight clusters (a one-sided
+    # bank's are pairwise degenerate), and 64 vectors cut the restarts by 3.5x.
+    ncv = min(N - 1, 64)
+    try:
+        hi = float(eigsh(R, k=1, which="LA", ncv=ncv, tol=1e-10,
+                         maxiter=20 * N, return_eigenvectors=False)[0])
+        shift = 1e-6 * hi
+        lu = splu((R + shift * sp.identity(N, format="csc")).tocsc())
+        P = LinearOperator((N, N), dtype=float,
+                           matvec=lambda x: lu.solve(np.asarray(x, dtype=float)),
+                           matmat=lambda X: lu.solve(np.asarray(X, dtype=float)))
+        X0 = np.random.default_rng(0).standard_normal((N, min(4, N // 4)))
+        with np.errstate(all="ignore"):
+            import warnings as _w
+
+            with _w.catch_warnings():
+                _w.simplefilter("ignore")
+                theta = lobpcg(R, X0, M=P, largest=False, maxiter=30,
+                               tol=zero_rel * hi)[0]
+        if float(np.min(theta)) < zero_rel * hi:
+            return 0.0, hi
+        lo = float(eigsh(R, k=1, sigma=-shift, which="LM", ncv=ncv, tol=1e-10,
+                         maxiter=20 * N, OPinv=P, return_eigenvectors=False)[0])
+        return lo, hi
+    except ArpackNoConvergence:
+        if n > 8 * _DENSE_BLOCK:
+            raise
+        ev = np.linalg.eigvalsh(blk.toarray())
+        return float(ev[0]), float(ev[-1])
+
+
+def _aliased_bounds(g_ready: list[dict], a_norm: np.ndarray, L: int, real: bool) -> tuple[float, float]:
+    """Exact frame bounds of a bank that is neither painless nor uniform:
+    the extreme eigenvalues of its sparse frame operator, block by block."""
+    import scipy.sparse as sp
+    from scipy.sparse.csgraph import connected_components
+
+    S = _aliased_operator(g_ready, a_norm, L, real)
+    diag = np.real(S.diagonal())
+    # On the sparsity pattern: connected_components casts to float, which
+    # would drop a purely imaginary coupling.
+    pattern = sp.csr_matrix((np.ones(S.nnz), S.indices, S.indptr), shape=S.shape)
+    n_comp, labels = connected_components(pattern, directed=False)
+    sizes = np.bincount(labels, minlength=n_comp)
+    single = sizes[labels] == 1
+    A = float(diag[single].min()) if np.any(single) else np.inf
+    B = float(diag[single].max()) if np.any(single) else 0.0
+    for comp in np.flatnonzero(sizes > 1):
+        sel = np.flatnonzero(labels == comp)
+        lo, hi = _block_extremes(S[sel][:, sel], _PINV_REL)
+        A = min(A, lo)
+        B = max(B, hi)
+    # Eigenvalues below _PINV_REL of the largest count as zero, as in the
+    # pseudo-inverse of the uniform branch.
+    if A < _PINV_REL * B:
+        A = 0.0
+    return float(A), float(B)
 
 
 # The canonical dual / tight bank of a given bank, cached.  Iterative phase

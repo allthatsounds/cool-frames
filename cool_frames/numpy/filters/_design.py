@@ -388,12 +388,14 @@ def audfilters(fs: float, Ls: int, *,
 
     # Announce a non-frame geometry here, where the parameters were chosen,
     # rather than letting it surface later as an all-zero dual.
-    from ..diagnostics.admissibility import check_admissible
+    from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 
     admissible = check_admissible(
         fc[1:-1], fsupp[1:-1], fs=fs, L=int(L),
         fsupp_dc=fsupp_lp, fsupp_nyq=fsupp_hp,
         min_win=min_win, window=window, designer="audfilters")
+    # The covering verdict proves a frame only for a painless bank.
+    admissible, n_alias = restrict_to_painless(admissible, g_list, a, int(L))
 
     from ._tfr import tfr_from_bandwidth
 
@@ -411,7 +413,7 @@ def audfilters(fs: float, Ls: int, *,
             "fsupp_dc": float(fsupp_lp), "fsupp_nyq": float(fsupp_hp),
             "tfr": tfr_from_bandwidth(_bw, fs, int(L), winbw=window_winbw(window)),
             "tfr_source": "LTFAT rule (matches info.tfr(L) to 4.5e-05)",
-            "admissible": admissible}
+            "admissible": admissible, "painless": n_alias == 0}
     return g_list, a, fc, int(L), info  # type: ignore[return-value]
 
 

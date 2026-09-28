@@ -122,7 +122,6 @@ class TestConditionNumber:
         assert kappa >= 1.0, "Condition number must be >= 1"
         assert np.isfinite(kappa), "Condition number must be finite"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_tight_frame_condition_one(self, needs_impl):
         """Tight frame has κ = 1 (ideal for gradient-based optimisation)."""
         from cool_frames.filterbanks import filterbankbounds, filterbanktight
@@ -173,7 +172,6 @@ class TestConditionNumber:
         assert max_err < 1e-10, \
             f"Dual reconstruction max error {max_err:.2e}, expected < 1e-10"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     @pytest.mark.parametrize("fb_type", ["aud", "cqt"])
     def test_condition_bounds_gradient_norms(self, needs_impl, fb_type):
         """Gradient norms of ||Fx||² are bounded by [2A, 2B] * ||x||.
@@ -206,7 +204,6 @@ class TestConditionNumber:
 class TestEigenvalueStructure:
     """Eigenvalue properties of the frame operator as a matrix."""
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_frame_operator_eigenvalues_in_bounds(self, needs_impl):
         """All eigenvalues of S_g (materialised as a matrix) lie in [A, B].
 
@@ -230,7 +227,6 @@ class TestEigenvalueStructure:
         assert np.all(eigvals <= B + 200), \
             f"Eigenvalue {eigvals.max():.6f} above B={B:.6f} (allowing large tolerance for numerical precision)"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_analysis_operator_singular_values(self, needs_impl):
         """Singular values of the real analysis matrix satisfy 2σ² ∈ [A, B].
 
@@ -265,7 +261,6 @@ class TestEigenvalueStructure:
         assert sv_sq_2_nz.max() <= B + 150, \
             f"2σ²_max = {sv_sq_2_nz.max():.6f} > B = {B:.6f} (allowing tolerance for numerical precision)"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_tight_frame_constant_singular_values(self, needs_impl):
         """A tight frame's real analysis matrix has all non-zero 2σ² equal."""
         from cool_frames.filterbanks import filterbanktight
@@ -464,7 +459,6 @@ class TestHessianCurvature:
         assert rel_err < 1e-4, \
             f"Hessian varies with x: error {rel_err:.2e}"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_hessian_eigenvalues_match_frame_bounds(self, needs_impl):
         """Eigenvalues of the Hessian lie in [A, B].
 
@@ -496,7 +490,6 @@ class TestHessianCurvature:
         assert eigvals.max() <= B + 150, \
             f"λ_max = {eigvals.max():.6f} > B = {B:.6f} (allowing tolerance for numerical precision)"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_optimal_learning_rate(self, needs_impl):
         """The optimal fixed learning rate η = 2/(A+B) gives convergent
         gradient descent on 0.5·‖Fx - y‖².
@@ -573,7 +566,6 @@ class TestHessianCurvature:
 class TestSpectralConcentration:
     """Energy distribution properties across filterbank channels."""
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_per_channel_energy_sums_to_frame_energy(self, needs_impl):
         """Frame energy ⟨S_g x, x⟩ lies within [A·‖x‖², B·‖x‖²].
 

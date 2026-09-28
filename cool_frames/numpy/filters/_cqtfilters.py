@@ -370,12 +370,14 @@ def cqtfilters(
 
         fit_fractional_lengths(g, a, int(L))
 
-    from ..diagnostics.admissibility import check_admissible
+    from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 
     admissible = check_admissible(
         fc[1:-1], fsupp[1:-1], fs=fs, L=int(L),
         fsupp_dc=fsupp_dc, fsupp_nyq=fsupp_nyq,
         min_win=min_win, window=window, designer="cqtfilters")
+    # The covering verdict proves a frame only for a painless bank.
+    admissible, n_alias = restrict_to_painless(admissible, g, a, int(L))
 
     from ._tfr import tfr_from_bandwidth
 
@@ -393,7 +395,7 @@ def cqtfilters(
             "fsupp_dc": float(fsupp_dc), "fsupp_nyq": float(fsupp_nyq),
             "tfr": tfr_from_bandwidth(_bw, fs, int(L), winbw=window_winbw(window)),
             "tfr_source": "LTFAT rule (matches info.tfr(L) to 2.1e-05)",
-            "admissible": admissible}
+            "admissible": admissible, "painless": n_alias == 0}
     return g, a, fc, int(L), info  # type: ignore[return-value]
 
 

@@ -613,13 +613,15 @@ def test_diagonal_estimator_agrees_with_exact_oracle(designer, kwargs):
         f"oracle kappa {B_ex / A_ex:.4f}")
 
 
-def test_non_painless_bank_is_where_the_estimator_lies():
+def test_non_painless_bank_is_no_longer_where_the_estimator_lies():
     """The negative control for the test above.
 
-    Kept as a test rather than a comment because it is the whole reason the
-    comparison exists: on a non-painless bank the estimator is not merely
-    imprecise, it is confidently wrong in the safe direction, and nothing in
-    its output says so.
+    On this non-painless bank ``filterbankbounds`` used to return the
+    diagonal response's extremes -- confidently wrong in the safe direction,
+    a healthy-looking A > 0 for a bank that is not a frame -- and nothing in
+    its output said so (DEFECT_REGISTER G7).  It now solves the bank's sparse
+    frame operator and agrees with the oracle; and the designer no longer
+    calls the bank a frame (G6).
     """
     from cool_frames.filterbanks import filterbankbounds, filterbankbounds_svd
 
@@ -627,8 +629,11 @@ def test_non_painless_bank_is_where_the_estimator_lies():
     g, a, _fc, L, info = waveletfilters(
         8000, 1024, scales=4 * 2.0 ** (-np.arange(24) / 6), painless=False)
     assert info["painless"] is False
+    assert info["admissible"] is None or info["admissible"]["is_frame"] is False
 
     A_est, B_est = filterbankbounds(g, a, L, real=True)
-    A_ex, _B_ex = filterbankbounds_svd(g, a, L, real=True)
-    assert A_est > 0, "estimator should report a healthy-looking bank"
+    A_ex, B_ex = filterbankbounds_svd(g, a, L, real=True)
     assert A_ex == 0.0, "oracle should report it is not a frame"
+    assert A_est == 0.0, "the estimator must now agree"
+    # folded real convention: twice the SVD's level
+    assert B_est == pytest.approx(2 * B_ex, rel=1e-9)

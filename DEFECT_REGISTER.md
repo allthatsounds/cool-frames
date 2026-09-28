@@ -654,7 +654,9 @@ constructors. Regression tests: `tests/regressions/test_window_conventions_2026_
 ## Found while sketching an LRAC 2.0 codec bank, 2026-09-28
 
 A 24 kHz `gabfilters` bank on a 6 s speech excerpt was not a frame. Regression
-tests: `tests/regressions/test_gabfilters_full_band_2026_09_28.py`.
+tests: `tests/regressions/test_gabfilters_full_band_2026_09_28.py` (G1-G5) and
+`tests/regressions/test_nonpainless_bounds_2026_09_28.py` (G6-G7, found while
+re-checking the admissibility verdicts after G1).
 
 | # | Area | Defect | Was → is |
 |---|---|---|---|
@@ -663,15 +665,19 @@ tests: `tests/regressions/test_gabfilters_full_band_2026_09_28.py`.
 | G3 | `torch/filterbanks/_core.py` (`_prepare_filters`) | The same in the torch backend: analysis differed from NumPy by O(1), round trip +2 dB | the same routing as G2; agrees with NumPy to 2.4e-15, round trip −297 dB |
 | G4 | `filterbanks/_frame.py`, `filters/_gabfilters.py`, `torch/filters/_wrappers.py`, `torch/filterbanks/_frame.py` | G1's fix made every channel of a `gabfilters` bank a length-L array, and the generic uniform construction built its dual from all M2*L non-zero bins. At the comparative benchmark's bank (Hann 1024/256, L = 65536, 513 channels) `filterbankdual` ran out of 7 GB, and the bank alone held 538 MB | the channels share their response (read-only: the interior channels one array, the edges another), and a `gabfilters` bank carries its window, so `filterbankdual`, `filterbanktight` and `filterbankbounds` use `gabdual`, `gabtight` and `gabframebounds`: dual and bounds in 0.01 s, round trip 1e-15, equal to the generic construction to 1e-12 on every bank tested. A bank whose responses were replaced is not recognised and takes the generic path, and so does a Gabor system that is not a frame, which `gabdual` refuses: it keeps the generic construction's pseudo-inverse. torch keeps the sharing (one tensor per distinct array) |
 | G5 | `phase/_rtisila_fb.py` (`_channel_spectrum`) | The RTISI-LA engine treated any length-L response as dense from bin 0, as the kernels did before G2 | the same rule as G2 |
+| G6 | `diagnostics/admissibility.py`; `audfilters`, `cqtfilters`, `greenwoodfilters`, `warpedfilters`, `waveletfilters` | `info["admissible"]` applied the covering theorem to every bank, but it proves a frame only for a painless one; with an aliasing channel, covering is necessary and not sufficient. `waveletfilters(16000, 512, painless=False, fmax=4000, highpass='auto')` covers every bin, was reported a frame, and has lower bound 0. `redmul < 1` makes non-painless banks in every designer, silently | a "frame" verdict on a bank with an aliasing channel is withdrawn (`None`, as for the layouts the predictor cannot express); a "not a frame" verdict stands, since an uncovered bin annihilates its exponential whatever the hops. Every designer publishes `info["painless"]` |
+| G7 | `filterbanks/_frame.py` (`filterbankbounds`) | A non-uniform bank that is not painless got the diagonal response's extremes, which are the bounds only of a painless bank, with no warning (the dual and tight constructions do warn): `(0.98, 3.73)` on G6's bank, whose bounds are `(0, 21.2)` | exact bounds from the frame operator in the DFT domain, which couples two bins only through a channel that aliases them and is therefore sparse; its connected blocks are solved densely up to 800 bins and by Lanczos (largest), preconditioned LOBPCG (a zero test: Ritz values bound the eigenvalues from above) and shift-invert Lanczos (smallest) beyond. κ equals `filterbankbounds_svd`'s to 1e-8 on the five designers' non-painless banks; 0.2 s at L = 5184, 5 to 46 s at L = 62208 to 82944, where the SVD route cannot run |
 
 Tests that pinned the defect were corrected, not loosened around it:
 - The four `gabfilters` admissibility tests encoded the truncated geometry. They are rewritten to check the verdict against the exact bounds (`filterbankbounds`), for real and two-sided banks, window arrays shorter than M, and L from below M^2 to 4*M^2.
 - Two xfails caused by the truncation now pass and are unmarked: `test_all_filters_have_same_h_length` and `test_no_dead_bins_complex`.
 - `test_the_dual_is_computed_once_per_content` tests the generic uniform construction's cache; it now strips the Gabor tag from its `gabfilters` bank, which would otherwise take G4's closed forms and never reach that cache.
+- `test_non_painless_bank_is_where_the_estimator_lies` asserted G7 (the estimator reporting A > 0 where the oracle reports 0). It now asserts that the two agree, and is renamed `..._is_no_longer_where_the_estimator_lies`.
+- Thirteen property tests in `test_prop_ml_advanced.py` and `test_prop_ml_matrix_spectral.py` carried a non-strict `xfail` ("filterbankbounds underestimates upper frame bound for auditory filterbanks") for the folded-response defect fixed on 2026-06-12, and had passed unnoticed since. The markers are removed, so a regression fails again.
 - The single-sided pseudo-inverse projection test asked for 1e-8. With the full sidelobes, the frame operator's eigenvalues now run continuously down to `_PINV_REL`, so the achievable accuracy is ~eps/`_PINV_REL`: measured 3.5e-6, bound 1.1e-4.
 
 Consequences outside the package. Every reproduce bundle pins an earlier revision and still reproduces its old numbers.
-- **W03** states the truncated rule and validates it: "collapses to L/M <= M", the 1160 `gabfilters` rows of tab:admval, the M = 64, a = 48 "non-frame" example, and c07's one-iteration rows.
+- **W03** states the truncated rule and validates it: "collapses to L/M <= M", the 1160 `gabfilters` rows of tab:admval, the M = 64, a = 48 "non-frame" example, and c07's one-iteration rows. Its oracle for non-painless non-uniform banks was `filterbankbounds` (G7).
 - **W52**'s kappa values 1.0020 and 1.0003 are truncation artefacts, as are its cost numbers for the exact dual.
 - **W22**'s uniform-Gabor cells at M = 256, a = 64 have kept band M^2/L = 4.06.
 - `ltfat_filterbank/cola` carries the same truncation.

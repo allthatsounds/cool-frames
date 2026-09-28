@@ -84,7 +84,13 @@ one on Nyquist, and an interval whose live width it can name.  Those report
 window *and* on the parity of ``M``, ``gabfilters`` handed a window array
 whose length is not ``M``, and ``waveletfilters`` with
 ``lowpass='none'``/``'repeat'``, ``highpass='none'``, or a two-sided
-(``freqrange='complex'``/``'analytic'``) bank.  A geometry below the floor emits
+(``freqrange='complex'``/``'analytic'``) bank.  The covering theorem proves a
+frame only for a painless bank, so a bank with an aliasing channel
+(``waveletfilters(painless=False)``, ``redmul < 1`` in any designer) gets
+``None`` too, unless a bin is uncovered, which makes it "not a frame" whatever
+the hops (:func:`restrict_to_painless`); :func:`~cool_frames.filterbanks.filterbankbounds`
+gives its exact bounds, and ``info["painless"]`` says which case applies.
+A geometry below the floor emits
 :class:`NotAFrameWarning` naming the first uncovered bin.  The bank is still
 built -- analysis still works, and studying the gap is a legitimate thing to
 want -- but the warning fires where the parameters were chosen rather than
@@ -111,6 +117,7 @@ __all__ = [
     "DEAD_BINS",
     "NotAFrameWarning",
     "check_admissible",
+    "restrict_to_painless",
     "predict_admissible",
     "ripple_curve",
     "max_overlap_for_kappa",
@@ -327,6 +334,36 @@ def check_admissible(fc_inner, fsupp_inner, *, fs, L, fsupp_dc, fsupp_nyq,
             stacklevel=3,
         )
     return pred
+
+
+def restrict_to_painless(pred, g, a, L):
+    """Withdraw a *frame* verdict that the covering theorem cannot support.
+
+    The covering theorem is exact for painless banks only.  For a bank with a
+    channel that aliases (its support wider than its hop allows), coverage is
+    still necessary -- an uncovered bin annihilates the exponential at that
+    bin whatever the hops -- but no longer sufficient: aliased copies can
+    cancel, and the bank can have lower frame bound zero with every bin
+    covered.  ``waveletfilters(16000, 512, painless=False, fmax=4000)`` is one
+    such bank, and ``redmul < 1`` makes others in every designer.
+
+    So a "not a frame" verdict stands, and a "frame" verdict on a bank with a
+    non-painless channel is replaced by ``None`` (no verdict), the same value
+    the designers already publish for layouts the predictor cannot express.
+    :func:`~cool_frames.filterbanks.filterbankbounds`, exact for every bank,
+    then decides.
+
+    Returns ``(verdict, n_nonpainless)``.
+    """
+    from ..filterbanks._frame import _nonpainless_channels
+    from ..filterbanks._utils import normalise_a, prepare_filters
+
+    a_norm = normalise_a(a, len(g))
+    bad = _nonpainless_channels(prepare_filters(g, a_norm, int(L))[0],
+                                a_norm, int(L))
+    if bad and pred is not None and pred.get("is_frame"):
+        return None, len(bad)
+    return pred, len(bad)
 
 
 # ---------------------------------------------------------------------------

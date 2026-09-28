@@ -1221,6 +1221,12 @@ def waveletfilters(
         _repair_complement_hops(gout, a_new, int(L))
     _pl_ratio, _pl_bad = _painless_ratio(gout, a_new, int(L))
     info["painless"] = bool(_pl_bad == 0)
+    # Covering (predicted or measured) proves a frame only for a painless
+    # bank; `painless=False, fmax=4000` covers every bin and is not a frame.
+    from ..diagnostics.admissibility import restrict_to_painless
+
+    info["admissible"], _ = restrict_to_painless(info["admissible"], gout,
+                                                 a_new, int(L))
     info["painless_ratio"] = float(_pl_ratio)
     if _pl_bad:
         warnings.warn(

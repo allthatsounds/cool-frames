@@ -303,7 +303,7 @@ def warpedfilters(
         min_win=min_win,
     )
 
-    from ..diagnostics.admissibility import check_admissible
+    from ..diagnostics.admissibility import check_admissible, restrict_to_painless
 
     # The warped rule: channels sit uniformly in the scale coordinate and each
     # filter is +/- bwmul wide *in that coordinate*, so the interval is derived
@@ -313,6 +313,8 @@ def warpedfilters(
         fsupp_dc=_fsupp_dc, fsupp_nyq=_fsupp_nyq,
         warped=(scalevec, scaletofreq, bwmul), min_win=1,
         designer="warpedfilters")
+    # The covering verdict proves a frame only for a painless bank.
+    admissible, n_alias = restrict_to_painless(admissible, g, a, int(L))
 
     # LTFAT publishes no info struct at all for warpedfilters -- no fc, no
     # tfr -- so `filterbankconstphase`'s magnitude path had no sqtfr to use on
@@ -335,5 +337,5 @@ def warpedfilters(
             "fsupp_dc": _fsupp_dc, "fsupp_nyq": _fsupp_nyq,
             "tfr": tfr_from_bandwidth(_bw, fs, int(L)),
             "tfr_source": "derived (no LTFAT reference exists)",
-            "admissible": admissible}
+            "admissible": admissible, "painless": n_alias == 0}
     return g, a, fc_arr, int(L), info  # type: ignore[return-value]

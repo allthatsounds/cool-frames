@@ -1170,6 +1170,27 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
 - Results computed with `gabfilters` change wherever L is not small against
   M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
 
+### Frame verdicts and bounds for banks that are not painless
+
+Found while re-checking the admissibility verdicts after the `gabfilters` fix
+(`DEFECT_REGISTER.md`, G6-G7).
+
+- **Behavioural change:** `info["admissible"]` is `None` (no verdict) for a
+  bank with an aliasing channel where the covering test found no hole. The
+  covering theorem proves a frame only for a painless bank:
+  `waveletfilters(16000, 512, painless=False, fmax=4000, highpass='auto')`
+  covers every bin and was reported a frame; its lower bound is 0. A "not a
+  frame" verdict still stands. Every designer now publishes
+  `info["painless"]`; `redmul < 1` gives a non-painless bank in all of them.
+- **Behavioural change:** `filterbankbounds` is exact for every bank. A
+  non-uniform bank that is not painless used to get the painless formula
+  silently -- `(0.98, 3.73)` on that bank instead of `(0, 21.2)`. It now
+  solves the bank's frame operator in the DFT domain, which is sparse (two
+  bins are coupled only through a channel that aliases them), block by
+  block. It agrees with `filterbankbounds_svd` to 1e-8 in kappa and takes
+  0.2 s at L = 5184; at L = 62208 to 82944, where the SVD cannot run, 5 to
+  46 s. Painless and uniform banks are unchanged.
+
 ## 0.1.0
 
 First public release.

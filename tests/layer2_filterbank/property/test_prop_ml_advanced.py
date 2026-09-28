@@ -271,7 +271,6 @@ class TestLipschitzContinuity:
     which is critical for adversarial robustness in deep learning.
     """
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_analysis_lipschitz_bounded_by_sqrt_B(self, needs_impl):
         """‖Fx₁ - Fx₂‖ / ‖x₁ - x₂‖ ≤ √B for random signal pairs."""
         g, a, L, A, B, M = _make_filterbank("aud")
@@ -297,7 +296,6 @@ class TestLipschitzContinuity:
         assert max_lip <= np.sqrt(B / 2) + 1e-4, \
             f"Lipschitz ratio {max_lip:.4f} > √(B/2) = {np.sqrt(B/2):.4f}"
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_frame_op_lipschitz_bounded_by_B(self, needs_impl):
         """‖S_g x‖ / ‖x‖ ≤ B for the frame operator."""
         g, a, L, A, B, M = _make_filterbank("aud")
@@ -354,7 +352,6 @@ class TestGradientNormPreservation:
         A·‖δ‖² ≤ ‖F^* δ‖² ≤ B·‖δ‖²  (approximately)
     """
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_backprop_gradient_bounded(self, needs_impl):
         """Backpropagated gradient norms lie in a bounded range.
 
@@ -526,7 +523,6 @@ class TestNoiseAmplification:
     - The SNR degradation is bounded by the condition number κ
     """
 
-    @pytest.mark.xfail(reason="filterbankbounds underestimates upper frame bound for auditory filterbanks")
     def test_noise_amplification_bounded(self, needs_impl):
         """Additive noise energy in coefficient domain ≤ (B/2)·‖n‖²."""
         g, a, L, A, B, M = _make_filterbank("aud")
