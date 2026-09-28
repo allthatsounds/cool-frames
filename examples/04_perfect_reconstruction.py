@@ -53,17 +53,18 @@ def main() -> None:
         "the closed-form canonical dual."
     )
 
-    # Gabor frames: painless when each filter fits its hop (lenH <= L/a), in
-    # which case the direct dual is exact; a well-conditioned non-painless frame
-    # is recovered by the iterative inverse (ifilterbankiter / CG).
+    # Gabor frames: a gabfilters channel stores the whole L-point transform of
+    # its window (as LTFAT's does), so no Gabor bank is painless; its canonical
+    # dual is the Gabor bank of gabdual's window (a closed form), which
+    # filterbankdual returns.  The iterative inverse (ifilterbankiter / CG)
+    # recovers any well-conditioned frame without forming a dual.
     from cool_frames.numpy.filterbanks import ifilterbankiter
     from cool_frames.numpy.filters import gabfilters
 
     print("\nGabor frames (uniform):")
-    # painless: small hop a=16 so each length-128 filter fits L/a=125
     g, a, _fc, L, _ = gabfilters(fs, Ls, window="hann", a=16, M=128)
-    _roundtrip("gabfilters a=16 (painless, direct dual)", g, a, L, x)
-    # non-painless but well-conditioned (short signal): the iterative inverse
+    _roundtrip("gabfilters a=16 (Gabor closed-form dual)", g, a, L, x)
+    # the same window at a=64, short signal: the iterative inverse
     Ls2 = 2048
     x2 = np.random.default_rng(3).standard_normal(Ls2)
     g, a, _fc, L, _ = gabfilters(fs, Ls2, window="hann", a=64, M=128)
@@ -71,7 +72,7 @@ def main() -> None:
         filterbank(x2, g, a, L), g, a, Ls=Ls2, real=True, maxit=100, tol=1e-9
     )
     err = np.linalg.norm(np.real(xr)[:Ls2] - x2) / np.linalg.norm(x2)
-    print(f"  gabfilters a=64 (non-painless, iterative): round-trip={err:.2e} in {niter} CG iters")
+    print(f"  gabfilters a=64 (iterative): round-trip={err:.2e} in {niter} CG iters")
 
     # Wavelet bank: with cool_frames's Nyquist highpass complement (highpass='auto')
     # and scales spanning toward Nyquist, the real wavelet bank is invertible;

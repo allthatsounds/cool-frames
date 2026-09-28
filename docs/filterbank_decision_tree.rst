@@ -219,9 +219,11 @@ Channel count and the frame property
 
 Every designer has a redundancy floor below which the filters no longer cover
 the spectrum: the response has gaps, the frame lower bound ``A`` is 0, and
-there is no perfect reconstruction. The designers do **not** currently warn
-when you land there (``gabfilters`` is the exception — it warns when the hop
-exceeds the channel count), so check after designing:
+there is no perfect reconstruction. Every designer predicts in closed form
+whether its geometry is a frame and warns (``NotAFrameWarning``) when it is
+not; ``gabfilters`` also warns when the hop exceeds the channel count. The
+prediction is exact for a painless bank and a necessary condition otherwise,
+so check the bank you actually use:
 
 .. code-block:: python
 
