@@ -73,6 +73,11 @@ def filterbankfreqz(
 # ---------------------------------------------------------------------------
 
 
+#: Bins per block of :func:`filterbankresponse` (a multiple of every BLAS
+#: unrolling factor, so blocking leaves each row's arithmetic unchanged).
+_RESP_BLOCK = 1 << 16
+
+
 def filterbankresponse(
     g: list[dict], a, L: int, real: bool = False, dtype: np.dtype | type = float
 ) -> np.ndarray:
@@ -114,10 +119,29 @@ def filterbankresponse(
     M = len(g)
     a_norm = normalise_a(a, M)
     afrac = a_norm[:, 0] / a_norm[:, 1]
+    w = 1.0 / afrac
 
-    H = filterbankfreqz(g, a_norm, L)
-    # |H_m(k)|^2 / a_m, summed over m
-    resp = np.real(H * H.conj()) @ (1.0 / afrac)
+    # |H_m(k)|^2 / a_m, summed over m, a block of bins at a time.  This used
+    # to build the whole (L, M) matrix of ``filterbankfreqz``: 1.8 GB for a
+    # 10 s constant-Q bank at 44.1 kHz, and the DC and Nyquist complements
+    # compute this response of their inner bank.  Each channel's full
+    # response is still evaluated once, as ``filterbankfreqz`` does, but
+    # only its non-zero bins are kept; every block holds the same rows of
+    # that matrix, so the result is the same to the last bit.
+    cols = []
+    for gm in g:
+        H_full, _ = filter_freqresp(gm, L)
+        H_full = np.asarray(H_full)
+        nz = np.flatnonzero(H_full)
+        cols.append((nz, H_full[nz]))
+    resp = np.empty(L, dtype=float)
+    for k0 in range(0, L, _RESP_BLOCK):
+        k1 = min(L, k0 + _RESP_BLOCK)
+        Hb = np.zeros((k1 - k0, M), dtype=complex)
+        for m, (nz, v) in enumerate(cols):
+            lo, hi = np.searchsorted(nz, (k0, k1))
+            Hb[nz[lo:hi] - k0, m] = v[lo:hi]
+        resp[k0:k1] = np.real(Hb * Hb.conj()) @ w
 
     if real:
         # MATLAB ``comp_filterbankresponse(g, a, L, 1)``:

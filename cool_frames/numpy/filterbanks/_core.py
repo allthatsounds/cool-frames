@@ -397,12 +397,13 @@ def ifilterbankiter(
         return np.sqrt(num / den) if den > 0 else 0.0
 
     # ------------------------------------------------------------------
-    # Fast path: the closed-form (painless) dual is exact in ONE step --
-    # but ONLY for painless frames.  ``filterbankdual`` always returns the
-    # diagonal dual, which is *wrong* for non-painless banks (e.g. gabfilters
-    # / waveletfilters whose filters are wider than L/a), so we must VALIDATE
-    # it against the true analysis residual before trusting it.  If it does
-    # not reconstruct, keep it as a warm start and fall through to CG.
+    # Fast path: the canonical dual reconstructs in ONE step when it is
+    # exact -- for painless banks (closed form), uniform banks (polyphase)
+    # and Gabor banks (``gabdual``).  For a bank that is none of these
+    # (``waveletfilters(painless=False)``, ``redmul < 1``) ``filterbankdual``
+    # returns the diagonal approximation, so VALIDATE it against the true
+    # analysis residual before trusting it.  If it does not reconstruct, keep
+    # it as a warm start and fall through to CG.
     # ------------------------------------------------------------------
     x_warm = None
     try:
@@ -419,7 +420,7 @@ def ifilterbankiter(
             if dtype is not None:
                 xr = np.asarray(xr).astype(dtype, copy=False)
             return xr, rr, 1
-        x_warm = x_full  # diagonal dual is only approximate -> warm start
+        x_warm = x_full  # the dual is only approximate here -> warm start
     except Exception:
         x_warm = None
 

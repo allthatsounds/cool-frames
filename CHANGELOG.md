@@ -1218,6 +1218,12 @@ Found while re-checking the admissibility verdicts after the `gabfilters` fix
   and takes 4.0 s with the cache (11.7 s before the repair existed). The
   other designers' banks now evaluate their DC and Nyquist complements at
   design time rather than at the first analysis; the total is unchanged.
+- `filterbankresponse` works a block of 65,536 bins at a time instead of on
+  the whole (L, M) matrix of `filterbankfreqz`, with the same result to the
+  last bit. The DC and Nyquist complements compute it for their inner bank,
+  and since they are built at design time a 32 s, 12-bin `cqtfilters` bank
+  took 1.49 GB to design (0.06 GB before, when nothing was evaluated until
+  the first analysis, which then took the same memory).
 
 ## 0.1.0
 

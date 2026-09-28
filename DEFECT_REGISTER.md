@@ -678,7 +678,7 @@ Tests that pinned the defect were corrected, not loosened around it:
 - Two xfails caused by the truncation now pass and are unmarked: `test_all_filters_have_same_h_length` and `test_no_dead_bins_complex`.
 - `test_the_dual_is_computed_once_per_content` tests the generic uniform construction's cache; it now strips the Gabor tag from its `gabfilters` bank, which would otherwise take G4's closed forms and never reach that cache.
 - `test_non_painless_bank_is_where_the_estimator_lies` asserted G7 (the estimator reporting A > 0 where the oracle reports 0). It now asserts that the two agree, and is renamed `..._is_no_longer_where_the_estimator_lies`.
-- Thirteen property tests in `test_prop_ml_advanced.py` and `test_prop_ml_matrix_spectral.py` carried a non-strict `xfail` ("filterbankbounds underestimates upper frame bound for auditory filterbanks") for the folded-response defect fixed on 2026-06-12, and had passed unnoticed since. The markers are removed, so a regression fails again.
+- Twelve non-strict `xfail` markers (thirteen tests, one of them parametrised twice) in `test_prop_ml_advanced.py` and `test_prop_ml_matrix_spectral.py` ("filterbankbounds underestimates upper frame bound for auditory filterbanks") stood for the folded-response defect fixed on 2026-06-12, and had passed unnoticed since. The markers are removed, so a regression fails again.
 - The single-sided pseudo-inverse projection test asked for 1e-8. With the full sidelobes, the frame operator's eigenvalues now run continuously down to `_PINV_REL`, so the achievable accuracy is ~eps/`_PINV_REL`: measured 3.5e-6, bound 1.1e-4.
 
 Consequences outside the package. Every reproduce bundle pins an earlier revision and still reproduces its old numbers.
