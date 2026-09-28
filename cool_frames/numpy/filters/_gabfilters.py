@@ -174,6 +174,77 @@ def _comp_tfrfromwin(g: np.ndarray, atheight: float | None = None) -> float:
 # gabfilters – public API
 # ---------------------------------------------------------------------------
 
+def _gab_bank(g0: np.ndarray, a: int, M: int, L: int, fs, real: bool,
+              windowaxis: str = "time") -> list[dict]:
+    """The filter descriptors of a Gabor bank with numeric window ``g0``.
+
+    ``g0`` is used as given (no normalisation), so the same construction
+    builds a bank from a canonical dual or tight window.  Every channel
+    stores the whole ``L``-point transform of the window (``windowaxis='time'``)
+    or the window itself (``'freq'``).  The interior channels share one
+    read-only response and the edge channels another, so a bank costs
+    ``2 L`` complex values rather than ``M2 L``; nothing in the package
+    writes to a filter's ``H`` in place.
+
+    In ``'time'`` mode each descriptor also carries ``"gabor"``: the window,
+    ``a``, ``M``, ``real`` and the channel index.  The frame algebra reads it
+    to use the Gabor closed forms (``gabdual``, ``gabtight``,
+    ``gabframebounds``), which are exact and need no ``L``-length blocks.
+    """
+    g0 = np.asarray(g0)
+    if windowaxis == "time":
+        gnum = np.fft.fftshift(np.fft.fft(involute(_fir2long(g0, L))))
+    else:
+        gnum = np.conj(np.fft.fftshift(g0))
+    Lg = len(gnum)
+    half_lo = Lg // 2
+    M2 = M // 2 + 1 if real else M
+
+    # In real (single-sided) mode the DC and Nyquist channels have no
+    # conjugate partner, so `ifilterbank(..., real=True)`'s 2*real(ifft) fold
+    # double-counts them.  Every other designer in the package compensates with
+    # a 1/sqrt(2) on the two edge channels (see `_design.py`, `_cqtfilters.py`,
+    # `_greenwoodfilters.py`, `_waveletfilters.py`, `_warpedfilters_design.py`);
+    # gabfilters did not, which left a 4x-overlap Hann DGT — an exactly tight
+    # frame — reading kappa = 1.667 with a 67 % response spike at DC and
+    # Nyquist.
+    edge_scal = np.ones(M2, dtype=float)
+    if real and M2 > 1:
+        edge_scal[0] /= math.sqrt(2.0)
+        # The top channel is the Nyquist bin only when M is even; for odd M the
+        # single-sided range stops just short of it and needs no correction.
+        if M % 2 == 0:
+            edge_scal[-1] /= math.sqrt(2.0)
+
+    shared: dict[float, np.ndarray] = {}
+
+    def _resp(scale: float) -> np.ndarray:
+        if scale not in shared:
+            h = gnum * scale if scale != 1.0 else gnum.copy()
+            h.flags.writeable = False
+            shared[scale] = h
+        return shared[scale]
+
+    win = None
+    if windowaxis == "time":
+        win = np.array(g0, copy=True)
+        win.flags.writeable = False
+    gout = []
+    for kk in range(M2):
+        filt = {
+            "H": _resp(float(edge_scal[kk])),
+            "foff": int(kk * L / M - half_lo),
+            "realonly": 0,
+            "delay": 0,
+            "fs": fs,
+        }
+        if win is not None:
+            filt["gabor"] = {"window": win, "a": int(a), "M": int(M),
+                             "real": bool(real), "k": kk}
+        gout.append(filt)
+    return gout
+
+
 def gabfilters(fs: float, Ls: int, *,
                window="hann",
                window_ms: float | None = None,
@@ -301,18 +372,6 @@ def gabfilters(fs: float, Ls: int, *,
     fc_full = 2.0 * np.arange(M) / M
     Mfull = M
 
-    # Build the prototype frequency response
-    if windowaxis == "time":
-        # gnum = fftshift(fft(involute(fir2long(g0, L))))
-        g_long = _fir2long(g0, L)
-        g_inv = involute(g_long)
-        gnum = np.fft.fftshift(np.fft.fft(g_inv))
-    else:
-        # freq mode: gnum = conj(fftshift(g0))
-        gnum = np.conj(np.fft.fftshift(g0))
-
-    Lg = len(gnum)
-
     # Truncate for real mode
     if real:
         M2 = M // 2 + 1
@@ -346,47 +405,16 @@ def gabfilters(fs: float, Ls: int, *,
     #
     # Storing all ``Lg`` bins restores LTFAT's behaviour: the bank now equals
     # ``dgtreal`` with the time-invariant phase convention at every ``L``.
-    # The cost is LTFAT's too -- ``M2 * L`` complex values -- and the same
-    # advice applies: for long signals use ``cool_frames.gabor.dgtreal``.
+    # The channels share their response (``_gab_bank``), so the bank costs
+    # ``2 L`` complex values, and the frame algebra takes the Gabor closed
+    # forms, so its dual and bounds cost no more than ``gabdual``'s.
+    # Analysis and synthesis still touch all ``L`` bins per channel; for long
+    # signals ``cool_frames.gabor.dgtreal`` is the fast path, as in LTFAT.
     # In ``windowaxis='freq'`` mode ``gnum`` already has ``M`` bins, as in
     # LTFAT, so nothing changes there.
-    #
-    # Painlessness still does not hold and is still not needed: the bank is
-    # uniform, and `filterbankdual`/`filterbanktight`/`filterbankbounds`
-    # treat a uniform non-painless bank exactly, by LTFAT's polyphase
-    # construction.
+    gout = _gab_bank(g0, a, Mfull, L, fs, real, windowaxis)
+    Lg = L if windowaxis == "time" else len(g0)
     Lg_compact = Lg
-    half_lo = Lg // 2
-    gnum_compact = gnum.copy()
-
-    # Build filter descriptors.
-    #
-    # In real (single-sided) mode the DC and Nyquist channels have no
-    # conjugate partner, so `ifilterbank(..., real=True)`'s 2*real(ifft) fold
-    # double-counts them.  Every other designer in the package compensates with
-    # a 1/sqrt(2) on the two edge channels (see `_design.py`, `_cqtfilters.py`,
-    # `_greenwoodfilters.py`, `_waveletfilters.py`, `_warpedfilters_design.py`);
-    # gabfilters did not, which left a 4x-overlap Hann DGT — an exactly tight
-    # frame — reading kappa = 1.667 with a 67 % response spike at DC and
-    # Nyquist.
-    edge_scal = np.ones(M2, dtype=float)
-    if real and M2 > 1:
-        edge_scal[0] /= math.sqrt(2.0)
-        # The top channel is the Nyquist bin only when M is even; for odd M the
-        # single-sided range stops just short of it and needs no correction.
-        if Mfull % 2 == 0:
-            edge_scal[-1] /= math.sqrt(2.0)
-
-    gout = []
-    for kk in range(M2):
-        filt = {
-            "H": gnum_compact * edge_scal[kk],
-            "foff": int(kk * L / Mfull - half_lo),
-            "realonly": 0,
-            "delay": 0,
-            "fs": fs,
-        }
-        gout.append(filt)
 
     # Hop sizes: uniform, a for every channel (1-D integer array)
     aout = np.full(M2, a, dtype=int)

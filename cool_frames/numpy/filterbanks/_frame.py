@@ -189,6 +189,14 @@ def filterbankbounds(g: list[dict], a, L: int, real: bool = True, return_kappa: 
 
     M = len(g)
     a_norm = normalise_a(a, M)
+    gab = _gabor_bank(g, a_norm, L, real)
+    if gab is not None:
+        from ..gabor import gabframebounds
+
+        A, B = (float(v) for v in gabframebounds(gab[0], gab[1], gab[2], L))
+        if return_kappa:
+            return A, B, (B / A if A > 0 else float("inf"))
+        return A, B
     a_uni = _uniform_hop(a_norm, L)
     if a_uni is not None and _nonpainless_channels(prepare_filters(g, a_norm, L)[0], a_norm, L):
         A, B = _uniform_bounds(g, a_uni, L, real)
@@ -601,6 +609,62 @@ def _copy_bank(gout: list[dict]) -> list[dict]:
     ]
 
 
+# ---------------------------------------------------------------------------
+# Gabor banks: the closed forms of the Gabor module
+# ---------------------------------------------------------------------------
+#
+# ``gabfilters`` stores the whole L-point transform of its window in every
+# channel (as LTFAT does), so the generic uniform-bank construction below
+# would build and invert L/a dense a x a blocks from M2*L non-zero bins --
+# gigabytes at the benchmark's 513 channels and L = 65536.  A Gabor bank does
+# not need it: its canonical dual and tight frames are Gabor banks of the
+# windows ``gabdual`` and ``gabtight`` return, and its bounds are
+# ``gabframebounds``'.  ``_gab_bank`` records the window in each descriptor;
+# this recognises an unedited bank and hands it to those closed forms.
+
+def _gabor_bank(g: list[dict], a_norm: np.ndarray, L: int, real: bool):
+    """``(window, a, M, fs)`` if ``g`` is an unedited ``gabfilters`` bank whose
+    single-sidedness matches ``real``; otherwise ``None``."""
+    if not g:
+        return None
+    metas = [gm.get("gabor") for gm in g]
+    if any(m is None for m in metas):
+        return None
+    m0 = metas[0]
+    win, a, M, bank_real = m0["window"], int(m0["a"]), int(m0["M"]), bool(m0["real"])
+    if bank_real != bool(real):
+        return None
+    if len(g) != (M // 2 + 1 if bank_real else M):
+        return None
+    if L % a or L % M or len(win) > L:
+        return None
+    a_norm = np.asarray(a_norm)
+    if np.any(a_norm[:, 1] != 1) or np.any(a_norm[:, 0] != a):
+        return None
+    for k, (gm, m) in enumerate(zip(g, metas)):
+        if (m["k"] != k or int(m["a"]) != a or int(m["M"]) != M
+                or bool(m["real"]) != bank_real):
+            return None
+        if m["window"] is not win and not np.array_equal(m["window"], win):
+            return None
+        H = gm.get("H")
+        # The responses must still be the ones `_gab_bank` stored: read-only
+        # arrays of length L at the Gabor offsets.  A bank whose H was
+        # replaced (an equaliser, say) is not a Gabor bank any more.
+        if (callable(H) or not isinstance(H, np.ndarray) or H.flags.writeable
+                or len(H) != L or int(gm.get("foff", 0)) != int(k * L / M - L // 2)):
+            return None
+    return win, a, M, g[0].get("fs")
+
+
+def _gabor_frame(win, a: int, M: int, L: int, fs, real: bool, type_: str) -> list[dict]:
+    from ..filters._gabfilters import _gab_bank
+    from ..gabor import gabdual, gabtight
+
+    w = gabdual(win, a, M, L) if type_ == "dual" else gabtight(win, a, M, L)
+    return _gab_bank(np.asarray(w), a, M, L, fs, real)
+
+
 def _canonical_frame(g: list[dict], a, L: int, type_: str, real: bool) -> list[dict]:
     """Canonical dual or tight bank: painless closed form, the exact uniform
     polyphase construction, or (non-uniform, non-painless) the diagonal
@@ -609,6 +673,10 @@ def _canonical_frame(g: list[dict], a, L: int, type_: str, real: bool) -> list[d
 
     M = len(g)
     a_norm = normalise_a(a, M)
+    gab = _gabor_bank(g, a_norm, L, real)
+    if gab is not None:
+        win, a_g, M_g, fs = gab
+        return _gabor_frame(win, a_g, M_g, L, fs, real, type_)
     g_ready, _, _, _ = prepare_filters(g, a_norm, L)
     key = _frame_key(g_ready, g, a_norm, L, type_, real)
     hit = _FRAME_CACHE.get(key)

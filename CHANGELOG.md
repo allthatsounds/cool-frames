@@ -1138,9 +1138,9 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   it drifted from `dgtreal` as L grew and was not a frame beyond L of about
   M^2: magnitude error 1.5e-3 at M = 480, L = 24000; 0.29 at L = 144000, with
   bounds (2.53, 3.84) for a frame whose bounds are (4, 4). It now equals
-  `dgtreal` in the time-invariant convention at every L. The memory is
-  LTFAT's, M2*L complex values; for long signals use
-  `cool_frames.gabor.dgtreal`.
+  `dgtreal` in the time-invariant convention at every L. Analysis and
+  synthesis touch all L bins of every channel, as LTFAT's do; for long
+  signals `cool_frames.gabor.dgtreal` is the fast path.
 - **Supersedes the `gabfilters` rule** under "Frame admissibility is now
   predictable in closed form" above: "frame iff L/M <= M" described the
   truncated bank, not the Gabor frame. `info["admissible"]` is now exact
@@ -1150,10 +1150,22 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   gets a verdict too. `windowaxis='freq'` is unchanged and still reports
   none. `info["fsupp*"]` report the whole band.
 - **Behavioural change:** `filterbank` and `ifilterbank`, in both backends,
-  now apply a full-length response stored with a non-zero `foff` at `foff`,
-  where `filter_freqresp` always placed it. They used to apply it at DC. No
-  designer produced such a response before, so the defect only showed once
-  `gabfilters` did.
+  and the RTISI-LA engine now apply a full-length response stored with a
+  non-zero `foff` at `foff`, where `filter_freqresp` always placed it. They
+  used to apply it at DC. No designer produced such a response before, so
+  the defect only showed once `gabfilters` did. Such a response now goes
+  through the band-limited kernels, which cost no copy of it.
+- **A `gabfilters` bank uses the Gabor closed forms.** Its canonical dual and
+  tight frames are Gabor banks of `gabdual`'s and `gabtight`'s windows, and
+  its bounds are `gabframebounds`'. With all L bins per channel, the generic
+  construction ran out of 7 GB at the comparative benchmark's bank (Hann
+  1024/256, L = 65536); the closed forms take 0.01 s and agree with it to
+  1e-12. **Behavioural change:** the channels of a `gabfilters` bank, and of
+  its dual and tight frames, share one read-only response (the edges
+  another), so the bank costs 2L complex values instead of M2*L, and writing
+  into a channel's `H` raises instead of silently changing every channel.
+  Copy the array to edit it; a bank with a replaced response is no longer
+  treated as a Gabor bank and takes the generic path.
 - Results computed with `gabfilters` change wherever L is not small against
   M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
 

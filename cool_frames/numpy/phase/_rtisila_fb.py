@@ -53,8 +53,12 @@ def _channel_spectrum(gm: dict, a_row: np.ndarray, L: int) -> tuple[np.ndarray, 
         H = np.asarray(gm["H"], dtype=complex).ravel()
         if H.size == 0:
             return np.zeros(0, dtype=np.int64), H
-        if H.size == L and int(a_row[1]) == 1:
-            kappa = np.arange(L, dtype=np.int64)  # full-length: foff unused
+        if H.size == L and int(a_row[1]) == 1 and int(gm.get("foff", 0) or 0) % L == 0:
+            # full-length at offset zero: the dense kernels' layout.  A
+            # length-L response stored with an offset (``gabfilters``, as
+            # LTFAT's) is placed at ``foff`` like any other, as
+            # ``prepare_filters`` routes it to the band-limited kernels.
+            kappa = np.arange(L, dtype=np.int64)
         else:
             kappa = int(gm["foff"]) + np.arange(H.size, dtype=np.int64)
         return kappa, H

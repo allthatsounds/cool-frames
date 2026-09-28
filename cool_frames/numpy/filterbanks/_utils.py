@@ -293,21 +293,21 @@ def prepare_filters(g: list[dict], a_norm: np.ndarray, L: int):
                 m_fftbl.append(m)
 
             # Full-length vs band-limited?
-            elif len(gm_out["H"]) == L and a_norm[m, 1] == 1:
-                # The full-length kernels (``comp_filterbank_fft`` and its
-                # inverse) take a dense transfer function that starts at bin
-                # 0 and never read ``foff``.  A length-L response stored with a
-                # non-zero ``foff`` -- which is what ``gabfilters`` stores, as
-                # LTFAT's does -- therefore has to be rotated into place here,
-                # exactly as ``filter_freqresp`` places it for the frame
-                # algebra.  Before 2026-09-28 no designer produced such a
-                # filter, so the two paths never met; with ``gabfilters``
-                # storing all L bins, analysis and synthesis silently used
-                # every channel at DC while the bounds and duals (built from
-                # ``filter_freqresp``) used it at its centre frequency.
-                if gm_out["foff"] % L:
-                    gm_out["H"] = np.roll(gm_out["H"], gm_out["foff"])
-                    gm_out["foff"] = 0
+            #
+            # The full-length kernels (``comp_filterbank_fft`` and its
+            # inverse) take a dense transfer function that starts at bin 0
+            # and never read ``foff``; the band-limited ones place any
+            # response at ``foff``, modulo L, whatever its length.  So only a
+            # length-L response with ``foff = 0`` (mod L) may take the
+            # full-length path.  ``gabfilters`` stores all L bins of each
+            # channel with ``foff = k*L/M - L//2``, as LTFAT's does; before
+            # 2026-09-28 no designer produced such a filter, the length alone
+            # decided, and analysis and synthesis applied every channel at
+            # DC while ``filter_freqresp`` (bounds, duals) placed it at its
+            # centre frequency.  Routing it to the band-limited kernels costs
+            # no copy of the response.
+            elif (len(gm_out["H"]) == L and a_norm[m, 1] == 1
+                  and gm_out["foff"] % L == 0):
                 m_fft.append(m)
             else:
                 m_fftbl.append(m)

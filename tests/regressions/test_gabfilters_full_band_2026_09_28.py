@@ -119,3 +119,89 @@ def test_torch_full_length_response_with_offset_matches_numpy():
     y = t_ifb(ct, numpy_filters_to_torch(np_dual(g, aout, L), L), aout, L)
     y = np.real(y.detach().numpy().ravel()[:L])
     assert np.linalg.norm(x - y) / np.linalg.norm(x) < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# The cost of the fix, and the closed forms that remove it
+# ---------------------------------------------------------------------------
+#
+# With all L bins per channel, the generic uniform-bank construction builds
+# L/a dense a x a blocks from M2*L non-zero bins: at the comparative
+# benchmark's gabfilters (Hann 1024/256, L = 65536, 513 channels) it ran out
+# of 7 GB.  A Gabor bank's canonical dual and tight frames are Gabor banks of
+# gabdual's and gabtight's windows, and its bounds are gabframebounds'; the
+# channels also share one response instead of storing M2 copies.
+
+
+@pytest.mark.parametrize("M,a,Ls,real", [(64, 16, 2048, True), (65, 16, 2080, True),
+                                         (64, 48, 2048, True), (17, 5, 1000, True),
+                                         (64, 16, 2048, False), (33, 11, 1089, False)])
+def test_gabor_closed_forms_equal_the_generic_construction(M, a, Ls, real):
+    from cool_frames.numpy.filterbanks import filterbanktight
+    from cool_frames.numpy.filterbanks import _frame
+    from cool_frames.numpy.filters._filters import filter_freqresp
+
+    warnings.simplefilter("ignore")
+    g, aout, _fc, L, _ = gabfilters(16000, Ls, M=M, a=a, real=real)
+    assert _frame._gabor_bank(g, np.column_stack([aout, np.ones_like(aout)]), L, real) is not None
+    # the generic path, forced by handing it an edited copy (writeable H)
+    g_generic = [dict(gm, H=np.array(gm["H"])) for gm in g]
+    for fn in (filterbankdual, filterbanktight):
+        fast, slow = fn(g, aout, L, real=real), fn(g_generic, aout, L, real=real)
+        worst = max(np.max(np.abs(filter_freqresp(f, L)[0] - filter_freqresp(s, L)[0]))
+                    for f, s in zip(fast, slow))
+        assert worst < 1e-12, (fn.__name__, worst)
+    np.testing.assert_allclose(filterbankbounds(g, aout, L, real=real),
+                               filterbankbounds(g_generic, aout, L, real=real), rtol=1e-12)
+
+
+def test_gabor_bank_at_the_benchmark_size_is_cheap_and_exact():
+    import time
+
+    from cool_frames.numpy.filterbanks import filterbanktight
+
+    warnings.simplefilter("ignore")
+    g, aout, _fc, L, _ = gabfilters(22050, 65536, M=1024, a=256)
+    # one response shared by the interior channels, one by the two edges
+    assert len({id(gm["H"]) for gm in g}) == 2
+    t0 = time.perf_counter()
+    gd = filterbankdual(g, aout, L)
+    A, B = filterbankbounds(g, aout, L)
+    At, Bt = filterbankbounds(filterbanktight(g, aout, L), aout, L)
+    assert time.perf_counter() - t0 < 5.0
+    assert A == pytest.approx(4.0, rel=1e-12) and B == pytest.approx(4.0, rel=1e-12)
+    assert At == pytest.approx(1.0, rel=1e-12) and Bt == pytest.approx(1.0, rel=1e-12)
+    x = np.random.default_rng(11).standard_normal(L)
+    y = np.real(ifilterbank(filterbank(x, g, aout, L), gd, aout, Ls=L, real=True))
+    assert np.linalg.norm(x - y) / np.linalg.norm(x) < 1e-12
+
+
+def test_an_edited_gabor_bank_is_not_treated_as_one():
+    """Replacing a channel's response (an equaliser) must leave the closed
+    forms out: the bank is no longer a Gabor bank."""
+    from cool_frames.numpy.filterbanks import _frame
+
+    warnings.simplefilter("ignore")
+    g, aout, _fc, L, _ = gabfilters(16000, 2048, M=64, a=16)
+    an = np.column_stack([aout, np.ones_like(aout)])
+    edited = [dict(gm) for gm in g]
+    edited[5]["H"] = 0.5 * g[5]["H"]
+    assert _frame._gabor_bank(edited, an, L, True) is None
+    assert _frame._gabor_bank(g, an, L, False) is None      # single-sided bank, real=False
+    with pytest.raises(ValueError):
+        g[3]["H"][0] = 0.0                                   # shared responses are read-only
+
+
+def test_torch_gabor_bank_shares_its_responses_and_takes_the_closed_forms():
+    torch = pytest.importorskip("torch")
+    from cool_frames.torch.filterbanks import filterbankbounds as t_bounds
+    from cool_frames.torch.filterbanks import filterbankdual as t_dual
+    from cool_frames.torch.filters import gabfilters as t_gab
+
+    warnings.simplefilter("ignore")
+    gt, aout, _fc, L, _ = t_gab(22050, 65536, M=1024, a=256)
+    assert len({id(gm["H"]) for gm in gt}) == 2
+    A, B = t_bounds(gt, aout, L)
+    assert float(A) == pytest.approx(4.0, rel=1e-12) and float(B) == pytest.approx(4.0, rel=1e-12)
+    gdt = t_dual(gt, aout, L)
+    assert len(gdt) == len(gt)

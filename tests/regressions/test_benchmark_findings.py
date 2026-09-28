@@ -647,6 +647,11 @@ def test_the_dual_is_computed_once_per_content(monkeypatch):
     import cool_frames.numpy.filterbanks._frame as fr
 
     g, a, L = _nonpainless_gabor_bank()
+    # The generic uniform construction and its cache.  A gabfilters bank
+    # takes the Gabor closed forms since 2026-09-28 and never reaches them,
+    # so this is the same bank without the Gabor tag.
+    g = [{k: (np.array(v) if k == "H" else v) for k, v in gm.items() if k != "gabor"}
+         for gm in g]
     calls = []
     real_uniform = fr._uniform_frame
 

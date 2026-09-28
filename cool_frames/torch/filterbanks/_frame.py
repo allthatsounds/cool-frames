@@ -41,13 +41,25 @@ from ..filters._wrappers import numpy_filters_to_torch
 
 
 def _torch_filters_to_numpy(g_torch: list[dict], L: int) -> list[dict]:
-    """Convert torch filter dicts back to numpy for the frame solvers."""
+    """Convert torch filter dicts back to numpy for the frame solvers.
+
+    A tensor shared by several channels (a ``gabfilters`` bank shares one
+    response among its interior channels) becomes one shared, read-only
+    array, so a Gabor bank arrives at the NumPy solvers as the Gabor bank
+    ``_gab_bank`` built and takes their closed forms (``_gabor_bank``)."""
     g_np = []
+    seen: dict[int, np.ndarray] = {}
     for gm in g_torch:
         d = dict(gm)
         H = d.get("H")
         if isinstance(H, torch.Tensor):
-            d["H"] = H.detach().cpu().numpy()
+            key = id(H)
+            if key not in seen:
+                arr = H.detach().cpu().numpy().copy()
+                if "gabor" in d:
+                    arr.flags.writeable = False
+                seen[key] = arr
+            d["H"] = seen[key]
         g_np.append(d)
     return g_np
 
