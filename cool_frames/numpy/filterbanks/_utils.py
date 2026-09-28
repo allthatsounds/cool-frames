@@ -327,6 +327,80 @@ def prepare_filters(g: list[dict], a_norm: np.ndarray, L: int):
     return g_ready, m_td, m_fft, m_fftbl
 
 
+
+# ---------------------------------------------------------------------------
+# Gabor banks: analysis and synthesis through the Gabor transform
+# ---------------------------------------------------------------------------
+#
+# A ``gabfilters`` channel stores the whole L-point transform of its window
+# (as LTFAT's does), so the generic kernels below spend O(M2 * L) per call on
+# it -- 350 ms for an analysis and 900 ms for a synthesis of a 1024/256 bank
+# at L = 2**16, where the DGT of the same window takes a few milliseconds.
+# Channel k of an unedited bank is the DGT row k in the time-invariant phase
+# convention, scaled as ``_gab_bank`` scaled it:
+#
+#     c_k[n] = s_k * exp(2j*pi*k*a*n/M) * dgt(f, win, a, M)[k, n],
+#
+# and its synthesis operator is the adjoint, idgt of the conjugated rows.  So
+# an unedited bank (recognised by ``_frame._gabor_bank`` from the window the
+# designer recorded) takes the Gabor transform; anything else, including a
+# bank whose responses were replaced, takes the generic kernels.
+
+def _gabor_fast(g: list[dict], a_norm: np.ndarray, L: int):
+    """``(window, a, M, real)`` if ``g`` is an unedited ``gabfilters`` bank at
+    this ``L``; otherwise ``None``."""
+    if not g or not isinstance(g[0], dict):
+        return None
+    meta = g[0].get("gabor")
+    if meta is None:
+        return None
+    from ._frame import _gabor_bank
+
+    real = bool(meta["real"])
+    gab = _gabor_bank(g, a_norm, L, real)
+    if gab is None:
+        return None
+    win, a, M, _fs = gab
+    return np.asarray(win), int(a), int(M), real
+
+
+def _gabor_rows(a: int, M: int, M2: int, N: int, real: bool) -> np.ndarray:
+    """``s_k * exp(2j*pi*k*a*n/M)`` for the M2 stored rows, shape (M2, N)."""
+    from ..filters._gabfilters import _gab_edge_scale
+
+    k = np.arange(M2)[:, None]
+    n = np.arange(N)[None, :]
+    ph = np.exp(2j * np.pi * ((k * a * n) % M) / M)
+    return ph * _gab_edge_scale(M, real, M2)[:, None]
+
+
+def _gabor_analysis(f: np.ndarray, win: np.ndarray, a: int, M: int,
+                    real: bool, L: int) -> list[np.ndarray]:
+    from ..gabor import dgt, dgtreal
+
+    M2 = M // 2 + 1 if real else M
+    if real and not np.iscomplexobj(f) and not np.iscomplexobj(win):
+        D = dgtreal(f, win, a, M, L)
+    else:
+        D = dgt(f, win, a, M, L)[:M2]
+    D = D * _gabor_rows(a, M, M2, L // a, real)[:, :, None]
+    return [D[k] for k in range(M2)]
+
+
+def _gabor_synthesis(c: list[np.ndarray], win: np.ndarray, a: int, M: int,
+                     real: bool, L: int) -> np.ndarray:
+    """``fft`` of the synthesis ``sum_k S_k c_k`` (before any real fold),
+    shape (L, W): what ``comp_ifilterbank`` returns."""
+    from ..gabor import idgt
+
+    M2, N = len(c), L // a
+    c2 = [cm.reshape(N, -1) for cm in c]
+    W = c2[0].shape[1]
+    C = np.zeros((M, N, W), dtype=complex)
+    C[:M2] = np.stack(c2) * np.conj(_gabor_rows(a, M, M2, N, real))[:, :, None]
+    return np.fft.fft(idgt(C, win, a), axis=0)
+
+
 # ---------------------------------------------------------------------------
 # Low-level compute dispatcher
 # ---------------------------------------------------------------------------
@@ -365,6 +439,10 @@ def comp_filterbank(f: np.ndarray,
     L, W = f.shape
     M    = len(g)
     c    = [None] * M
+
+    gab = _gabor_fast(g, a_norm, L)
+    if gab is not None:
+        return _gabor_analysis(f, *gab, L)
 
     g_ready, m_td, m_fft, m_fftbl = prepare_filters(g, a_norm, L)
 
@@ -458,6 +536,9 @@ def comp_ifilterbank(c: list[np.ndarray],
     """
     M = len(c)
     W = c[0].shape[1] if c[0].ndim > 1 else 1
+    gab = _gabor_fast(g, a_norm, L)
+    if gab is not None and len(c) == len(g):
+        return _gabor_synthesis(c, *gab, L)
     g_ready, m_td, m_fft, m_fftbl = prepare_filters(g, a_norm, L)
 
     F = np.zeros((L, W), dtype=complex)

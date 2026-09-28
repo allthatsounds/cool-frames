@@ -1140,7 +1140,8 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   bounds (2.53, 3.84) for a frame whose bounds are (4, 4). It now equals
   `dgtreal` in the time-invariant convention at every L. Analysis and
   synthesis touch all L bins of every channel, as LTFAT's do; for long
-  signals `cool_frames.gabor.dgtreal` is the fast path.
+  signals `cool_frames.gabor.dgtreal` is the fast path. (Superseded below:
+  an unedited bank is now analysed and synthesised through the DGT.)
 - **Supersedes the `gabfilters` rule** under "Frame admissibility is now
   predictable in closed form" above: "frame iff L/M <= M" described the
   truncated bank, not the Gabor frame. `info["admissible"]` is now exact
@@ -1169,6 +1170,20 @@ Found while sketching a 24 kHz filterbank for an LRAC 2.0 codec
   system that is not a frame, which keeps its pseudo-inverse dual.
 - Results computed with `gabfilters` change wherever L is not small against
   M^2: by 3e-5 at L = M^2/48, 1.5e-3 at M^2/9.6 and 3.6e-2 at M^2/3.2.
+- **A `gabfilters` bank is analysed and synthesised through the DGT.** With
+  all L bins per channel, `filterbank` took 350 ms and `ifilterbank` 1.2 s
+  on the comparative benchmark's bank (Hann 1024/256, L = 65536), and 32
+  fast Griffin--Lim iterations 53 s (3.3 s on the truncated bank). Channel
+  k of an unedited bank is row k of `dgt` in the time-invariant phase
+  convention, scaled as the bank scales it, and its synthesis is the
+  adjoint, so `filterbank`, `ifilterbank`, `filterbankiter` and
+  `ifilterbankiter` now take `dgt`/`dgtreal` and `idgt` for it: 9 ms and
+  17 ms, and 1.2 s for the 32 iterations. They agree with the generic
+  kernels to 1e-12 (`tests/regressions/test_gabor_fast_path_2026_09_28.py`).
+  A bank whose responses were replaced is not recognised and takes the
+  generic kernels, as for the closed forms above. `ifilterbank` no longer
+  measures such a bank's filters on every call for its real/two-sided
+  check (300 ms): the bank records which it is.
 - **Behavioural change: the Gabor module extends a short window as LTFAT
   2.6's `fir2long` does** (`DEFECT_REGISTER.md` G11). `dgt`, `idgt`,
   `dgtreal`, `idgtreal`, `gabdual`, `gabtight`, `gabframebounds` and

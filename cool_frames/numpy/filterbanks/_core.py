@@ -243,11 +243,20 @@ def ifilterbank(
 
     # Detect an analysis/synthesis convention mismatch, measured on the
     # synthesis *filters*.  See `_negative_frequency_ratio` for why not on F.
+    # An unedited Gabor bank records whether it is single-sided, so the
+    # measurement (300 ms for a 513-channel bank at L = 2**16, on every call)
+    # is needed only when that disagrees with ``real``.
+    from ._utils import _gabor_fast
     from ._utils import prepare_filters as _prep
 
-    g_ready, _m_td, _m_fft, _m_fftbl = _prep(g, a_norm, L)
-    ratio = _negative_frequency_ratio(g_ready, L)
-    if real and ratio > 0.3:
+    gab = _gabor_fast(g, a_norm, L)
+    ratio: float | None = None  # None: the conventions agree by construction
+    if gab is None or gab[3] != bool(real):
+        g_ready, _m_td, _m_fft, _m_fftbl = _prep(g, a_norm, L)
+        ratio = _negative_frequency_ratio(g_ready, L)
+    if ratio is None:
+        pass
+    elif real and ratio > 0.3:
         warnings.warn(
             "ifilterbank(real=True) but the synthesis filters appear two-sided "
             f"(negative/positive frequency energy {ratio:.2f}); folding will "

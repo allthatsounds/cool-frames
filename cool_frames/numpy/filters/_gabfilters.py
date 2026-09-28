@@ -174,6 +174,20 @@ def _comp_tfrfromwin(g: np.ndarray, atheight: float | None = None) -> float:
 # gabfilters – public API
 # ---------------------------------------------------------------------------
 
+def _gab_edge_scale(M: int, real: bool, M2: int) -> np.ndarray:
+    """Per-channel scale of a Gabor bank: 1, but 1/sqrt(2) on the DC channel
+    and (even M) the Nyquist channel of a single-sided bank, which have no
+    conjugate partner for ``ifilterbank(..., real=True)``'s fold."""
+    edge_scal = np.ones(M2, dtype=float)
+    if real and M2 > 1:
+        edge_scal[0] /= math.sqrt(2.0)
+        # The top channel is the Nyquist bin only when M is even; for odd M the
+        # single-sided range stops just short of it and needs no correction.
+        if M % 2 == 0:
+            edge_scal[-1] /= math.sqrt(2.0)
+    return edge_scal
+
+
 def _gab_bank(g0: np.ndarray, a: int, M: int, L: int, fs, real: bool,
               windowaxis: str = "time") -> list[dict]:
     """The filter descriptors of a Gabor bank with numeric window ``g0``.
@@ -208,13 +222,7 @@ def _gab_bank(g0: np.ndarray, a: int, M: int, L: int, fs, real: bool,
     # gabfilters did not, which left a 4x-overlap Hann DGT — an exactly tight
     # frame — reading kappa = 1.667 with a 67 % response spike at DC and
     # Nyquist.
-    edge_scal = np.ones(M2, dtype=float)
-    if real and M2 > 1:
-        edge_scal[0] /= math.sqrt(2.0)
-        # The top channel is the Nyquist bin only when M is even; for odd M the
-        # single-sided range stops just short of it and needs no correction.
-        if M % 2 == 0:
-            edge_scal[-1] /= math.sqrt(2.0)
+    edge_scal = _gab_edge_scale(M, real, M2)
 
     shared: dict[float, np.ndarray] = {}
 
