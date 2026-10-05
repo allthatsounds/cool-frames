@@ -692,6 +692,18 @@ Consequences outside the package. Every reproduce bundle pins an earlier revisio
 - **W22**'s uniform-Gabor cells at M = 256, a = 64 have kept band M^2/L = 4.06.
 - `ltfat_filterbank/cola` carries the same truncation.
 
+## Found while matching frame redundancies, 2026-10-05
+
+An oracle-separability study (`ltfat_filterbank/research/papers/frame_separability/`)
+needed STFT, constant-Q, ERB and Cauchy-wavelet banks at the same real
+redundancy, and `waveletfilters`' `redtar` was the only redundancy control
+that moved the wavelet bank. Regression test:
+`tests/regressions/test_wavelet_redtar_fractional_2026_10_05.py`.
+
+| # | Area | Defect | Was → is |
+|---|---|---|---|
+| G12 | `filters/_waveletfilters.py` (`redtar` branch) | The fractional modes carry the hops as the (M, 2) array [Ls, N]. The branch scaled that whole array (numerator and denominator alike, so the hops did not change) and then took `ceil(L / a_new.ravel())`, a vector of 2M entries, as the new hops. The Nyquist complement's `filterbankresponse` then failed on the shape mismatch | `ValueError: matmul: Input operand 1 has a mismatch in its core dimension 0 ... (size 355 is different from 177)` for every call with `redtar` and `sampling='fractional'` or `'fractionaluniform'` → the effective hops are scaled and kept rational; at fs = 16 kHz, Ls = 32000, 24 bins from 50 Hz, `redtar` 4 and 8 give real redundancy 4.14 and 8.27 (fractional), 4.03 and 8.06 (fractionaluniform), monotone in the target. `regsampling` and `uniform`, which carry 1-D hops, are bit-identical (hops, L and every channel's response compared before and after) |
+
 ## Minor, recorded for completeness
 
 - `filterbankconstphase`'s `usedmask` — computed and discarded since v0.1.0 —

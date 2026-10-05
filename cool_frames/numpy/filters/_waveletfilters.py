@@ -875,9 +875,23 @@ def waveletfilters(
         else:
             org_red = np.sum(2.0 / a_old)
 
-        # Clamp at 1: `np.floor` of an aggressive ratio produced a = 0, and
-        # `filterbank` then raised "negative dimensions are not allowed".
-        a_new = np.maximum(1, np.floor(a.astype(float) * org_red / redtar).astype(int))
+        # Scale the *effective* hops `a_old`, not the array `a`.  The
+        # fractional modes carry `a` as the (M, 2) array [Ls, N]; scaling it
+        # scaled numerator and denominator alike, the ravel below then read
+        # 2*M hops, and every `redtar` on `sampling='fractional'` or
+        # `'fractionaluniform'` raised a matmul shape error in the edge
+        # complement (DEFECT_REGISTER G12).
+        a_scaled = a_old * org_red / redtar
+        if a.ndim == 2 and a.shape[1] == 2:  # type: ignore[misc]
+            # Rational hops: re-encoded as [L, ceil(L/a)] below, so there is
+            # no integer hop to floor to and the target is kept as closely
+            # as N allows.
+            a_new = np.maximum(1.0, a_scaled)
+        else:
+            # Clamp at 1: `np.floor` of an aggressive ratio produced a = 0,
+            # and `filterbank` then raised "negative dimensions are not
+            # allowed".
+            a_new = np.maximum(1, np.floor(a_scaled).astype(int))
 
         if callable(delay):
             delayvec = np.array([delay(kk, float(np.asarray(a_new[kk]).ravel()[0]))

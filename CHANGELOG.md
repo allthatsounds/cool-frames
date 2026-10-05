@@ -1277,6 +1277,23 @@ Found while re-checking the admissibility verdicts after the `gabfilters` fix
   took 1.49 GB to design (0.06 GB before, when nothing was evaluated until
   the first analysis, which then took the same memory).
 
+### `waveletfilters(redtar=...)` in the fractional modes
+
+Found while matching the redundancy of four frame families for an
+oracle-separability study (`DEFECT_REGISTER.md`, G12).
+
+- `redtar` with `sampling='fractional'` or `'fractionaluniform'` raised
+  `ValueError: matmul: Input operand 1 has a mismatch in its core dimension 0`
+  for every input. Those modes carry the hops as the (M, 2) array [Ls, N];
+  the `redtar` branch scaled that array, numerator and denominator alike,
+  and then read its 2M entries as M hops. It now scales the effective hops
+  and keeps them rational, so the target is met as closely as N allows
+  (`waveletfilters(16000, 32000, fmin=50, bins=24, sampling='fractional',
+  redtar=4)`: real redundancy 4.14, the excess being the Nyquist complement
+  appended afterwards). `regsampling` and `uniform` are bit-identical.
+  Note that a low `redtar` on a Cauchy bank is not painless (the same call
+  reports `painless_ratio` 7.7); the bank is reported as such, as before.
+
 ## 0.1.0
 
 First public release.
