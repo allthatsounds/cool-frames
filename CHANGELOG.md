@@ -120,6 +120,35 @@ produce different (and correct) numbers — and two are **breaking API changes**
 
 ### Added
 
+- **`filterbankdual(..., time_support=(back, fwd))`: duals with a constrained
+  window support in time** (both backends) — for a Gabor bank, the dual window
+  is confined to time lags `[-back, +fwd]` in samples. Latency is the point:
+  synthesis reaches `back` samples before a coefficient's centre, so that
+  extent is what a low-latency decoder pays. On a 24 kHz bank with a 20 ms
+  Hann window, a 2.5 ms hop and a 960-point FFT, the canonical dual reaches
+  239 samples back and the constrained one 120 — 32.5 ms against 27.5 ms of
+  total latency, either side of a 30 ms deadline.
+
+  A closed form, because the window is painless *in time*. With `W <= M` the
+  Gabor frame operator is diagonal in time and perfect reconstruction is one
+  scalar equation per residue class of the hop, so the minimum-norm dual on a
+  support `S` is
+  `gamma = g / (M * sum_{s in S, s = r mod a} |g(s)|^2)` -- one division per
+  sample, no iteration. That is exact in the filterbank path: the round trip
+  is -305 dB for the full support and for `back` held at 120 and at 60, at
+  every signal length tested, including lengths where the filters' frequency
+  support exceeds the filterbank painless limit `N = L/a` and `gabfilters`
+  warns that the canonical dual is approximate. The two painless conditions
+  are not the same one: that warning concerns support in *frequency*, while
+  the identity above needs only `W <= M` in *time*.
+  `tests/gabor/test_dual_time_support.py` pins the reconstruction, the
+  narrowing of the support, and the noise gain the constraint costs --
+  +0.17 dB for `back` 239 -> 120 and +0.98 dB for 239 -> 60 on the bank
+  above. A support that misses a residue class of the hop admits no dual at
+  all, and raises. Note that this constrains the dual in *time*, which is a
+  different thing from the frequency support on which each channel's response
+  is stored.
+
 - **`cool_frames.gabor`: the discrete Gabor transform** (NumPy backend) —
   `dgt`, `idgt`, `dgtreal`, `idgtreal`, `gabdual`, `gabtight`,
   `gabframebounds`, `gabframediag` and `dgtlength`, with LTFAT's definitions,

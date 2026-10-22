@@ -82,12 +82,13 @@ def _frame_solver(
     real: bool = True,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.complex128,
+    **np_kwargs,
 ) -> list[dict]:
     """Generic wrapper: numpy frame solver → torch filter dicts."""
     if device is None:
         device = _infer_device(g)
     g_np = _torch_filters_to_numpy(g, L)
-    result_np = np_fn(g_np, a, L, real=real)
+    result_np = np_fn(g_np, a, L, real=real, **np_kwargs)
     return numpy_filters_to_torch(result_np, L, device=device, dtype=dtype)
 
 
@@ -193,12 +194,19 @@ def filterbankdual(
     real: bool = True,
     device: torch.device | str | None = None,
     dtype: torch.dtype = torch.complex128,
+    time_support: tuple[int | None, int | None] | None = None,
 ) -> list[dict]:
     """Compute the canonical dual filterbank.
 
     ``real`` defaults to ``True`` (single-sided real-audio frames),
     matching the numpy backend.  Pass ``real=False`` for complex /
     two-sided frames.
+
+    ``time_support=(back, fwd)`` constrains the dual window to time lags
+    ``[-back, +fwd]`` in samples, for a Gabor bank only; see the numpy
+    backend's :func:`cool_frames.numpy.filterbanks.filterbankdual`. ``back``
+    is what a decoder pays in latency. Design is a setup-time operation, so
+    this runs in the numpy backend and the result is converted back.
 
     Examples
     --------
@@ -208,7 +216,10 @@ def filterbankdual(
     >>> len(g_dual)
     35
     """
-    return _frame_solver(_np_filterbankdual, g, a, L, real=real, device=device, dtype=dtype)
+    kw = {} if time_support is None else {"time_support": time_support}
+    return _frame_solver(
+        _np_filterbankdual, g, a, L, real=real, device=device, dtype=dtype, **kw
+    )
 
 
 def filterbanktight(
