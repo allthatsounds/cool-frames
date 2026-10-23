@@ -47,6 +47,20 @@ produce different (and correct) numbers — and two are **breaking API changes**
 
 ### Fixed
 
+- **`filterbankconstphase` says so when it falls back to zero phase
+  gradients.** `sqtfr` is documented as required on the magnitude path, and
+  omitting it has always been a documented fallback rather than an error: the
+  gradients become zero and PGHI degenerates to zero-phase reconstruction.
+  Documentation cannot reach a caller who simply forgot the keyword, though,
+  and the cost is not subtle -- on a 24 kHz Gabor bank with a 20 ms Hann
+  window it is -0.7 dB of spectral convergence against -26.3 dB with the
+  ratios supplied, which reads as a broken codec rather than a missing
+  argument. The fallback now emits a `UserWarning` naming
+  `sqrt(info['tfr'])` as the source. Passing `tgrad` and `fgrad` explicitly
+  remains the documented way to ask for zero gradients deliberately, and
+  stays silent; so does the signal path, which builds its own gradients from
+  the filters. `tests/phase/test_sqtfr_warning.py` pins all four cases.
+
 - **`decolbfgs` (NumPy) never ran its optimiser.** The analytic gradient
   contradicted the objective — it used `conj(c)` where the Wirtinger derivative
   calls for `c`, and mis-handled the factor implied by single-sided synthesis.

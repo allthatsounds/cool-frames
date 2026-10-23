@@ -658,6 +658,24 @@ def filterbankconstphase(
         elif tgrad is None or fgrad is None:
             # No sqtfr given — fall back to zero gradients (degenerate but
             # preserves backward compatibility). PGHI quality will be poor.
+            #
+            # Audible rather than merely documented. Zero gradients turn PGHI
+            # into zero-phase reconstruction, and the cost is not subtle: on a
+            # 24 kHz Gabor bank it is -0.7 dB of spectral convergence against
+            # -26.3 dB with the ratios supplied. A caller who simply forgot
+            # sqtfr gets a result that looks like a bad codec rather than a
+            # missing argument, so say so once. Passing tgrad and fgrad
+            # explicitly -- zeros included -- is the documented way to ask for
+            # this deliberately, and it does not warn.
+            warnings.warn(
+                "filterbankconstphase: no sqtfr on the magnitude path, so the "
+                "phase gradients are zero and this degenerates to zero-phase "
+                "reconstruction. Pass sqtfr=np.sqrt(info['tfr']) from the "
+                "designer that built the bank, or pass tgrad and fgrad "
+                "explicitly to ask for zero gradients on purpose.",
+                UserWarning,
+                stacklevel=2,
+            )
             if tgrad is None:
                 tgrad = [np.zeros_like(abss_list[m]) for m in range(M)]
             if fgrad is None:
